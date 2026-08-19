@@ -1,6 +1,8 @@
 /**
  * Load an export produced by export-projects-research.py into the database.
- * Idempotent: rerunning skips contributions whose import_key already exists.
+ * Idempotent and reconciling: new import_keys are inserted; existing ones
+ * whose source has since gained a reviewed Lean alignment get their
+ * lean-kernel verification record added. Nothing is ever downgraded.
  *
  * Usage: bun run tools/load-import.ts OUTDIR IDENTITY_KEY_FILE "Display Name"
  */
@@ -30,12 +32,36 @@ for (const row of await sql<{ id: string; key: string }[]>`
   where metadata ? 'import_key'`) {
   existing.set(row.key, row.id);
 }
+const leanVerified = new Set<string>(
+  (
+    await sql<{ contribution_id: string }[]>`
+      select contribution_id from verification where method = 'lean-kernel' and outcome = 'passed'`
+  ).map((r) => r.contribution_id),
+);
+
+async function recordLeanVerification(tx: postgres.TransactionSql, id: string, leanDecl: string) {
+  await tx`insert into verification (contribution_id, method, outcome, detail)
+           values (${id}, 'lean-kernel', 'passed', ${tx.json({ imported: true, lean_decl: leanDecl })})`;
+  await tx`update contribution set metadata = metadata || ${tx.json({ lean_decl: leanDecl })}, updated_at = now()
+           where id = ${id}`;
+  await tx`insert into event (kind, contribution_id, identity_id, payload)
+           values ('verification-imported', ${id}, ${identityId}, ${tx.json({ lean_decl: leanDecl })})`;
+  leanVerified.add(id);
+}
 
 const lines = readFileSync(`${dir}/contributions.jsonl`, "utf8").split("\n").filter(Boolean);
 let inserted = 0;
+let reconciled = 0;
 for (const line of lines) {
   const record = JSON.parse(line);
-  if (existing.has(record.import_key)) continue;
+  const already = existing.get(record.import_key);
+  if (already) {
+    if (record.metadata.lean_decl && !leanVerified.has(already)) {
+      await sql.begin((tx: postgres.TransactionSql) => recordLeanVerification(tx, already, record.metadata.lean_decl));
+      reconciled++;
+    }
+    continue;
+  }
   const hash = sha256(record.content);
   const metadata = { ...record.metadata, import_key: record.import_key };
   const id = await sql.begin(async (tx: postgres.TransactionSql) => {
@@ -44,18 +70,16 @@ for (const line of lines) {
              on conflict do nothing`;
     const [row] = await tx<{ id: string }[]>`
       insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id,
-                                tier, fidelity_reviewed, created_at)
+                                tier, created_at)
       values (${record.kind}, ${record.title}, ${record.summary}, ${hash},
-              ${tx.json(metadata)}, ${identityId}, ${record.tier}, ${record.fidelity_reviewed},
+              ${tx.json(metadata)}, ${identityId}, ${record.tier},
               ${record.created_at ?? new Date().toISOString()})
       returning id`;
     await tx`insert into event (kind, contribution_id, identity_id, payload)
              values ('imported', ${row!.id}, ${identityId},
                      ${tx.json({ import_key: record.import_key, tier: record.tier })})`;
-    if (record.tier === 3) {
-      await tx`insert into verification (contribution_id, method, outcome, detail)
-               values (${row!.id}, 'lean-kernel', 'passed',
-                       ${tx.json({ imported: true, lean_decl: record.metadata.lean_decl ?? null })})`;
+    if (record.metadata.lean_decl) {
+      await recordLeanVerification(tx, row!.id, record.metadata.lean_decl);
     }
     return row!.id;
   });
@@ -63,7 +87,9 @@ for (const line of lines) {
   inserted++;
   if (inserted % 5000 === 0) console.log(`…${inserted}`);
 }
-console.log(`contributions: ${inserted} inserted, ${lines.length - inserted} already present`);
+console.log(
+  `contributions: ${inserted} inserted, ${reconciled} lean-verifications reconciled, ${lines.length - inserted} already present`,
+);
 
 const edgeLines = readFileSync(`${dir}/edges.jsonl`, "utf8").split("\n").filter(Boolean);
 let edges = 0;

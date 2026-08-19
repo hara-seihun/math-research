@@ -2,9 +2,10 @@
 """Export the Projects Research ledger as math-research import JSONL.
 
 Tier mapping is mechanical, from adjudication state already recorded in the
-ledger — no re-review:
-  admitted claim                       -> kind result,  tier 2, fidelity-reviewed
-  admitted claim w/ reviewed alignment -> kind result,  tier 3 (+ lean-kernel verification record)
+ledger — no re-review. Tiers are review state only (T2 = accepted as canon);
+kernel verification is the independent lean_verified property:
+  admitted claim                       -> kind result,  tier 2
+  admitted claim w/ reviewed alignment -> kind result,  tier 2 + lean-kernel verification record
   open obligation                      -> kind problem, tier 2
 
 Usage: export-projects-research.py LEDGER.sqlite3 OUTDIR
@@ -48,8 +49,7 @@ with open(outdir / "contributions.jsonl", "w") as out:
                     "title": title_of(row["statement"]),
                     "summary": " ".join(row["statement"].split())[:2000],
                     "content": row["statement"],
-                    "tier": 3 if decl else 2,
-                    "fidelity_reviewed": True,
+                    "tier": 2,
                     "created_at": row["created_at"],
                     "metadata": {
                         "imported_from": "projects-research",
@@ -94,7 +94,6 @@ with open(outdir / "contributions.jsonl", "w") as out:
                     "summary": " ".join(row["exact_scope"].split())[:2000],
                     "content": row["exact_scope"],
                     "tier": 2,
-                    "fidelity_reviewed": True,
                     "created_at": row["created_at"],
                     "metadata": {
                         "imported_from": "projects-research",

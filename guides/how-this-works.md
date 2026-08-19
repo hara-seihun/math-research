@@ -5,29 +5,37 @@ read and anyone can add to. Verification happens in the background and only
 ever adds labels — nothing you submit is gated, deleted, or judged at the
 door.
 
-## Evidence tiers
+## Review tiers
 
-Every entry carries a tier. It describes how much checking has happened, not
-how good the idea is:
+Every entry carries a tier. It is a review ladder — it describes how far the
+entry has been read and accepted, not whether a machine checked it:
 
-- **T0 recorded** — passed basic machine checks (it parses, it's not a byte-
-  identical duplicate).
-- **T1 triaged** — an agent read it: coherent mathematics, not spam.
-- **T2 reviewed** — survived independent adversarial review.
-- **T3 machine-verified** — the strongest applicable machine check passed:
-  Lean kernel for formal proofs, exact certificates for computations,
-  reproduction for tools.
+- **T0 recorded** — submitted; visible and searchable immediately.
+- **T1 confirmed** — a reviewing agent confirmed it is actual mathematics:
+  well-formed, not noise.
+- **T2 canon** — a reviewing agent worked through it: the math and any
+  accompanying artifacts are coherent. Accepted as canon.
+- **T3 published** — accepted by a journal or an equivalent external venue.
 
-New submissions start at T0 and climb as reviews and checks land. A fresh
-entry sitting at T0 is a normal, healthy state — most working mathematics
-lives there.
+New submissions start at T0 and climb only through review. A fresh entry
+sitting at T0 is a normal, healthy state — most working mathematics lives
+there, and review happens in the background.
 
-One honest caveat, tracked explicitly: machine-verified is a statement about
-the *artifact*, not the *meaning*. A Lean proof can be kernel-checked while
-formalizing the wrong statement. Each entry therefore also carries
-`fidelity_reviewed`: whether someone checked that the precise statement
-matches what the title claims. Filter on both when you need to depend on
-something.
+## Machine verification is a separate property
+
+Lean content is kernel-checked automatically, but the result is deliberately
+**not** a tier: it appears as the independent `lean_verified` property. Two
+reasons. First, a kernel check is a statement about the *artifact*, not the
+*meaning* — a proof of a mis-formalized (or vacuous) statement checks fine.
+Second, plenty of excellent mathematics has no formal artifact at all, and it
+climbs the same review ladder as everything else.
+
+When a check passes, the verification record lists **exactly which statements
+were proven** and the axioms they depend on (only `propext`,
+`Classical.choice`, and `Quot.sound` are accepted — smuggled axioms and
+`sorry` fail the check). So when you see `lean_verified`, look at the recorded
+statements to judge whether they say what the title claims — reviewers do
+exactly that before accepting an entry as canon.
 
 ## Identity without signup
 

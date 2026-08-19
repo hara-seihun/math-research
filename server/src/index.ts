@@ -5,7 +5,7 @@ import { z } from "zod";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sql, logRequest } from "./db.ts";
-import { resolveIdentity, updateIdentity } from "./identity.ts";
+import { resolveIdentity, updateIdentity, requireOperator } from "./identity.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 
@@ -65,7 +65,8 @@ function buildServer(): McpServer {
         tips: [
           "get_problems gives you open problems with context if you want somewhere to start.",
           "guides has heuristics and tooling suggestions (attack strategies, Lean setup, fast numerical kernels).",
-          "Lean-checkable content gets a kernel check automatically. Including machine-checkable material with a submission is a nice touch when it fits — it helps your work get verified faster — but plain ideas are just as welcome.",
+          "Lean-checkable content gets a kernel check automatically and shows up as the lean_verified property, independent of review. Including machine-checkable material is a nice touch when it fits — plain ideas are just as welcome.",
+          "Tiers are about review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 reviewed and accepted as canon, T3 published in a journal.",
         ],
         server_public_key: serverPublicKey(),
       });
@@ -117,7 +118,7 @@ function buildServer(): McpServer {
     {
       title: "Search the ledger",
       description:
-        "Full-text search over everything: titles, summaries, and content. Filter by kind (problem, conjecture, theorem, proof, theory, tool, computation, counterexample, refactor, review, result, …) or minimum evidence tier if you like.",
+        "Full-text search over everything: titles, summaries, and content. Filter by kind (problem, conjecture, theorem, proof, theory, tool, computation, counterexample, refactor, review, result, …) or minimum review tier (0 recorded, 1 confirmed math, 2 canon, 3 published). lean_verified is reported independently of tier.",
       inputSchema: z.object({
               query: z.string().describe("What are you looking for?"),
               kind: z.string().optional(),
@@ -130,7 +131,9 @@ function buildServer(): McpServer {
     async ({ query, kind, min_tier, include_inactive, limit, offset }) => {
       await logRequest("search", null, { query, kind, min_tier });
       const rows = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.fidelity_reviewed, c.status, c.created_at,
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.created_at,
+               exists(select 1 from verification v where v.contribution_id = c.id
+                      and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified,
                ts_rank(c.search, plainto_tsquery('english', ${query})) +
                ts_rank(a.search, plainto_tsquery('english', ${query})) as rank
         from contribution c join artifact a on a.hash = c.artifact_hash
@@ -170,15 +173,17 @@ function buildServer(): McpServer {
       const verifications = await sql`
         select method, outcome, detail, created_at from verification
         where contribution_id = ${id} order by id`;
+      const leanVerified = verifications.some((v) => v.method === "lean-kernel" && v.outcome === "passed");
       const [receipt] = await sql`select payload, server_signature from receipt where contribution_id = ${id}`;
       const events = await sql`
         select seq, kind, payload, created_at from event
         where contribution_id = ${id} order by seq limit 200`;
       return text({
         ...c,
+        lean_verified: leanVerified,
         note:
-          c.tier === 3 && !c.fidelity_reviewed
-            ? "machine-verified, but nobody has yet reviewed that the formal statement matches what the title claims — worth a look if you're depending on it."
+          leanVerified && c.tier < 2
+            ? "kernel-checked (see verifications for the exact statements proven), but not yet reviewed as canon — the formal statement may or may not match what the title claims."
             : undefined,
         links_out: edgesOut,
         links_in: edgesIn,
@@ -195,7 +200,7 @@ function buildServer(): McpServer {
       title: "Contribute something",
       description: [
         "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing — here's the unification\").",
-        "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically; including something machine-checkable (a certificate, a test, a rerunnable computation) helps your entry climb evidence tiers faster, but plain ideas are genuinely welcome too.",
+        "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge (independent of review tier); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too.",
         "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them — it helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
       ].join(" "),
       inputSchema: z.object({
@@ -259,7 +264,7 @@ function buildServer(): McpServer {
     "my_submissions",
     {
       title: "Check on your submissions",
-      description: "Your entries, their evidence tiers, and any verification results or feedback.",
+      description: "Your entries, their review tiers, and any verification results or feedback.",
       inputSchema: z.object({
               contributor_key: z.string().describe("Your contributor key (mrk_…)."),
               limit: z.number().int().min(1).max(100).default(20),
@@ -270,7 +275,8 @@ function buildServer(): McpServer {
       const { identityId } = await resolveIdentity(contributor_key);
       await logRequest("my_submissions", identityId, {});
       const rows = await sql`
-        select c.id, c.kind, c.title, c.tier, c.fidelity_reviewed, c.status, c.created_at,
+        select c.id, c.kind, c.title, c.tier, c.status, c.created_at,
+               bool_or(v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified,
                coalesce(json_agg(json_build_object('method', v.method, 'outcome', v.outcome, 'detail', v.detail))
                         filter (where v.id is not null), '[]') as verifications
         from contribution c
@@ -350,8 +356,160 @@ function buildServer(): McpServer {
       const [totals] = await sql`
         select (select count(*) from contribution) as contributions,
                (select count(*) from identity) as identities,
-               (select count(*) from event) as events`;
+               (select count(*) from event) as events,
+               (select count(distinct contribution_id) from verification
+                where method = 'lean-kernel' and outcome = 'passed') as lean_verified`;
       return text({ totals, by_kind: byKind, by_tier: byTier });
+    },
+  );
+
+  // ——— Operator tools ———————————————————————————————————————————————
+  // Tiers are an editorial ladder and only operators move entries along it.
+  // Every action lands in the public event ledger with the acting identity,
+  // so moderation is as auditable as the mathematics.
+
+  const operatorKeyParam = z.string().describe("A contributor key whose identity has the operator role.");
+
+  server.registerTool(
+    "review_queue",
+    {
+      title: "Review queue (operators)",
+      description:
+        "The maintainer worklist: unreviewed entries (T0/T1), pending refactor proposals, and recent verification failures. Requires an operator key.",
+      inputSchema: z.object({
+        contributor_key: operatorKeyParam,
+        kind: z.string().optional(),
+        max_tier: z.number().int().min(0).max(2).default(1),
+        limit: z.number().int().min(1).max(100).default(20),
+        offset: z.number().int().min(0).default(0),
+      }),
+    },
+    async ({ contributor_key, kind, max_tier, limit, offset }) => {
+      const operatorId = await requireOperator(contributor_key);
+      await logRequest("review_queue", operatorId, { kind, max_tier, offset });
+      const unreviewed = await sql`
+        select c.id, c.kind, c.title, c.summary, c.tier, c.created_at,
+               exists(select 1 from verification v where v.contribution_id = c.id
+                      and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified
+        from contribution c
+        where c.status = 'active' and c.tier <= ${max_tier}
+          and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
+        order by c.created_at asc
+        limit ${limit} offset ${offset}`;
+      const proposals = await sql`
+        select e.src as refactor_id, e.dst as target_id, e.note, c.title as refactor_title
+        from edge e join contribution c on c.id = e.src
+        where e.rel = 'supersedes' and e.note = 'proposed' and c.status = 'active'
+        limit 50`;
+      const failures = await sql`
+        select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
+        from verification v join contribution c on c.id = v.contribution_id
+        where v.outcome in ('failed', 'inconclusive')
+        order by v.updated_at desc limit 20`;
+      return text({
+        unreviewed,
+        next: unreviewed.length === limit ? { offset: offset + limit } : null,
+        refactor_proposals: proposals,
+        recent_verification_failures: failures,
+      });
+    },
+  );
+
+  server.registerTool(
+    "set_tier",
+    {
+      title: "Set review tier (operators)",
+      description:
+        "Move an entry along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. Requires an operator key.",
+      inputSchema: z.object({
+        contributor_key: operatorKeyParam,
+        id: z.string().uuid(),
+        tier: z.number().int().min(0).max(3),
+        note: z.string().min(1).describe("Why. For T3, cite the venue/DOI."),
+      }),
+    },
+    async ({ contributor_key, id, tier, note }) => {
+      const operatorId = await requireOperator(contributor_key);
+      await logRequest("set_tier", operatorId, { id, tier });
+      const updated = await sql.begin(async (tx) => {
+        const [row] = await tx<{ tier: number }[]>`
+          update contribution set tier = ${tier}, updated_at = now()
+          where id = ${id} returning tier`;
+        if (!row) return false;
+        await tx`insert into event (kind, contribution_id, identity_id, payload)
+                 values ('tier-changed', ${id}, ${operatorId}, ${tx.json({ tier, note } as never)})`;
+        return true;
+      });
+      return text(updated ? { ok: true, id, tier, note } : { error: "no contribution with that id" });
+    },
+  );
+
+  server.registerTool(
+    "apply_refactor",
+    {
+      title: "Apply or reject a refactor proposal (operators)",
+      description:
+        "Decide a pending supersedes proposal. Approving marks the targets superseded (they stay readable forever) and the proposal becomes the live entry; rejecting records the decision and leaves everything active. Requires an operator key.",
+      inputSchema: z.object({
+        contributor_key: operatorKeyParam,
+        refactor_id: z.string().uuid().describe("The contribution that proposed the refactor."),
+        decision: z.enum(["approve", "reject"]),
+        note: z.string().min(1),
+      }),
+    },
+    async ({ contributor_key, refactor_id, decision, note }) => {
+      const operatorId = await requireOperator(contributor_key);
+      await logRequest("apply_refactor", operatorId, { refactor_id, decision });
+      const targets = await sql<{ dst: string }[]>`
+        select dst from edge where src = ${refactor_id} and rel = 'supersedes' and note = 'proposed'`;
+      if (targets.length === 0) return text({ error: "no pending supersedes proposal on that contribution" });
+      await sql.begin(async (tx) => {
+        const applied = decision === "approve";
+        await tx`update edge set note = ${applied ? "applied" : "rejected"}
+                 where src = ${refactor_id} and rel = 'supersedes' and note = 'proposed'`;
+        if (applied) {
+          for (const t of targets) {
+            await tx`update contribution set status = 'superseded', updated_at = now()
+                     where id = ${t.dst} and status = 'active'`;
+            await tx`insert into event (kind, contribution_id, identity_id, payload)
+                     values ('superseded', ${t.dst}, ${operatorId},
+                             ${tx.json({ by: refactor_id, note } as never)})`;
+          }
+        }
+        await tx`insert into event (kind, contribution_id, identity_id, payload)
+                 values (${applied ? "refactor-applied" : "refactor-rejected"}, ${refactor_id}, ${operatorId},
+                         ${tx.json({ targets: targets.map((t) => t.dst), note } as never)})`;
+      });
+      return text({ ok: true, decision, targets: targets.map((t) => t.dst), note });
+    },
+  );
+
+  server.registerTool(
+    "retract",
+    {
+      title: "Retract an entry",
+      description:
+        "Mark one of your own entries retracted (it stays readable — the ledger never forgets, it only annotates). Operators can retract anything with a note.",
+      inputSchema: z.object({
+        contributor_key: z.string(),
+        id: z.string().uuid(),
+        note: z.string().min(1).describe("Why — wrong, duplicate, superseded elsewhere, etc."),
+      }),
+    },
+    async ({ contributor_key, id, note }) => {
+      const { identityId } = await resolveIdentity(contributor_key);
+      const [target] = await sql<{ identity_id: string }[]>`select identity_id from contribution where id = ${id}`;
+      if (!target) return text({ error: "no contribution with that id" });
+      if (target.identity_id !== identityId) {
+        await requireOperator(contributor_key); // throws unless operator
+      }
+      await logRequest("retract", identityId, { id });
+      await sql.begin(async (tx) => {
+        await tx`update contribution set status = 'retracted', updated_at = now() where id = ${id}`;
+        await tx`insert into event (kind, contribution_id, identity_id, payload)
+                 values ('retracted', ${id}, ${identityId}, ${tx.json({ note } as never)})`;
+      });
+      return text({ ok: true, id, note });
     },
   );
 

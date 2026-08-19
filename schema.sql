@@ -17,6 +17,8 @@ create table identity (
   id           text primary key,          -- sha256(contributor_key), hex
   display_name text,
   public_key   text,                      -- optional Ed25519 public key, base64
+  role         text not null default 'contributor'
+               check (role in ('contributor', 'operator')),
   created_at   timestamptz not null default now()
 );
 
@@ -34,7 +36,7 @@ create index artifact_search_idx on artifact using gin (search);
 -- The append-only event ledger.
 create table event (
   seq             bigserial primary key,
-  kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | fidelity-reviewed | flagged | identity-updated | imported
+  kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | refactor-applied | refactor-rejected | flagged | identity-updated | imported
   contribution_id uuid,
   identity_id     text,
   payload         jsonb not null default '{}'::jsonb,
@@ -59,17 +61,19 @@ create trigger event_append_only
 -- does not fit a closed enum and we would rather see a new kind than a
 -- shoehorned one.
 --
--- Evidence tiers:
---   0 recorded          passed machine checks only
---   1 triaged           read by an agent: coherent math, not spam/plagiarism
---   2 reviewed          survived independent adversarial review
---   3 machine-verified  strongest applicable machine check passed
+-- Evidence tiers — an editorial ladder, climbed only by review:
+--   0 recorded   submitted; visible and searchable immediately
+--   1 triaged    an agent confirmed it is actual mathematics — well-formed,
+--                not spam or noise
+--   2 canon      an agent reviewed it: the math and any artifacts are
+--                coherent; accepted as canon
+--   3 published  accepted by a journal or equivalent external venue
 --
--- A tier is a statement about the *artifact*, not about meaning: a Lean
--- proof can be kernel-checked (tier 3) while formalizing the wrong
--- statement. `fidelity_reviewed` tracks separately whether someone checked
--- that the formal/precise statement matches what the title and summary
--- claim it says.
+-- Machine verification (e.g. a Lean kernel check) is deliberately NOT a
+-- tier: it is an independent property, recorded in `verification` and
+-- surfaced as `lean_verified`. A kernel-checked proof of a vacuous or
+-- mis-formalized statement stays at whatever tier review has earned it.
+-- Tier changes are operator actions and always carry an event.
 create table contribution (
   id                uuid primary key default gen_random_uuid(),
   kind              text not null,
@@ -79,7 +83,6 @@ create table contribution (
   metadata          jsonb not null default '{}'::jsonb,
   identity_id       text not null references identity(id),
   tier              smallint not null default 0 check (tier between 0 and 3),
-  fidelity_reviewed boolean not null default false,
   status            text not null default 'active'
                     check (status in ('active', 'retracted', 'superseded')),
   created_at        timestamptz not null default now(),
@@ -106,8 +109,7 @@ create table edge (
 create index edge_dst_idx on edge (dst, rel);
 
 -- Machine and review verification records. `method` vocabulary:
--- lean-kernel, exact-certificate, reproduction, triage, adversarial-review,
--- fidelity-review, imported.
+-- lean-kernel, exact-certificate, reproduction, review, imported.
 create table verification (
   id              bigserial primary key,
   contribution_id uuid not null references contribution(id),

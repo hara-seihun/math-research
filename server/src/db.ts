@@ -20,7 +20,6 @@ export type Contribution = {
   metadata: Record<string, unknown>;
   identity_id: string;
   tier: number;
-  fidelity_reviewed: boolean;
   status: string;
   created_at: Date;
 };

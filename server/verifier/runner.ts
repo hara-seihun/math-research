@@ -61,13 +61,14 @@ run_cmd do
     if env.getModuleIdxFor? name == some modIdx \u2227 !name.isInternal then
       if count \u2265 200 then break
       count := count + 1
-      let (_, axState) := ((CollectAxioms.collect name).run env).run {}
-      let typeStr \u2190 liftTermElabM do
-        return (\u2190 Meta.ppExpr info.type).pretty
+      let (typeStr, axioms) \u2190 liftTermElabM do
+        let fmt \u2190 Meta.ppExpr info.type
+        let axs \u2190 collectAxioms name
+        return (fmt.pretty, axs)
       let json := Json.mkObj [
         ("name", Json.str name.toString),
         ("type", Json.str typeStr),
-        ("axioms", Json.arr (axState.axioms.map (Json.str \u00b7.toString)))
+        ("axioms", Json.arr (axioms.map (Json.str \u00b7.toString)))
       ]
       logInfo s!"AUDIT{json.compress}"
 `;

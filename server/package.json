@@ -1,0 +1,16 @@
+{
+  "name": "math-research-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "verifier": "bun run verifier/verifier.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "postgres": "^3.4.5",
+    "zod": "^3.25.0",
+    "express": "^5.1.0"
+  }
+}

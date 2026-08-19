@@ -14,7 +14,7 @@
  * statement, and the axioms it depends on. The orchestrator turns that into
  * the verification outcome; this process decides nothing.
  */
-import { mkdirSync, readdirSync, existsSync, rmSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, existsSync, rmSync, renameSync, writeFileSync, readFileSync } from "node:fs";
 import { join, basename } from "node:path";
 
 const SPOOL = process.env.SPOOL_DIR ?? "/var/lib/lean-spool";
@@ -28,18 +28,25 @@ const TIMEOUT_MS = Number(process.env.LEAN_TIMEOUT_MS ?? 600_000);
 const AUDIT_TIMEOUT_MS = 120_000;
 const POLL_MS = 3_000;
 
-/** Environment (LEAN_PATH etc.) captured once from `lake env` in the project. */
+/**
+ * Environment (LEAN_PATH, toolchain PATH, …) captured by the project owner at
+ * setup time via `lake env env > .env-cache`. Running lake here would need
+ * git and ownership of the checkout — exactly what this sandbox must not
+ * have — so we only ever read the cached snapshot.
+ */
 let leanEnv: Record<string, string> = {};
 
-async function captureLakeEnv() {
-  const proc = Bun.spawn(["lake", "env", "env"], { cwd: LEAN_DIR, stdout: "pipe", stderr: "pipe" });
-  const [code, out] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
-  if (code !== 0) throw new Error("lake env failed — is the Lean project built?");
-  for (const line of out.split("\n")) {
+async function loadLeanEnv() {
+  const cache = join(LEAN_DIR, ".env-cache");
+  while (!existsSync(cache)) {
+    console.log(`waiting for ${cache} (produced by lean setup)`);
+    await Bun.sleep(15_000);
+  }
+  for (const line of readFileSync(cache, "utf8").split("\n")) {
     const eq = line.indexOf("=");
     if (eq > 0) leanEnv[line.slice(0, eq)] = line.slice(eq + 1);
   }
-  if (!leanEnv.LEAN_PATH) throw new Error("lake env did not yield LEAN_PATH");
+  if (!leanEnv.LEAN_PATH) throw new Error(".env-cache did not yield LEAN_PATH");
 }
 
 function auditSource(moduleName: string): string {
@@ -157,6 +164,6 @@ function tick() {
 }
 
 mkdirSync(WORK_DIR, { recursive: true });
-await captureLakeEnv();
+await loadLeanEnv();
 console.log(`lean runner (sandboxed): spool=${SPOOL} work=${WORK_DIR} concurrency=${CONCURRENCY}`);
 setInterval(tick, POLL_MS);

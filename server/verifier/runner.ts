@@ -93,7 +93,7 @@ async function runLean(args: string[], cwd: string, timeoutMs: number, extraLean
   ]);
   // killed-by-timeout ends with a signal and no exit code; a fast nonzero
   // exit is an ordinary failure, not a timeout.
-  return { exitCode, output: stdout + stderr, timedOut: proc.signalCode != null };
+  return { exitCode, output: stdout + stderr, timedOut: proc.signalCode != null, signal: proc.signalCode };
 }
 
 async function runCheck(id: string) {
@@ -114,6 +114,7 @@ async function runCheck(id: string) {
     );
     result.exit_code = compile.exitCode;
     result.timed_out = compile.timedOut;
+    if (compile.signal) result.signal = compile.signal;
     result.output = compile.output.slice(-4000);
     // A compile that "succeeds" while reporting a sorry is not a pass.
     if (compile.exitCode === 0 && !compile.timedOut && !/declaration uses 'sorry'/.test(compile.output)) {

@@ -14,7 +14,7 @@
  * statement, and the axioms it depends on. The orchestrator turns that into
  * the verification outcome; this process decides nothing.
  */
-import { mkdirSync, readdirSync, existsSync, rmSync, renameSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, readdirSync, existsSync, rmSync, renameSync, writeFileSync, readFileSync, copyFileSync } from "node:fs";
 import { join, basename } from "node:path";
 
 const SPOOL = process.env.SPOOL_DIR ?? "/var/lib/lean-spool";
@@ -99,7 +99,10 @@ async function runCheck(id: string) {
   const result: Record<string, unknown> = { ok: false };
   try {
     mkdirSync(work, { recursive: true });
-    renameSync(join(SPOOL_IN, `${id}.lean`), join(work, `${moduleName}.lean`));
+    // The sandbox mounts spool and work as separate bind mounts, so a rename
+    // would fail with EXDEV — copy and unlink instead.
+    copyFileSync(join(SPOOL_IN, `${id}.lean`), join(work, `${moduleName}.lean`));
+    rmSync(join(SPOOL_IN, `${id}.lean`));
 
     const compile = await runLean(
       [`--root=${work}`, `-o`, join(work, `${moduleName}.olean`), join(work, `${moduleName}.lean`)],

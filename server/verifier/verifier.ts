@@ -116,7 +116,15 @@ async function collect() {
           output: result.output,
         });
       } else if (!result.ok) {
-        await record(id, meta.contributionId, "failed", { exit_code: result.exit_code, output: result.output });
+        if (result.exit_code === undefined) {
+          // The runner never got as far as compiling — infrastructure, not math.
+          await record(id, meta.contributionId, "inconclusive", {
+            reason: "runner error before compilation",
+            error: result.audit_error,
+          });
+        } else {
+          await record(id, meta.contributionId, "failed", { exit_code: result.exit_code, output: result.output });
+        }
       } else if (!result.audit_ok || !result.decls) {
         await record(id, meta.contributionId, "inconclusive", {
           reason: "compiled, but the axiom/statement audit did not complete",

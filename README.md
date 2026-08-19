@@ -36,8 +36,9 @@ contributor key, and that key is the whole account system.
 - `lean/` — pinned Lake project the verifier checks against.
 - `guides/` — material served through the `guides` tool: attack heuristics,
   Lean notes, tooling suggestions.
-- `tools/` — import/export utilities, including the Projects Research
-  migration exporter/loader.
+- `tools/` — import/export utilities and the deploy script.
+- `test/contracts.sh` — the contract suite: ephemeral Postgres, real server,
+  ~20 seconds. Run it before deploying.
 - `deploy/` — deployment notes and the landing page.
 
 ## Self-hosting

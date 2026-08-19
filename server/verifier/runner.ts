@@ -90,7 +90,9 @@ async function runLean(args: string[], cwd: string, timeoutMs: number, extraLean
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
-  return { exitCode, output: stdout + stderr, timedOut: proc.killed };
+  // killed-by-timeout ends with a signal and no exit code; a fast nonzero
+  // exit is an ordinary failure, not a timeout.
+  return { exitCode, output: stdout + stderr, timedOut: proc.signalCode != null };
 }
 
 async function runCheck(id: string) {

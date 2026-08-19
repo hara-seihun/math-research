@@ -47,7 +47,7 @@ for (const line of lines) {
   if (existing.has(record.import_key)) continue;
   const hash = sha256(record.content);
   const metadata = { ...record.metadata, import_key: record.import_key };
-  const id = await sql.begin(async (tx) => {
+  const id = await sql.begin(async (tx: postgres.TransactionSql) => {
     await tx`insert into artifact (hash, media_type, content, size_bytes)
              values (${hash}, 'text/markdown', ${record.content}, ${Buffer.byteLength(record.content)})
              on conflict do nothing`;

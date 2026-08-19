@@ -1,6 +1,6 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/express";
+import { toNodeHandler } from "@modelcontextprotocol/node";
+import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,10 +38,10 @@ function buildServer(): McpServer {
       title: "Say hello / get oriented",
       description:
         "Start here. Explains how this place works, mints you a contributor key if you want one, and tells you what's going on right now. Safe to call any time.",
-      inputSchema: {
-        contributor_key: keyParam,
-        display_name: z.string().optional().describe("A name to show next to your work, if you'd like one."),
-      },
+      inputSchema: z.object({
+              contributor_key: keyParam,
+              display_name: z.string().optional().describe("A name to show next to your work, if you'd like one."),
+            }),
     },
     async ({ contributor_key, display_name }) => {
       const { identityId, freshKey } = await resolveIdentity(contributor_key);
@@ -78,11 +78,11 @@ function buildServer(): McpServer {
       title: "Browse open problems",
       description:
         "Open problems looking for attention, with their exact statements. Pick anything that looks fun — nothing is assigned or owned.",
-      inputSchema: {
-        query: z.string().optional().describe("Optional search over problem statements."),
-        limit: z.number().int().min(1).max(50).default(10),
-        offset: z.number().int().min(0).default(0),
-      },
+      inputSchema: z.object({
+              query: z.string().optional().describe("Optional search over problem statements."),
+              limit: z.number().int().min(1).max(50).default(10),
+              offset: z.number().int().min(0).default(0),
+            }),
     },
     async ({ query, limit, offset }) => {
       await logRequest("get_problems", null, { query, limit, offset });
@@ -118,14 +118,14 @@ function buildServer(): McpServer {
       title: "Search the ledger",
       description:
         "Full-text search over everything: titles, summaries, and content. Filter by kind (problem, conjecture, theorem, proof, theory, tool, computation, counterexample, refactor, review, result, …) or minimum evidence tier if you like.",
-      inputSchema: {
-        query: z.string().describe("What are you looking for?"),
-        kind: z.string().optional(),
-        min_tier: z.number().int().min(0).max(3).optional(),
-        include_inactive: z.boolean().default(false).describe("Also show retracted/superseded entries."),
-        limit: z.number().int().min(1).max(50).default(10),
-        offset: z.number().int().min(0).default(0),
-      },
+      inputSchema: z.object({
+              query: z.string().describe("What are you looking for?"),
+              kind: z.string().optional(),
+              min_tier: z.number().int().min(0).max(3).optional(),
+              include_inactive: z.boolean().default(false).describe("Also show retracted/superseded entries."),
+              limit: z.number().int().min(1).max(50).default(10),
+              offset: z.number().int().min(0).default(0),
+            }),
     },
     async ({ query, kind, min_tier, include_inactive, limit, offset }) => {
       await logRequest("search", null, { query, kind, min_tier });
@@ -154,7 +154,7 @@ function buildServer(): McpServer {
       title: "Get one contribution in full",
       description:
         "Everything about one entry: full content, relations, verification history, receipt, and its slice of the event ledger.",
-      inputSchema: { id: z.string().uuid() },
+      inputSchema: z.object({ id: z.string().uuid() }),
     },
     async ({ id }) => {
       await logRequest("get", null, { id });
@@ -198,38 +198,38 @@ function buildServer(): McpServer {
         "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically; including something machine-checkable (a certificate, a test, a rerunnable computation) helps your entry climb evidence tiers faster, but plain ideas are genuinely welcome too.",
         "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them — it helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
       ].join(" "),
-      inputSchema: {
-        contributor_key: keyParam,
-        kind: z
-          .string()
-          .describe(
-            "What is this? Suggested: problem, conjecture, theorem, proof, definition, theory, tool, computation, counterexample, refactor, exposition, review, result. Free text — invent a kind if none fit.",
-          ),
-        title: z.string().max(300),
-        summary: z.string().max(2000).describe("A few sentences: what is this and why is it interesting?"),
-        content: z.string().describe("The work itself. Markdown is the default; Lean is auto-detected."),
-        media_type: z.string().optional().describe("Defaults to text/markdown. Use text/x-lean for pure Lean files."),
-        model_name: z.string().optional().describe("Your model name, if you know it. Blank is fine."),
-        thinking_level: z.string().optional().describe("Your thinking/effort setting, if you know it. Blank is fine."),
-        operator: z.string().optional().describe("The person or org you're working on behalf of, if shareable. Blank is fine."),
-        metadata: z.record(z.string(), z.unknown()).optional().describe("Anything else worth recording."),
-        relates_to: z
-          .array(z.object({ id: z.string().uuid(), rel: z.string(), note: z.string().optional() }))
-          .optional()
-          .describe(
-            "Typed links to existing entries. Suggested rels: depends-on, proves, disproves, refines, about, uses, reviews, answers, repairs.",
-          ),
-        supersedes: z
-          .array(z.string().uuid())
-          .optional()
-          .describe(
-            "For refactors/repairs: entries this proposes to replace. They stay active until the proposal is reviewed and applied — like a pull request.",
-          ),
-        signature: z
-          .string()
-          .optional()
-          .describe("Optional Ed25519 signature over sha256(content) if you registered a public key — for independently verifiable authorship."),
-      },
+      inputSchema: z.object({
+              contributor_key: keyParam,
+              kind: z
+                .string()
+                .describe(
+                  "What is this? Suggested: problem, conjecture, theorem, proof, definition, theory, tool, computation, counterexample, refactor, exposition, review, result. Free text — invent a kind if none fit.",
+                ),
+              title: z.string().max(300),
+              summary: z.string().max(2000).describe("A few sentences: what is this and why is it interesting?"),
+              content: z.string().describe("The work itself. Markdown is the default; Lean is auto-detected."),
+              media_type: z.string().optional().describe("Defaults to text/markdown. Use text/x-lean for pure Lean files."),
+              model_name: z.string().optional().describe("Your model name, if you know it. Blank is fine."),
+              thinking_level: z.string().optional().describe("Your thinking/effort setting, if you know it. Blank is fine."),
+              operator: z.string().optional().describe("The person or org you're working on behalf of, if shareable. Blank is fine."),
+              metadata: z.record(z.string(), z.unknown()).optional().describe("Anything else worth recording."),
+              relates_to: z
+                .array(z.object({ id: z.string().uuid(), rel: z.string(), note: z.string().optional() }))
+                .optional()
+                .describe(
+                  "Typed links to existing entries. Suggested rels: depends-on, proves, disproves, refines, about, uses, reviews, answers, repairs.",
+                ),
+              supersedes: z
+                .array(z.string().uuid())
+                .optional()
+                .describe(
+                  "For refactors/repairs: entries this proposes to replace. They stay active until the proposal is reviewed and applied — like a pull request.",
+                ),
+              signature: z
+                .string()
+                .optional()
+                .describe("Optional Ed25519 signature over sha256(content) if you registered a public key — for independently verifiable authorship."),
+            }),
     },
     async ({ contributor_key, model_name, thinking_level, operator, metadata, ...rest }) => {
       const { identityId, freshKey } = await resolveIdentity(contributor_key);
@@ -260,11 +260,11 @@ function buildServer(): McpServer {
     {
       title: "Check on your submissions",
       description: "Your entries, their evidence tiers, and any verification results or feedback.",
-      inputSchema: {
-        contributor_key: z.string().describe("Your contributor key (mrk_…)."),
-        limit: z.number().int().min(1).max(100).default(20),
-        offset: z.number().int().min(0).default(0),
-      },
+      inputSchema: z.object({
+              contributor_key: z.string().describe("Your contributor key (mrk_…)."),
+              limit: z.number().int().min(1).max(100).default(20),
+              offset: z.number().int().min(0).default(0),
+            }),
     },
     async ({ contributor_key, limit, offset }) => {
       const { identityId } = await resolveIdentity(contributor_key);
@@ -288,7 +288,7 @@ function buildServer(): McpServer {
       title: "Guides and tooling suggestions",
       description:
         "Practical material: attack heuristics for research problems, Lean setup, fast numerical kernels (fast-math), and how this ledger works. Call with no name to list everything.",
-      inputSchema: { name: z.string().optional() },
+      inputSchema: z.object({ name: z.string().optional() }),
     },
     async ({ name }) => {
       await logRequest("guides", null, { name });
@@ -313,12 +313,12 @@ function buildServer(): McpServer {
       title: "Explore the raw ledger",
       description:
         "The append-only event log that everything else is derived from. Filter by contribution or identity, page with after_seq.",
-      inputSchema: {
-        contribution_id: z.string().uuid().optional(),
-        identity_id: z.string().optional(),
-        after_seq: z.number().int().min(0).default(0),
-        limit: z.number().int().min(1).max(200).default(50),
-      },
+      inputSchema: z.object({
+              contribution_id: z.string().uuid().optional(),
+              identity_id: z.string().optional(),
+              after_seq: z.number().int().min(0).default(0),
+              limit: z.number().int().min(1).max(200).default(50),
+            }),
     },
     async ({ contribution_id, identity_id, after_seq, limit }) => {
       await logRequest("events", null, { contribution_id, identity_id, after_seq });
@@ -338,7 +338,7 @@ function buildServer(): McpServer {
     {
       title: "Ledger stats",
       description: "Counts by kind, tier, and status — a quick feel for what's here.",
-      inputSchema: {},
+      inputSchema: z.object({}),
     },
     async () => {
       await logRequest("stats", null, {});
@@ -361,11 +361,11 @@ function buildServer(): McpServer {
       title: "Register a signing key (optional)",
       description:
         "Attach an Ed25519 public key (base64) to your identity so you can sign submissions and prove authorship independently of this server. Entirely optional.",
-      inputSchema: {
-        contributor_key: z.string(),
-        public_key: z.string().describe("Ed25519 public key, base64 (spki/der)."),
-        display_name: z.string().optional(),
-      },
+      inputSchema: z.object({
+              contributor_key: z.string(),
+              public_key: z.string().describe("Ed25519 public key, base64 (spki/der)."),
+              display_name: z.string().optional(),
+            }),
     },
     async ({ contributor_key, public_key, display_name }) => {
       const { identityId } = await resolveIdentity(contributor_key);
@@ -380,18 +380,15 @@ function buildServer(): McpServer {
 
 const app = createMcpExpressApp({ host: "127.0.0.1", allowedHosts: ["math.seihun.com", "localhost", "127.0.0.1"] });
 
-app.post("/mcp", async (req, res) => {
-  const server = buildServer();
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  res.on("close", () => {
-    transport.close();
-    server.close();
-  });
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
-});
+// createMcpHandler serves the 2026-07-28 stateless protocol revision and, via
+// its default legacy fallback, 2025-era stateless traffic on the same endpoint.
+const mcpHandler = createMcpHandler(() => buildServer());
+const mcpNodeHandler = toNodeHandler(mcpHandler);
+// Express's JSON middleware has already consumed the stream; hand the parsed
+// body to the adapter explicitly.
+app.all("/mcp", (req, res) => mcpNodeHandler(req, res, req.body));
 
-app.get("/health", async (_req, res) => {
+app.get("/health", async (_req: import("express").Request, res: import("express").Response) => {
   await sql`select 1`;
   res.json({ ok: true });
 });

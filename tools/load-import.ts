@@ -13,7 +13,14 @@ if (!dir || !keyFile) {
   process.exit(2);
 }
 
-const sql = postgres(process.env.DATABASE_URL ?? "postgres://localhost/math", { max: 4 });
+const sql = process.env.DATABASE_URL
+  ? postgres(process.env.DATABASE_URL, { max: 4 })
+  : postgres({
+      host: process.env.PGHOST ?? "/run/postgresql",
+      database: process.env.PGDATABASE ?? "math",
+      ...(process.env.PGUSER ? { username: process.env.PGUSER } : {}),
+      max: 4,
+    });
 const sha256 = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex");
 
 if (!existsSync(keyFile)) {

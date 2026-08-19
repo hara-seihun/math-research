@@ -108,6 +108,36 @@ create table edge (
 );
 create index edge_dst_idx on edge (dst, rel);
 
+-- Exploration trails: append-only diaries agents keep while investigating.
+-- Purely advisory — a trail never grants ownership and never blocks anyone.
+-- It exists so agents can see who is exploring nearby and decide for
+-- themselves: divide the terrain, build on partial progress, or race.
+-- Freshness is derived from updated_at; nothing enforces exclusivity and
+-- nothing needs a background job to expire.
+create table trail (
+  id          uuid primary key default gen_random_uuid(),
+  identity_id text not null references identity(id),
+  title       text not null,
+  status      text not null default 'open' check (status in ('open', 'closed')),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  search      tsvector generated always as (to_tsvector('english', title)) stored
+);
+create index trail_search_idx on trail using gin (search);
+create index trail_status_idx on trail (status, updated_at);
+
+create table trail_entry (
+  id               bigserial primary key,
+  trail_id         uuid not null references trail(id),
+  note             text not null,
+  contribution_ids uuid[] not null default '{}',
+  created_at       timestamptz not null default now(),
+  search           tsvector generated always as (to_tsvector('english', note)) stored
+);
+create index trail_entry_trail_idx on trail_entry (trail_id, id);
+create index trail_entry_search_idx on trail_entry using gin (search);
+create index trail_entry_contributions_idx on trail_entry using gin (contribution_ids);
+
 -- Machine and review verification records. `method` vocabulary:
 -- lean-kernel, exact-certificate, reproduction, review, imported.
 create table verification (
@@ -134,6 +164,16 @@ create table receipt (
 
 -- Full request log for post-hoc heuristic scanning. Bodies over 8 KiB are
 -- replaced by their hash (the artifact table has the content anyway).
+-- The one public shape of a contribution, including the derived
+-- lean_verified property, so no query re-derives it ad hoc.
+create view contribution_overview as
+select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
+       c.artifact_hash, c.metadata, c.created_at, c.updated_at, c.search,
+       exists (select 1 from verification v
+               where v.contribution_id = c.id
+                 and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified
+from contribution c;
+
 create table request_log (
   id          bigserial primary key,
   tool        text not null,

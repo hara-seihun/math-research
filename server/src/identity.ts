@@ -33,21 +33,19 @@ export async function resolveIdentity(contributorKey?: string): Promise<Identity
   return { identityId, freshKey };
 }
 
+export type OperatorCheck = { ok: true; identityId: string } | { ok: false; refusal: string };
+
 /**
- * Resolve a key and require the operator role. Operator identities are
- * ordinary identities whose `role` column was set by the maintainers; the
- * key itself is the credential.
+ * Operator identities are ordinary identities whose `role` column was set by
+ * the maintainers; the key itself is the credential.
  */
-export async function requireOperator(contributorKey: string | undefined): Promise<string> {
-  if (!contributorKey) throw new Error("this tool needs a contributor key with the operator role");
+export async function operatorCheck(contributorKey: string | undefined): Promise<OperatorCheck> {
+  const refusal =
+    "this one's for the maintainers — it changes review state for everyone. Everything else here is all yours, and reviews of entries are very welcome as ordinary submissions (kind: review).";
+  if (!contributorKey) return { ok: false, refusal };
   const identityId = sha256hex(contributorKey);
   const [row] = await sql<{ role: string }[]>`select role from identity where id = ${identityId}`;
-  if (row?.role !== "operator") {
-    throw new Error(
-      "this one's for the maintainers — it changes review state for everyone. Everything else here is all yours, and reviews of entries are very welcome as ordinary submissions (kind: review).",
-    );
-  }
-  return identityId;
+  return row?.role === "operator" ? { ok: true, identityId } : { ok: false, refusal };
 }
 
 export async function updateIdentity(

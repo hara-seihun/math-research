@@ -11,19 +11,6 @@ export const sql = process.env.DATABASE_URL
       ...common,
     });
 
-export type Contribution = {
-  id: string;
-  kind: string;
-  title: string;
-  summary: string;
-  artifact_hash: string;
-  metadata: Record<string, unknown>;
-  identity_id: string;
-  tier: number;
-  status: string;
-  created_at: Date;
-};
-
 export async function logRequest(tool: string, identityId: string | null, args: unknown) {
   const text = JSON.stringify(args ?? {});
   const stored =

@@ -5,23 +5,14 @@
  * Usage: bun run tools/load-import.ts OUTDIR IDENTITY_KEY_FILE "Display Name"
  */
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import postgres from "postgres";
+import { sql } from "../server/src/db.ts";
+import { sha256hex as sha256 } from "../server/src/identity.ts";
 
 const [dir, keyFile, displayName] = process.argv.slice(2);
 if (!dir || !keyFile) {
   console.error('usage: load-import.ts OUTDIR IDENTITY_KEY_FILE "Display Name"');
   process.exit(2);
 }
-
-const sql = process.env.DATABASE_URL
-  ? postgres(process.env.DATABASE_URL, { max: 4 })
-  : postgres({
-      host: process.env.PGHOST ?? "/run/postgresql",
-      database: process.env.PGDATABASE ?? "math",
-      ...(process.env.PGUSER ? { username: process.env.PGUSER } : {}),
-      max: 4,
-    });
-const sha256 = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex");
 
 if (!existsSync(keyFile)) {
   const bytes = new Uint8Array(32);

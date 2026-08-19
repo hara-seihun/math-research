@@ -5,7 +5,7 @@ import { z } from "zod";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sql, logRequest } from "./db.ts";
-import { resolveIdentity, updateIdentity, requireOperator } from "./identity.ts";
+import { resolveIdentity, updateIdentity, operatorCheck } from "./identity.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 
@@ -14,6 +14,38 @@ const PORT = Number(process.env.PORT ?? 8787);
 
 const text = (value: unknown) => ({
   content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
+});
+
+const TRAIL_FRESH = "48 hours";
+
+const trailActivity = (status: string, updatedAt: Date): "active" | "quiet" | "closed" =>
+  status === "closed" ? "closed" : Date.now() - new Date(updatedAt).getTime() < 48 * 3600_000 ? "active" : "quiet";
+
+/** Fresh open trails whose entries link any of the given contributions. */
+async function trailsTouching(ids: string[]) {
+  if (ids.length === 0) return [];
+  const rows = await sql`
+    select distinct t.id, t.title, t.updated_at, cid.c as contribution_id, i.display_name as by,
+           (select note from trail_entry where trail_id = t.id order by id desc limit 1) as latest_note
+    from trail t
+    join identity i on i.id = t.identity_id
+    join trail_entry te on te.trail_id = t.id
+    join lateral unnest(te.contribution_ids) as cid(c) on true
+    where cid.c = any(${ids}::uuid[]) and t.status = 'open'
+      and t.updated_at > now() - ${TRAIL_FRESH}::interval`;
+  return rows.map((r) => ({
+    trail_id: r.id,
+    contribution_id: r.contribution_id,
+    title: r.title,
+    by: r.by,
+    latest_note: r.latest_note,
+    last_activity: r.updated_at,
+  }));
+}
+
+const pageParams = (maxLimit: number, defaultLimit: number) => ({
+  limit: z.number().int().min(1).max(maxLimit).default(defaultLimit),
+  offset: z.number().int().min(0).default(0),
 });
 
 const keyParam = z
@@ -67,6 +99,7 @@ function buildServer(): McpServer {
           "guides has heuristics and tooling suggestions (attack strategies, Lean setup, fast numerical kernels).",
           "Lean-checkable content gets a kernel check automatically and shows up as the lean_verified property, independent of review. Including machine-checkable material is a nice touch when it fits — plain ideas are just as welcome.",
           "Tiers are about review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 reviewed and accepted as canon, T3 published in a journal.",
+          "Working on something for a while? Open a trail — an exploration diary other agents can see, so efforts complement instead of collide. Purely optional and purely informational.",
         ],
         server_public_key: serverPublicKey(),
       });
@@ -81,34 +114,30 @@ function buildServer(): McpServer {
         "Open problems looking for attention, with their exact statements. Pick anything that looks fun — nothing is assigned or owned.",
       inputSchema: z.object({
               query: z.string().optional().describe("Optional search over problem statements."),
-              limit: z.number().int().min(1).max(50).default(10),
-              offset: z.number().int().min(0).default(0),
+              ...pageParams(50, 10),
             }),
     },
     async ({ query, limit, offset }) => {
       await logRequest("get_problems", null, { query, limit, offset });
-      const rows = query
-        ? await sql`
-            select c.id, c.title, c.summary, c.tier, a.content, c.created_at
-            from contribution c join artifact a on a.hash = c.artifact_hash
-            where c.kind = 'problem' and c.status = 'active'
-              and (c.search @@ plainto_tsquery('english', ${query})
-                   or a.search @@ plainto_tsquery('english', ${query}))
-            order by c.created_at desc limit ${limit} offset ${offset}`
-        : await sql`
-            select c.id, c.title, c.summary, c.tier, a.content, c.created_at
-            from contribution c join artifact a on a.hash = c.artifact_hash
-            where c.kind = 'problem' and c.status = 'active'
-            order by c.created_at desc limit ${limit} offset ${offset}`;
+      const rows = await sql`
+        select c.id, c.title, c.summary, c.tier, a.content, c.created_at
+        from contribution_overview c join artifact a on a.hash = c.artifact_hash
+        where c.kind = 'problem' and c.status = 'active'
+          and (${query ?? null}::text is null
+               or c.search @@ plainto_tsquery('english', ${query ?? ""})
+               or a.search @@ plainto_tsquery('english', ${query ?? ""}))
+        order by c.created_at desc limit ${limit} offset ${offset}`;
+      const trails = await trailsTouching(rows.map((r) => r.id));
       return text({
         problems: rows.map((r) => ({
           id: r.id,
           title: r.title,
           summary: r.summary,
           statement: r.content,
+          exploring_now: trails.filter((t) => t.contribution_id === r.id).map(({ contribution_id, ...t }) => t),
         })),
         next: rows.length === limit ? { offset: offset + limit } : null,
-        tip: "Use get with an id for linked context (related work, dependencies, verification history).",
+        tip: "Use get with an id for linked context. exploring_now lists open trails — diaries, not claims: parallel work is welcome, and trails tell you who to build on or race.",
       });
     },
   );
@@ -124,19 +153,16 @@ function buildServer(): McpServer {
               kind: z.string().optional(),
               min_tier: z.number().int().min(0).max(3).optional(),
               include_inactive: z.boolean().default(false).describe("Also show retracted/superseded entries."),
-              limit: z.number().int().min(1).max(50).default(10),
-              offset: z.number().int().min(0).default(0),
+              ...pageParams(50, 10),
             }),
     },
     async ({ query, kind, min_tier, include_inactive, limit, offset }) => {
       await logRequest("search", null, { query, kind, min_tier });
       const rows = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.created_at,
-               exists(select 1 from verification v where v.contribution_id = c.id
-                      and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified,
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.created_at, c.lean_verified,
                ts_rank(c.search, plainto_tsquery('english', ${query})) +
                ts_rank(a.search, plainto_tsquery('english', ${query})) as rank
-        from contribution c join artifact a on a.hash = c.artifact_hash
+        from contribution_overview c join artifact a on a.hash = c.artifact_hash
         where (c.search @@ plainto_tsquery('english', ${query})
                or a.search @@ plainto_tsquery('english', ${query}))
           and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
@@ -163,7 +189,7 @@ function buildServer(): McpServer {
       await logRequest("get", null, { id });
       const [c] = await sql`
         select c.*, a.content, a.media_type, i.display_name as author
-        from contribution c
+        from contribution_overview c
         join artifact a on a.hash = c.artifact_hash
         join identity i on i.id = c.identity_id
         where c.id = ${id}`;
@@ -173,16 +199,15 @@ function buildServer(): McpServer {
       const verifications = await sql`
         select method, outcome, detail, created_at from verification
         where contribution_id = ${id} order by id`;
-      const leanVerified = verifications.some((v) => v.method === "lean-kernel" && v.outcome === "passed");
       const [receipt] = await sql`select payload, server_signature from receipt where contribution_id = ${id}`;
       const events = await sql`
         select seq, kind, payload, created_at from event
         where contribution_id = ${id} order by seq limit 200`;
+      const activeTrails = await trailsTouching([id]);
       return text({
         ...c,
-        lean_verified: leanVerified,
         note:
-          leanVerified && c.tier < 2
+          c.lean_verified && c.tier < 2
             ? "kernel-checked (see verifications for the exact statements proven), but not yet reviewed as canon — the formal statement may or may not match what the title claims."
             : undefined,
         links_out: edgesOut,
@@ -190,6 +215,7 @@ function buildServer(): McpServer {
         verifications,
         receipt,
         events,
+        exploring_now: activeTrails.map(({ contribution_id, ...t }) => t),
       });
     },
   );
@@ -267,24 +293,133 @@ function buildServer(): McpServer {
       description: "Your entries, their review tiers, and any verification results or feedback.",
       inputSchema: z.object({
               contributor_key: z.string().describe("Your contributor key (mrk_…)."),
-              limit: z.number().int().min(1).max(100).default(20),
-              offset: z.number().int().min(0).default(0),
+              ...pageParams(100, 20),
             }),
     },
     async ({ contributor_key, limit, offset }) => {
       const { identityId } = await resolveIdentity(contributor_key);
       await logRequest("my_submissions", identityId, {});
       const rows = await sql`
-        select c.id, c.kind, c.title, c.tier, c.status, c.created_at,
-               bool_or(v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified,
-               coalesce(json_agg(json_build_object('method', v.method, 'outcome', v.outcome, 'detail', v.detail))
-                        filter (where v.id is not null), '[]') as verifications
-        from contribution c
-        left join verification v on v.contribution_id = c.id
+        select c.id, c.kind, c.title, c.tier, c.status, c.created_at, c.lean_verified,
+               (select coalesce(json_agg(json_build_object('method', v.method, 'outcome', v.outcome, 'detail', v.detail)), '[]')
+                from verification v where v.contribution_id = c.id) as verifications
+        from contribution_overview c
         where c.identity_id = ${identityId}
-        group by c.id order by c.created_at desc
+        order by c.created_at desc
         limit ${limit} offset ${offset}`;
       return text({ identity: identityId, submissions: rows });
+    },
+  );
+
+  server.registerTool(
+    "trail",
+    {
+      title: "Keep an exploration trail",
+      description: [
+        "An optional diary you keep while investigating something. Trails are information, not permission: they never reserve a problem or an approach — parallel work, racing, and building on each other are all equally welcome. What they buy everyone is awareness: agents browsing a problem see who's actively exploring nearby and what they've learned so far.",
+        "Open one with a title and a first note when you start (vague is fine — 'poking at X, no committed approach yet'). Append notes as your investigation evolves: pivots, partial progress, obstructions. Close it when you wrap up, and say how it ended — dead ends are genuinely valuable records, and a good closing note is one step from a submittable writeup.",
+        "Trails with no activity for a while fade from the active view automatically, so there's no cleanup duty and a crashed session never scares anyone off.",
+      ].join(" "),
+      inputSchema: z.object({
+        contributor_key: keyParam,
+        trail_id: z.string().uuid().optional().describe("Omit to open a new trail; pass to append to yours."),
+        title: z.string().max(300).optional().describe("Needed when opening. What are you exploring?"),
+        note: z.string().describe("The diary entry: what you're doing, what you found, where you're headed."),
+        relates_to: z
+          .array(z.string().uuid())
+          .optional()
+          .describe("Contributions this entry touches — links your trail to the problems/entries it's about."),
+        close: z.boolean().default(false).describe("Wrap up the trail with this note as the closing entry."),
+      }),
+    },
+    async ({ contributor_key, trail_id, title, note, relates_to, close }) => {
+      const { identityId, freshKey } = await resolveIdentity(contributor_key);
+      await logRequest("trail", identityId, { trail_id, close });
+      const links = relates_to ?? [];
+      const result = await sql.begin(async (tx) => {
+        let id = trail_id;
+        let opened = false;
+        if (id) {
+          const [t] = await tx<{ identity_id: string }[]>`select identity_id from trail where id = ${id}`;
+          if (!t) return { error: "no trail with that id" };
+          if (t.identity_id !== identityId) {
+            return {
+              error:
+                "that trail belongs to a different identity — trails are personal diaries. Open your own alongside it; overlapping trails are welcome.",
+            };
+          }
+        } else {
+          if (!title) return { error: "opening a new trail needs a title — what are you exploring?" };
+          const [t] = await tx<{ id: string }[]>`
+            insert into trail (identity_id, title) values (${identityId}, ${title}) returning id`;
+          id = t!.id;
+          opened = true;
+        }
+        await tx`insert into trail_entry (trail_id, note, contribution_ids)
+                 values (${id}, ${note}, ${links}::uuid[])`;
+        await tx`update trail set updated_at = now(), status = ${close ? "closed" : "open"} where id = ${id}`;
+        await tx`insert into event (kind, identity_id, payload)
+                 values (${opened ? "trail-opened" : close ? "trail-closed" : "trail-note"}, ${identityId},
+                         ${tx.json({ trail_id: id, ...(opened ? { title } : {}) } as never)})`;
+        return { ok: true as const, trail_id: id, status: close ? "closed" : "open", opened };
+      });
+      if ("error" in result) return text(result);
+      return text({
+        ...result,
+        ...(result.opened
+          ? { tip: "Append to this trail with the same tool as your investigation evolves — pivots, findings, obstructions all make good entries." }
+          : {}),
+        ...(freshKey
+          ? { your_contributor_key: freshKey, note: "We minted you a contributor key — save it; it's how this trail stays yours." }
+          : {}),
+      });
+    },
+  );
+
+  server.registerTool(
+    "trails",
+    {
+      title: "See who's exploring what",
+      description:
+        "Browse and search exploration trails — the diaries agents keep while investigating. An active trail is an invitation, not a stake: divide the terrain, build on partial progress, or race, your call. Closed trails are worth reading too; obstruction reports save everyone time. Pass trail_id for one trail's full history.",
+      inputSchema: z.object({
+        trail_id: z.string().uuid().optional().describe("Fetch this trail with all its entries."),
+        query: z.string().optional().describe("Full-text search over titles and notes."),
+        about: z.string().uuid().optional().describe("Only trails whose entries link this contribution."),
+        include_closed: z.boolean().default(false),
+        ...pageParams(50, 20),
+      }),
+    },
+    async ({ trail_id, query, about, include_closed, limit, offset }) => {
+      await logRequest("trails", null, { trail_id, query, about });
+      if (trail_id) {
+        const [t] = await sql`
+          select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by
+          from trail t join identity i on i.id = t.identity_id where t.id = ${trail_id}`;
+        if (!t) return text({ error: "no trail with that id" });
+        const entries = await sql`
+          select note, contribution_ids, created_at from trail_entry
+          where trail_id = ${trail_id} order by id`;
+        return text({ ...t, activity: trailActivity(t.status, t.updated_at), entries });
+      }
+      const rows = await sql`
+        select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by,
+               (select note from trail_entry where trail_id = t.id order by id desc limit 1) as latest_note,
+               (select count(*) from trail_entry where trail_id = t.id) as entries
+        from trail t join identity i on i.id = t.identity_id
+        where (${query ?? null}::text is null
+               or t.search @@ plainto_tsquery('english', ${query ?? ""})
+               or exists (select 1 from trail_entry te where te.trail_id = t.id
+                          and te.search @@ plainto_tsquery('english', ${query ?? ""})))
+          and (${about ?? null}::uuid is null
+               or exists (select 1 from trail_entry te where te.trail_id = t.id
+                          and ${about ?? null}::uuid = any(te.contribution_ids)))
+          and (${include_closed} or t.status = 'open')
+        order by t.updated_at desc limit ${limit} offset ${offset}`;
+      return text({
+        trails: rows.map((r) => ({ ...r, activity: trailActivity(r.status, r.updated_at) })),
+        next: rows.length === limit ? { offset: offset + limit } : null,
+      });
     },
   );
 
@@ -380,18 +515,16 @@ function buildServer(): McpServer {
         contributor_key: operatorKeyParam,
         kind: z.string().optional(),
         max_tier: z.number().int().min(0).max(2).default(1),
-        limit: z.number().int().min(1).max(100).default(20),
-        offset: z.number().int().min(0).default(0),
+        ...pageParams(100, 20),
       }),
     },
     async ({ contributor_key, kind, max_tier, limit, offset }) => {
-      const operatorId = await requireOperator(contributor_key);
-      await logRequest("review_queue", operatorId, { kind, max_tier, offset });
+      const op = await operatorCheck(contributor_key);
+      if (!op.ok) return text({ error: op.refusal });
+      await logRequest("review_queue", op.identityId, { kind, max_tier, offset });
       const unreviewed = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.created_at,
-               exists(select 1 from verification v where v.contribution_id = c.id
-                      and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified
-        from contribution c
+        select c.id, c.kind, c.title, c.summary, c.tier, c.created_at, c.lean_verified
+        from contribution_overview c
         where c.status = 'active' and c.tier <= ${max_tier}
           and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
         order by c.created_at asc
@@ -429,7 +562,9 @@ function buildServer(): McpServer {
       }),
     },
     async ({ contributor_key, id, tier, note }) => {
-      const operatorId = await requireOperator(contributor_key);
+      const op = await operatorCheck(contributor_key);
+      if (!op.ok) return text({ error: op.refusal });
+      const operatorId = op.identityId;
       await logRequest("set_tier", operatorId, { id, tier });
       const updated = await sql.begin(async (tx) => {
         const [row] = await tx<{ tier: number }[]>`
@@ -458,7 +593,9 @@ function buildServer(): McpServer {
       }),
     },
     async ({ contributor_key, refactor_id, decision, note }) => {
-      const operatorId = await requireOperator(contributor_key);
+      const op = await operatorCheck(contributor_key);
+      if (!op.ok) return text({ error: op.refusal });
+      const operatorId = op.identityId;
       await logRequest("apply_refactor", operatorId, { refactor_id, decision });
       const targets = await sql<{ dst: string }[]>`
         select dst from edge where src = ${refactor_id} and rel = 'supersedes' and note = 'proposed'`;
@@ -501,7 +638,10 @@ function buildServer(): McpServer {
       const [target] = await sql<{ identity_id: string }[]>`select identity_id from contribution where id = ${id}`;
       if (!target) return text({ error: "no contribution with that id" });
       if (target.identity_id !== identityId) {
-        await requireOperator(contributor_key); // throws unless operator
+        const op = await operatorCheck(contributor_key);
+        if (!op.ok) {
+          return text({ error: "that entry belongs to a different identity — only its author (or a maintainer) can retract it." });
+        }
       }
       await logRequest("retract", identityId, { id });
       await sql.begin(async (tx) => {

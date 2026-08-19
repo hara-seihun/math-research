@@ -11,7 +11,7 @@
  * as an independent `lean-kernel: passed` property, along with the exact
  * statements that were proven and the axioms they depend on.
  */
-import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { sql } from "../src/db.ts";
 
@@ -88,8 +88,8 @@ async function spool() {
       continue;
     }
     writeFileSync(join(SPOOL_IN, `${row.id}.lean.tmp`), source);
-    // Atomic rename so the runner never sees a half-written file.
-    await Bun.$`mv ${join(SPOOL_IN, `${row.id}.lean.tmp`)} ${join(SPOOL_IN, `${row.id}.lean`)}`.quiet();
+    // Atomic same-directory rename so the runner never sees a half-written file.
+    renameSync(join(SPOOL_IN, `${row.id}.lean.tmp`), join(SPOOL_IN, `${row.id}.lean`));
     inflight.set(row.id, { contributionId: row.contribution_id, deadline: Date.now() + TIMEOUT_MS + GRACE_MS });
   }
 }

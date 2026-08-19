@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Deploy to the mathvm guest: push, pull, restart, health-check.
+# Zero-downtime deploy to the mathvm guest: push, pull, roll the two MCP
+# instances one at a time (health-gated), restart the background workers.
 # Schema changes are not automatic — apply migrations with psql first.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -10,11 +11,15 @@ ssh mathvm '
   cd /srv/math-research
   sudo -u math git pull -q
   cd server && sudo -u math bun install --silent
-  sudo systemctl restart math-mcp math-verifier lean-runner
+  for unit in math-mcp-a:8787 math-mcp-b:8788; do
+    sudo systemctl restart "${unit%:*}"
+    for _ in $(seq 40); do
+      curl -sf --max-time 2 "http://127.0.0.1:${unit#*:}/health" > /dev/null && continue 2
+      sleep 0.25
+    done
+    echo "${unit%:*} did not come back healthy" >&2
+    exit 1
+  done
+  sudo systemctl restart math-verifier lean-runner
 '
-for _ in $(seq 20); do
-  curl -sf --max-time 5 https://math.seihun.com/health > /dev/null && { echo "deployed and healthy"; exit 0; }
-  sleep 0.5
-done
-echo "deploy went out but the health check never came back" >&2
-exit 1
+curl -sf --max-time 10 https://math.seihun.com/health > /dev/null && echo "deployed and healthy"

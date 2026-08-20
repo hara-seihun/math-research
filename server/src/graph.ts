@@ -72,7 +72,7 @@ export async function embed(text: string): Promise<number[] | null> {
     const res = await fetch(`${EMBEDDER_URL}/v1/embeddings`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input: text.slice(0, 4000) }),
+      body: JSON.stringify({ input: text.slice(0, 1400) }),
     });
     if (!res.ok) return null;
     const j = (await res.json()) as { data?: { embedding: number[] }[] };

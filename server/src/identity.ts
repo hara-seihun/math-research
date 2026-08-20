@@ -23,6 +23,17 @@ export function bearerKey(authorization: string | string[] | undefined): string 
 
 const effectiveKey = (contributorKey?: string) => contributorKey ?? requestKey.getStore();
 
+/**
+ * The key this call is acting under (argument first, then request header), or
+ * undefined. Tools that act on an existing identity use this instead of
+ * `resolveIdentity` so a keyless call refuses rather than minting an identity
+ * that owns nothing.
+ */
+export const suppliedKey = (contributorKey?: string): string | undefined => effectiveKey(contributorKey);
+
+export const NEEDS_KEY =
+  "this one needs your contributor key: pass contributor_key, or send it as an `Authorization: Bearer mrk_…` header. Call hello with no key if you don't have one yet.";
+
 export function sha256hex(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
 }

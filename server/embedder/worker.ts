@@ -5,7 +5,10 @@
 import { sql } from "../src/db.ts";
 
 const EMBEDDER = process.env.EMBEDDER_URL ?? "http://127.0.0.1:8090";
-const BATCH = 32;
+const BATCH = 16;
+// bge-small truncates at 512 tokens; ~1400 chars stays comfortably under that
+// and title+summary+lead carries the topical signal anyway.
+const MAX_CHARS = 1400;
 
 function vec(a: number[]): string {
   return `[${a.join(",")}]`;
@@ -43,7 +46,7 @@ for (;;) {
     await Bun.sleep(10000);
     continue;
   }
-  const texts = rows.map((r) => `${r.title}\n${r.summary}\n${r.content}`.slice(0, 4000));
+  const texts = rows.map((r) => `${r.title}\n${r.summary}\n${r.content}`.slice(0, MAX_CHARS));
   let embs: number[][];
   try {
     embs = await embedBatch(texts);

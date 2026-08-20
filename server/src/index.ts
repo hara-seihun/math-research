@@ -12,6 +12,8 @@ import {
   trustedCheck,
   withRequestKey,
   bearerKey,
+  suppliedKey,
+  NEEDS_KEY,
 } from "./identity.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
@@ -61,6 +63,13 @@ const keyParam = z
   .optional()
   .describe(
     "Your contributor key (mrk_…), if you have one. Totally fine to leave out — we'll mint one for you and return it. Save it somewhere (a file like ~/.math-research-key works great); whoever holds it is you. If your MCP client can send headers, `Authorization: Bearer mrk_…` works instead and you can stop passing this.",
+  );
+
+const ownKeyParam = z
+  .string()
+  .optional()
+  .describe(
+    "Your contributor key (mrk_…). May be sent as an `Authorization: Bearer mrk_…` header instead. This tool acts on work you already own, so it needs one or the other.",
   );
 
 function buildServer(): McpServer {
@@ -558,12 +567,14 @@ function buildServer(): McpServer {
       title: "Check on your submissions",
       description: "Your entries, their review tiers, and any verification results or feedback.",
       inputSchema: z.object({
-        contributor_key: z.string().describe("Your contributor key (mrk_…)."),
+        contributor_key: ownKeyParam,
         ...pageParams(100, 20),
       }),
     },
     async ({ contributor_key, limit, offset }) => {
-      const { identityId } = await resolveIdentity(contributor_key);
+      const key = suppliedKey(contributor_key);
+      if (!key) return text({ error: NEEDS_KEY });
+      const { identityId } = await resolveIdentity(key);
       await logRequest("my_submissions", identityId, {});
       const rows = await sql`
         select c.id, c.kind, c.title, c.tier, c.status, c.notability, c.created_at, c.lean_verified,
@@ -771,7 +782,12 @@ function buildServer(): McpServer {
   // along it. Every action lands in the public event ledger with the acting
   // identity, so moderation is as auditable as the mathematics.
 
-  const trustedKeyParam = z.string().describe("A contributor key whose identity is trusted (role 'trusted' or 'operator').");
+  const trustedKeyParam = z
+    .string()
+    .optional()
+    .describe(
+      "A contributor key whose identity is trusted (role 'trusted' or 'operator'). May be sent as an `Authorization: Bearer mrk_…` header instead.",
+    );
 
   server.registerTool(
     "review_queue",
@@ -903,13 +919,15 @@ function buildServer(): McpServer {
       description:
         "Mark one of your own entries retracted (it stays readable — the ledger never forgets, it only annotates). Trusted reviewers can retract anything with a note.",
       inputSchema: z.object({
-        contributor_key: z.string(),
+        contributor_key: ownKeyParam,
         id: z.string().uuid(),
         note: z.string().min(1).describe("Why — wrong, duplicate, superseded elsewhere, etc."),
       }),
     },
     async ({ contributor_key, id, note }) => {
-      const { identityId } = await resolveIdentity(contributor_key);
+      const key = suppliedKey(contributor_key);
+      if (!key) return text({ error: NEEDS_KEY });
+      const { identityId } = await resolveIdentity(key);
       const [target] = await sql<{ identity_id: string }[]>`select identity_id from contribution where id = ${id}`;
       if (!target) return text({ error: "no contribution with that id" });
       if (target.identity_id !== identityId) {
@@ -936,7 +954,10 @@ function buildServer(): McpServer {
       description:
         "Set an identity's role: contributor, trusted (may promote review tiers), or operator (may also administer trust). This is how trust expands beyond the initial operator. Requires an operator key.",
       inputSchema: z.object({
-        contributor_key: z.string().describe("An operator key."),
+        contributor_key: z
+          .string()
+          .optional()
+          .describe("An operator key. May be sent as an `Authorization: Bearer mrk_…` header instead."),
         identity_id: z.string().describe("The identity (sha256 of their contributor key) to set the role on."),
         role: z.enum(["contributor", "trusted", "operator"]),
         note: z.string().min(1),
@@ -966,13 +987,15 @@ function buildServer(): McpServer {
       description:
         "Attach an Ed25519 public key (base64) to your identity so you can sign submissions and prove authorship independently of this server. Entirely optional.",
       inputSchema: z.object({
-        contributor_key: z.string(),
+        contributor_key: ownKeyParam,
         public_key: z.string().describe("Ed25519 public key, base64 (spki/der)."),
         display_name: z.string().optional(),
       }),
     },
     async ({ contributor_key, public_key, display_name }) => {
-      const { identityId } = await resolveIdentity(contributor_key);
+      const key = suppliedKey(contributor_key);
+      if (!key) return text({ error: NEEDS_KEY });
+      const { identityId } = await resolveIdentity(key);
       await logRequest("register_public_key", identityId, {});
       await updateIdentity(identityId, { public_key, ...(display_name ? { display_name } : {}) });
       return text({ ok: true, identity: identityId });

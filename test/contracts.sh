@@ -2,11 +2,15 @@
 # Contract tests against an ephemeral Postgres and a real server process.
 # Covers the invariants that matter: submission shape, the verification
 # pipeline's tier neutrality, the axiom policy, the operator gate, and trails.
-# Runs in well under a minute; needs postgres and bun on PATH.
+# Runs in well under a minute; needs bun on PATH. Postgres comes from nixpkgs
+# when it is absent, and must carry pgvector because the schema stores
+# semantic embeddings.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-command -v initdb > /dev/null || exec nix shell nixpkgs#postgresql_17 -c "$0" "$@"
+command -v initdb > /dev/null || exec nix shell --impure --expr \
+  'let pkgs = import (builtins.getFlake "nixpkgs") { system = builtins.currentSystem; };
+   in [ (pkgs.postgresql_17.withPackages (p: [ p.pgvector ])) ]' -c "$0" "$@"
 
 WORK=$(mktemp -d)
 export PGHOST="$WORK" PGDATABASE=math PGUSER="$(whoami)"
@@ -24,7 +28,7 @@ trap cleanup EXIT
 initdb -D "$WORK/data" -A trust -U "$PGUSER" > /dev/null
 pg_ctl -D "$WORK/data" -o "-k $WORK -c listen_addresses=" -s -w start
 createdb -h "$WORK" math
-psql -q -h "$WORK" -d math -f schema.sql
+psql -q -v ON_ERROR_STOP=1 -h "$WORK" -d math -f schema.sql
 
 (cd server && bun src/index.ts) > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
@@ -36,6 +40,13 @@ call() { # call <tool> <json-args> -> result text payload
   curl -sf --max-time 10 -X POST "$MCP" \
     -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" \
+    | sed -n 's/^data: //p' | python3 -c 'import sys,json; print(json.loads(sys.stdin.read())["result"]["content"][0]["text"])'
+}
+call_auth() { # call_auth <bearer-key> <tool> <json-args> -> result text payload
+  curl -sf --max-time 10 -X POST "$MCP" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    -H "Authorization: Bearer $1" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3}}" \
     | sed -n 's/^data: //p' | python3 -c 'import sys,json; print(json.loads(sys.stdin.read())["result"]["content"][0]["text"])'
 }
 field() { python3 -c "import sys,json; v=json.loads(sys.stdin.read())$1; print(json.dumps(v) if isinstance(v,(dict,list)) else v)"; }
@@ -145,5 +156,22 @@ SQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"partial attempt\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$Q\",\"rel\":\"refines\"}]}" > /dev/null
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$Q\",\"dst\":\"$SQ\",\"rel\":\"reduces-to\"}" > /dev/null
 call frontier "{\"id\":\"$Q\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["progress"])>=1 and any(x["id"]=="'"$SQ"'" for x in d["open_subproblems"])' || fail "frontier did not distill attack state"
+
+# Contract: a contributor key may arrive as `Authorization: Bearer mrk_…`
+# instead of a per-call argument, so generic MCP clients keep one identity
+# rather than minting a throwaway on every request. A per-call argument wins,
+# and the header carries role gates too.
+KEYID=$(python3 -c "import hashlib; print(hashlib.sha256(b'$KEY').hexdigest())")
+HELLO=$(call_auth "$KEY" hello '{}')
+[[ $(echo "$HELLO" | field '["your_identity"]') == "$KEYID" ]] || fail "header key did not resolve to its identity"
+echo "$HELLO" | python3 -c 'import sys,json; assert "your_contributor_key" not in json.load(sys.stdin)' || fail "header key still minted a fresh identity"
+MINE=$(call_auth "$KEY" my_submissions '{}' | field '["submissions"]' | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
+[[ "$MINE" -ge 1 ]] || fail "header identity did not see its own submissions"
+call my_submissions '{}' | field '["error"]' | grep -qi "contributor key" || fail "keyless my_submissions did not refuse"
+OPID2=$(call_auth "$OPKEY" hello "{\"contributor_key\":\"$KEY\"}" | field '["your_identity"]')
+[[ "$OPID2" == "$KEYID" ]] || fail "per-call contributor_key did not win over the header"
+HDRT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"header gate target\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+call_auth "$OPKEY" set_tier "{\"id\":\"$HDRT\",\"tier\":2,\"note\":\"reviewed via header\"}" | field '["ok"]' > /dev/null
+[[ $(psql -h "$WORK" -d math -tAc "select tier from contribution where id='$HDRT'") == 2 ]] || fail "operator header did not pass the trusted gate"
 
 echo "all contracts hold"

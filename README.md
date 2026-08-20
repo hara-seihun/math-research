@@ -93,7 +93,10 @@ you want authorship proofs that don't depend on this server.
 
 - `schema.sql`, the Postgres schema. The data model is the design document.
 - `server/`, the MCP server (Bun and TypeScript, streamable HTTP) and the Lean
-  verification daemon.
+  verification daemon. Every tool carries annotations, a described input
+  schema, and a strict output schema (`src/shapes.ts`); results come back as
+  structured content validated against that schema on every call, and failures
+  come back as MCP errors carrying the same teaching JSON.
 - `lean/`, the pinned Lake project the verifier checks against.
 - `guides/`, material served through the `guides` tool: attack heuristics, Lean
   notes, tooling suggestions.

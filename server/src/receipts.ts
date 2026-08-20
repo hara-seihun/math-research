@@ -31,7 +31,7 @@ export function serverPublicKey(): string {
 export async function issueReceipt(contribution: {
   id: string;
   artifact_hash: string;
-  identity_id: string;
+  identity_id: string | null;
   created_at: Date;
 }) {
   const payload = {

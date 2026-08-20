@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Contract tests against an ephemeral Postgres and a real server process.
 # Covers the invariants that matter: submission shape, the verification
-# pipeline's tier neutrality, the axiom policy, the operator gate, and trails.
+# pipeline's tier neutrality, the axiom policy, the operator gate, trails,
+# and the three ways a caller can be someone (session, key, OAuth).
 # Runs in well under a minute; needs bun on PATH. Postgres comes from nixpkgs
 # when it is absent, and must carry pgvector because the schema stores
 # semantic embeddings.
@@ -17,6 +18,7 @@ WORK=$(mktemp -d)
 export PGHOST="$WORK" PGDATABASE=math PGUSER="$(whoami)"
 export SERVER_KEY_PATH="$WORK/server.key" SPOOL_DIR="$WORK/spool" PORT=8931
 MCP="http://127.0.0.1:$PORT/mcp"
+export PUBLIC_URL="http://127.0.0.1:$PORT"
 
 cleanup() {
   [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2> /dev/null || true
@@ -37,23 +39,48 @@ SERVER_PID=$!
 VERIFIER_PID=$!
 for _ in $(seq 50); do curl -sf "http://127.0.0.1:$PORT/health" > /dev/null 2>&1 && break; sleep 0.1; done
 
-call() { # call <tool> <json-args> -> result text payload
+call() { # [AUTH=token] [SESSION=id] call <tool> <json-args> -> result text payload
   curl -sf --max-time 10 -X POST "$MCP" \
     -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    ${AUTH:+-H "Authorization: Bearer $AUTH"} ${SESSION:+-H "Mcp-Session-Id: $SESSION"} \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" \
     | sed -n 's/^data: //p' | python3 -c 'import sys,json; print(json.loads(sys.stdin.read())["result"]["content"][0]["text"])'
 }
-call_auth() { # call_auth <bearer-key> <tool> <json-args> -> result text payload
-  curl -sf --max-time 10 -X POST "$MCP" \
+new_session() { # -> the Mcp-Session-Id this server hands out at initialize
+  curl -sfi --max-time 10 -X POST "$MCP" \
     -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-    -H "Authorization: Bearer $1" \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3}}" \
-    | sed -n 's/^data: //p' | python3 -c 'import sys,json; print(json.loads(sys.stdin.read())["result"]["content"][0]["text"])'
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"contracts","version":"1"}}}' \
+    | tr -d '\r' | sed -n 's/^[Mm]cp-[Ss]ession-[Ii]d: //p'
 }
+identity_of() { python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$1"; }
 field() { python3 -c "import sys,json; v=json.loads(sys.stdin.read())$1; print(json.dumps(v) if isinstance(v,(dict,list)) else v)"; }
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-KEY=$(call hello '{}' | field '["your_contributor_key"]')
+# Contract: an MCP session is an identity. A connection that presents no
+# credential at all gets exactly one identity minted for it, handed back once,
+# and every contribution over that connection shares it.
+SESS=$(new_session)
+[[ -n $SESS ]] || fail "server issued no Mcp-Session-Id at initialize"
+HI=$(SESSION=$SESS call hello '{"display_name":"contract tester"}')
+KEY=$(echo "$HI" | field '["you"]["contributor_key"]')
+[[ $KEY == mrk_* ]] || fail "session did not mint a contributor key"
+SID=$(echo "$HI" | field '["you"]["identity"]')
+[[ $SID == "$(identity_of "$KEY")" ]] || fail "minted key does not hash to the session identity"
+S2=$(SESSION=$SESS call submit '{"kind":"result","title":"session attribution","summary":"s","content":"c."}')
+[[ $(echo "$S2" | field '["attributed_to"]') == "$SID" ]] || fail "second call in the session got a different identity"
+echo "$S2" | python3 -c 'import sys,json; assert "your_contributor_key" not in json.load(sys.stdin)' || fail "session minted a second key"
+
+# Contract: contributing needs no identity at all. Unattributed work lands.
+ANON=$(call submit '{"kind":"result","title":"anonymous contribution","summary":"s","content":"anon."}')
+[[ $(echo "$ANON" | field '["attributed_to"]') == anonymous ]] || fail "keyless submission was not recorded as anonymous"
+AID=$(echo "$ANON" | field '["id"]')
+[[ $(psql -h "$WORK" -d math -tAc "select identity_id is null from contribution where id = '$AID'") == t ]] || fail "anonymous submission invented an identity"
+call my_submissions '{}' | field '["error"]' | grep -qi identity || fail "an identity-scoped tool did not explain itself to an anonymous caller"
+
+# Contract: a credential the server does not recognise fails loudly instead of
+# silently attributing someone's work to nobody.
+AUTH=mrt_not_a_real_token call submit '{"kind":"result","title":"bad token","summary":"s","content":"c."}' \
+  | field '["error"]' | grep -qi "token" || fail "an unknown access token was silently downgraded to anonymous"
 
 # Contract: a submission is recorded at T0 with a receipt, an event, and a
 # queued kernel check when it contains Lean.
@@ -158,21 +185,64 @@ call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"parti
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$Q\",\"dst\":\"$SQ\",\"rel\":\"reduces-to\"}" > /dev/null
 call frontier "{\"id\":\"$Q\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["progress"])>=1 and any(x["id"]=="'"$SQ"'" for x in d["open_subproblems"])' || fail "frontier did not distill attack state"
 
-# Contract: a contributor key may arrive as `Authorization: Bearer mrk_…`
-# instead of a per-call argument, so generic MCP clients keep one identity
-# rather than minting a throwaway on every request. A per-call argument wins,
-# and the header carries role gates too.
-KEYID=$(python3 -c "import hashlib; print(hashlib.sha256(b'$KEY').hexdigest())")
-HELLO=$(call_auth "$KEY" hello '{}')
-[[ $(echo "$HELLO" | field '["your_identity"]') == "$KEYID" ]] || fail "header key did not resolve to its identity"
-echo "$HELLO" | python3 -c 'import sys,json; assert "your_contributor_key" not in json.load(sys.stdin)' || fail "header key still minted a fresh identity"
-MINE=$(call_auth "$KEY" my_submissions '{}' | field '["submissions"]' | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
+# Contract: a contributor key may arrive as an Authorization: Bearer header
+# instead of a per-call argument, a per-call argument wins over it, and the
+# header carries role gates too.
+HELLO=$(AUTH=$KEY call hello '{}')
+[[ $(echo "$HELLO" | field '["you"]["identity"]') == "$SID" ]] || fail "header key did not resolve to its identity"
+[[ $(echo "$HELLO" | field '["you"]["via"]') == key ]] || fail "header key was not reported as the credential in use"
+MINE=$(AUTH=$KEY call my_submissions '{}' | field '["submissions"]' | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
 [[ "$MINE" -ge 1 ]] || fail "header identity did not see its own submissions"
-call my_submissions '{}' | field '["error"]' | grep -qi "contributor key" || fail "keyless my_submissions did not refuse"
-OPID2=$(call_auth "$OPKEY" hello "{\"contributor_key\":\"$KEY\"}" | field '["your_identity"]')
-[[ "$OPID2" == "$KEYID" ]] || fail "per-call contributor_key did not win over the header"
+OPID2=$(AUTH=$OPKEY call hello "{\"contributor_key\":\"$KEY\"}" | field '["you"]["identity"]')
+[[ "$OPID2" == "$SID" ]] || fail "per-call contributor_key did not win over the header"
 HDRT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"header gate target\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-call_auth "$OPKEY" set_tier "{\"id\":\"$HDRT\",\"tier\":2,\"note\":\"reviewed via header\"}" | field '["ok"]' > /dev/null
+AUTH=$OPKEY call set_tier "{\"id\":\"$HDRT\",\"tier\":2,\"note\":\"reviewed via header\"}" | field '["ok"]' > /dev/null
 [[ $(psql -h "$WORK" -d math -tAc "select tier from contribution where id='$HDRT'") == 2 ]] || fail "operator header did not pass the trusted gate"
+
+# Contract: OAuth is a complete, accountless path to an identity -- the one
+# MCP clients already know how to walk. Register, authorize, exchange with
+# PKCE, and the token that comes out is a durable identity with no signup.
+DISC=$(curl -sf "$PUBLIC_URL/.well-known/oauth-protected-resource")
+[[ $(echo "$DISC" | field '["authorization_servers"][0]') == "$PUBLIC_URL" ]] || fail "protected-resource metadata does not point at this server"
+curl -sf "$PUBLIC_URL/.well-known/oauth-authorization-server" | field '["token_endpoint"]' > /dev/null || fail "no authorization-server metadata"
+
+REG=$(curl -sf -X POST "$PUBLIC_URL/oauth/register" -H 'Content-Type: application/json' \
+  -d '{"client_name":"contract client","redirect_uris":["http://127.0.0.1:9999/callback"]}')
+CID=$(echo "$REG" | field '["client_id"]')
+VERIFIER=$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')
+CHALLENGE=$(python3 -c 'import hashlib,base64,sys; print(base64.urlsafe_b64encode(hashlib.sha256(sys.argv[1].encode()).digest()).rstrip(b"=").decode())' "$VERIFIER")
+curl -sf "$PUBLIC_URL/oauth/authorize?response_type=code&client_id=$CID&redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcallback&code_challenge=$CHALLENGE&code_challenge_method=S256&state=xyz" \
+  | grep -qi "contract client" || fail "authorization page did not name the client"
+authorize_code() { # -> a fresh authorization code from a consent round
+  local location
+  location=$(curl -sf -o /dev/null -w '%{redirect_url}' -X POST "$PUBLIC_URL/oauth/authorize" \
+    --data-urlencode "client_id=$CID" --data-urlencode "redirect_uri=http://127.0.0.1:9999/callback" \
+    --data-urlencode "code_challenge=$CHALLENGE" --data-urlencode "state=xyz" --data-urlencode "decision=new")
+  [[ $location == *"state=xyz"* ]] || fail "consent did not redirect back with state"
+  python3 -c 'import sys,urllib.parse as u; print(u.parse_qs(u.urlparse(sys.argv[1]).query)["code"][0])' "$location"
+}
+# A failed PKCE check burns the code, as OAuth 2.1 requires, so the good
+# exchange below starts from its own consent round.
+curl -s -X POST "$PUBLIC_URL/oauth/token" --data-urlencode "grant_type=authorization_code" \
+  --data-urlencode "code=$(authorize_code)" --data-urlencode "client_id=$CID" --data-urlencode "code_verifier=wrong-verifier" \
+  | field '["error"]' | grep -q invalid_grant || fail "PKCE verification is not enforced"
+CODE=$(authorize_code)
+TOKEN=$(curl -sf -X POST "$PUBLIC_URL/oauth/token" --data-urlencode "grant_type=authorization_code" \
+  --data-urlencode "code=$CODE" --data-urlencode "client_id=$CID" --data-urlencode "code_verifier=$VERIFIER" | field '["access_token"]')
+[[ $TOKEN == mrt_* ]] || fail "authorization code did not exchange for a token"
+OAID=$(AUTH=$TOKEN call submit '{"kind":"result","title":"oauth attribution","summary":"s","content":"c."}' | field '["attributed_to"]')
+[[ $OAID != anonymous ]] || fail "an OAuth token did not attribute the contribution"
+[[ $(AUTH=$TOKEN call hello '{}' | field '["you"]["identity"]') == "$OAID" ]] || fail "OAuth identity is not stable across calls"
+
+# Contract: a headless client with no browser can still be someone.
+MREG=$(curl -sf -X POST "$PUBLIC_URL/oauth/register" -H 'Content-Type: application/json' \
+  -d '{"client_name":"machine","grant_types":["client_credentials"]}')
+MID=$(echo "$MREG" | field '["client_id"]'); MSECRET=$(echo "$MREG" | field '["client_secret"]')
+machine_token() {
+  curl -sf -X POST "$PUBLIC_URL/oauth/token" --data-urlencode "grant_type=client_credentials" \
+    --data-urlencode "client_id=$MID" --data-urlencode "client_secret=$MSECRET" | field '["access_token"]'
+}
+MID1=$(AUTH=$(machine_token) call hello '{}' | field '["you"]["identity"]')
+[[ $(AUTH=$(machine_token) call hello '{}' | field '["you"]["identity"]') == "$MID1" ]] || fail "client_credentials identity is not stable across tokens"
 
 echo "all contracts hold"

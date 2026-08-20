@@ -26,21 +26,22 @@ create index if not exists contribution_tags_idx on contribution using gin (tags
 create index if not exists contribution_names_idx on contribution using gin (names);
 create index if not exists contribution_embedding_idx on contribution using hnsw (embedding vector_cosine_ops);
 
-create or replace function kind_weight(k text) returns real language sql immutable as $$
-  select case k
-    when 'theorem' then 3.0 when 'tool' then 3.0 when 'proof' then 2.5
-    when 'theory' then 2.5 when 'counterexample' then 2.0 when 'conjecture' then 2.0
-    when 'definition' then 1.5 when 'problem' then 1.5 when 'computation' then 1.0
-    when 'edge' then 0.0 else 1.0 end $$;
-
-create or replace function rel_weight(r text) returns real language sql immutable as $$
-  select case r
-    when 'proves' then 1.5 when 'answers' then 1.5 when 'serves' then 1.2
-    when 'disproves' then 1.2 when 'refutes' then 1.2 when 'generalizes' then 1.2
-    when 'uses' then 1.0 when 'depends-on' then 1.0 when 'equivalent-to' then 1.0
-    when 'refines' then 0.8 when 'specializes' then 0.6 when 'repairs' then 0.6
-    when 'about' then 0.3 when 'reviews' then 0.3 when 'supersedes' then 0.2
-    when 'in-front' then 0.1 when 'duplicates' then 0.1 else 0.5 end $$;
+-- Tunable policy moves into the database as data (config + topic_rule), so a
+-- trusted operator tunes notability and the taxonomy live over the MCP.
+create table if not exists config (
+  key        text primary key,
+  value      jsonb not null,
+  updated_at timestamptz not null default now()
+);
+create table if not exists topic_rule (
+  topic   text primary key,
+  pattern text not null,
+  ord     integer not null default 100
+);
+create or replace function classify_topics(t text) returns text[] language sql stable as $$
+  select coalesce(array_agg(topic order by ord), '{}')
+  from (select topic, ord from topic_rule where lower($1) ~ pattern order by ord limit 4) x;
+$$;
 
 -- Convert the old edge table (src,dst,rel,note) into edge contributions plus
 -- the new structural sidecar. Detected by the presence of the old `note`
@@ -110,33 +111,45 @@ begin
 end $$;
 
 -- refresh_notability references the new edge shape, so it is defined only after
--- the edge table has been migrated above.
-create or replace function refresh_notability(ids uuid[] default null) returns void language sql as $$
+-- the edge table has been migrated above. Config-driven (all weights in config).
+drop function if exists kind_weight(text);
+drop function if exists rel_weight(text);
+create or replace function refresh_notability(ids uuid[] default null) returns void language plpgsql as $$
+declare
+  w jsonb;
+  settle_rels text[];
+begin
+  select value into w from config where key = 'notability_weights';
+  if w is null then w := '{}'::jsonb; end if;
+  settle_rels := array(select jsonb_array_elements_text(
+    coalesce(w->'settle_rels', '["answers","proves","disproves","refutes","serves"]'::jsonb)));
+
   with base as (
-    select c.id, c.kind, c.tier,
-           kind_weight(c.kind)
-             + (array[0.0, 1.0, 3.0, 6.0])[c.tier + 1]
+    select c.id,
+           coalesce((w->'kind'->>c.kind)::real, (w->'kind'->>'_default')::real, 1.0)
+             + coalesce((w->'tier'->>c.tier::text)::real, 0.0)
              + case when exists (select 1 from verification v
                                  where v.contribution_id = c.id
                                    and v.method = 'lean-kernel' and v.outcome = 'passed')
-                    then 2.0 else 0.0 end as own
+                    then coalesce((w->>'lean')::real, 2.0) else 0.0 end as own
     from contribution c
     where c.kind <> 'edge' and (ids is null or c.id = any (ids))
   ),
   incoming as (
     select e.dst as id,
-           sum(rel_weight(e.rel) * (array[0.25, 0.5, 1.0, 1.0])[ec.tier + 1]) as s
+           sum(coalesce((w->'rel'->>e.rel)::real, (w->'rel'->>'_default')::real, 0.5)
+               * coalesce((w->'edge_tier'->>ec.tier::text)::real, 0.0)) as s
     from edge e join contribution ec on ec.id = e.contribution_id
     where ec.status = 'active' and (ids is null or e.dst = any (ids))
     group by e.dst
   ),
   settles as (
     select e.src as id,
-           sum((array[0.0, 1.0, 3.0, 6.0])[tgt.tier + 1] * 0.5) as s
+           sum(coalesce((w->'tier'->>tgt.tier::text)::real, 0.0) * coalesce((w->>'settle')::real, 0.5)) as s
     from edge e
     join contribution ec on ec.id = e.contribution_id
     join contribution tgt on tgt.id = e.dst
-    where ec.status = 'active' and e.rel in ('answers', 'proves', 'disproves')
+    where ec.status = 'active' and e.rel = any (settle_rels)
       and tgt.kind in ('problem', 'conjecture')
       and (ids is null or e.src = any (ids))
     group by e.src
@@ -147,7 +160,7 @@ create or replace function refresh_notability(ids uuid[] default null) returns v
     left join incoming i on i.id = b.id
     left join settles s on s.id = b.id
    where c.id = b.id;
-$$;
+end $$;
 
 drop view if exists contribution_overview;
 create view contribution_overview as
@@ -157,6 +170,15 @@ select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
                where v.contribution_id = c.id
                  and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified
 from contribution c;
+
+\ir tuning-defaults.sql
+
+-- Reclassify the whole corpus through the DB classifier so every tag comes
+-- from one engine (submit-time tagging uses the same function).
+update contribution c
+   set tags = classify_topics(c.title || ' ' || c.summary || ' ' || left(a.content, 2000))
+  from artifact a
+ where a.hash = c.artifact_hash and c.kind <> 'edge';
 
 select refresh_notability();
 

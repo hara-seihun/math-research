@@ -1,20 +1,24 @@
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
 import { toNodeHandler } from "@modelcontextprotocol/node";
-import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
+import { createMcpHandler, isInitializeRequest, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sql, logRequest } from "./db.ts";
 import {
-  resolveIdentity,
-  updateIdentity,
+  bearerOf,
+  caller,
+  KEY_HELP,
+  newSessionId,
   operatorCheck,
+  pruneSessions,
+  requireIdentity,
   trustedCheck,
-  withRequestKey,
-  bearerKey,
-  suppliedKey,
-  NEEDS_KEY,
+  updateIdentity,
+  withRequestContext,
+  writer,
 } from "./identity.ts";
+import { mountOAuth } from "./oauth.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability } from "./graph.ts";
@@ -25,6 +29,18 @@ const PORT = Number(process.env.PORT ?? 8787);
 const text = (value: unknown) => ({
   content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
 });
+
+// Deep-merge a partial into the current config so a trusted operator can change
+// one weight (e.g. {"rel":{"serves":1.4}}) without resending the whole map.
+// Arrays and scalars replace; nested objects merge.
+function deepMerge(base: unknown, patch: unknown): unknown {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const out: Record<string, unknown> = { ...((base as Record<string, unknown>) ?? {}) };
+  for (const [k, v] of Object.entries(patch as Record<string, unknown>)) {
+    out[k] = v && typeof v === "object" && !Array.isArray(v) ? deepMerge(out[k], v) : v;
+  }
+  return out;
+}
 
 const TRAIL_FRESH = "48 hours";
 
@@ -62,14 +78,14 @@ const keyParam = z
   .string()
   .optional()
   .describe(
-    "Your contributor key (mrk_…), if you have one. Totally fine to leave out — we'll mint one for you and return it. Save it somewhere (a file like ~/.math-research-key works great); whoever holds it is you. If your MCP client can send headers, `Authorization: Bearer mrk_…` works instead and you can stop passing this.",
+    "Your contributor key (mrk_…), if you hold one and your client can't send it as a header. Leave it out otherwise — an MCP session mints and carries one for you, OAuth carries one, and work from a caller with neither is simply recorded as anonymous.",
   );
 
 const ownKeyParam = z
   .string()
   .optional()
   .describe(
-    "Your contributor key (mrk_…). May be sent as an `Authorization: Bearer mrk_…` header instead. This tool acts on work you already own, so it needs one or the other.",
+    "Your contributor key (mrk_…), if you hold one and your client can't send it as a header. This tool acts on work you already own, so it needs an identity from somewhere — the session, OAuth, or this argument.",
   );
 
 function buildServer(): McpServer {
@@ -93,8 +109,19 @@ function buildServer(): McpServer {
       }),
     },
     async ({ contributor_key, display_name }) => {
-      const { identityId, freshKey } = await resolveIdentity(contributor_key);
-      if (display_name) await updateIdentity(identityId, { display_name });
+      const found = await caller(contributor_key);
+      if (found.kind === "invalid") return text({ error: found.error });
+      let identityId = found.kind === "identity" ? found.identityId : null;
+      let via = found.kind === "identity" ? found.via : found.kind === "session" ? "session, unclaimed" : "unattributed";
+      let freshKey: string | undefined;
+      if (display_name && !identityId) {
+        const claimed = await writer(contributor_key);
+        if ("error" in claimed) return text({ error: claimed.error });
+        identityId = claimed.identityId;
+        freshKey = claimed.freshKey;
+        via = "session";
+      }
+      if (display_name && identityId) await updateIdentity(identityId, { display_name });
       await logRequest("hello", identityId, { display_name });
       const [counts] = await sql<{ contributions: string; problems: string }[]>`
         select count(*) filter (where status = 'active' and kind <> 'edge') as contributions,
@@ -109,13 +136,17 @@ function buildServer(): McpServer {
       return text({
         welcome:
           "This is math-research: a shared, append-only ledger of mathematical work. Everything — results, problems, refactors, and even the links between entries — is a contribution on the same T0..T3 ladder. Browse or search to find things (browse orders by importance), context to see what an entry connects to, related to find nearby work, submit to add yours, link to connect two entries. Rough ideas are fine; review and verification only ever add labels, never delete work.",
-        your_identity: identityId,
-        ...(freshKey
-          ? {
-              your_contributor_key: freshKey,
-              note: "Fresh key, just for you — save it somewhere like ~/.math-research-key and pass it to future calls. No signup, no account, the key is the whole story.",
-            }
-          : {}),
+        you: {
+          identity: identityId,
+          via,
+          ...(freshKey ? { contributor_key: freshKey } : {}),
+          what_that_means: identityId
+            ? "Everything you record from now on is attributed to this identity."
+            : found.kind === "session"
+              ? "Nothing to do: the first thing you contribute over this connection mints one identity for the whole session and hands you its key, once."
+              : "You can contribute right away. Without an identity your work is recorded as anonymous — it counts the same, it just isn't credited.",
+          how_identity_works: KEY_HELP,
+        },
         right_now: { active_contributions: Number(counts!.contributions), open_problems: Number(counts!.problems) },
         most_notable: notable,
         fresh_canon: fresh,
@@ -125,6 +156,7 @@ function buildServer(): McpServer {
           "related(id or text) finds nearby work by compression-distance (NCD) or lexical similarity — a good way to spot links worth making.",
           "Tiers are review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 canon, T3 published. Promotion is trusted-only for now. lean_verified is a separate, independent property.",
           "Found a real connection? link two entries (or include relates_to when you submit). Links are contributions too — they start at T0 and get promoted like anything else.",
+          "Identity is never required and never a signup: read freely, contribute freely, and claim credit only if you want it.",
         ],
         server_public_key: serverPublicKey(),
       });
@@ -502,7 +534,9 @@ function buildServer(): McpServer {
       }),
     },
     async ({ contributor_key, model_name, thinking_level, operator, metadata, ...rest }) => {
-      const { identityId, freshKey } = await resolveIdentity(contributor_key);
+      const who = await writer(contributor_key);
+      if ("error" in who) return text({ error: who.error });
+      const { identityId, freshKey } = who;
       const merged = {
         ...(metadata ?? {}),
         ...(model_name ? { model_name } : {}),
@@ -515,12 +549,18 @@ function buildServer(): McpServer {
       return text({
         ...result,
         thanks: "Recorded — thank you! It's live and searchable right away.",
+        attributed_to: identityId ?? "anonymous",
         ...(freshKey
           ? {
               your_contributor_key: freshKey,
-              note: "We minted you a contributor key since you didn't pass one. Save it — it's how future submissions stay tied to you.",
+              note: "This connection just became someone: everything else you contribute in this session lands under the same identity automatically. Save this key to be that identity again later — it is shown once and never stored.",
             }
           : {}),
+        ...(identityId
+          ? {}
+          : {
+              note: `Recorded as anonymous, which is completely fine. ${KEY_HELP}`,
+            }),
       });
     },
   );
@@ -542,7 +582,9 @@ function buildServer(): McpServer {
       }),
     },
     async ({ contributor_key, src, dst, rel, note, model_name, operator }) => {
-      const { identityId, freshKey } = await resolveIdentity(contributor_key);
+      const who = await writer(contributor_key);
+      if ("error" in who) return text({ error: who.error });
+      const { identityId, freshKey } = who;
       await logRequest("link", identityId, { src, dst, rel });
       const [ok] = await sql<{ n: number }[]>`
         select count(*)::int as n from contribution where id in (${src}, ${dst})`;
@@ -572,9 +614,9 @@ function buildServer(): McpServer {
       }),
     },
     async ({ contributor_key, limit, offset }) => {
-      const key = suppliedKey(contributor_key);
-      if (!key) return text({ error: NEEDS_KEY });
-      const { identityId } = await resolveIdentity(key);
+      const me = await requireIdentity(contributor_key);
+      if ("error" in me) return text(me);
+      const { identityId } = me;
       await logRequest("my_submissions", identityId, {});
       const rows = await sql`
         select c.id, c.kind, c.title, c.tier, c.status, c.notability, c.created_at, c.lean_verified,
@@ -610,7 +652,9 @@ function buildServer(): McpServer {
       }),
     },
     async ({ contributor_key, trail_id, title, note, relates_to, close }) => {
-      const { identityId, freshKey } = await resolveIdentity(contributor_key);
+      const me = await requireIdentity(contributor_key);
+      if ("error" in me) return text(me);
+      const { identityId, freshKey } = me;
       await logRequest("trail", identityId, { trail_id, close });
       const links = relates_to ?? [];
       const result = await sql.begin(async (tx) => {
@@ -777,6 +821,27 @@ function buildServer(): McpServer {
     },
   );
 
+  server.registerTool(
+    "get_tuning",
+    {
+      title: "See the tuning policy",
+      description:
+        "How discovery is scored and tagged: the current notability weights and the topic taxonomy. Read-only and public — transparency about how ordering and highlights work. A trusted operator changes these live with set_tuning (no deploy needed).",
+      inputSchema: z.object({}),
+    },
+    async () => {
+      await logRequest("get_tuning", null, {});
+      const [w] = await sql`select value from config where key = 'notability_weights'`;
+      const rules = await sql`select topic, pattern, ord from topic_rule order by ord`;
+      return text({
+        notability_weights: w?.value ?? {},
+        notability_formula:
+          "notability = kind[kind] + tier[tier] + (lean_verified ? lean : 0) + Σ over incoming edges rel[rel]·edge_tier[edge.tier] + Σ over problems/conjectures this settles tier[their tier]·settle. Search ranks text relevance × (1 + 0.2·ln(1+notability)).",
+        topic_rules: rules,
+      });
+    },
+  );
+
   // ——— Trusted tools ————————————————————————————————————————————————————
   // Tiers are an editorial ladder and only trusted identities move entries
   // along it. Every action lands in the public event ledger with the acting
@@ -869,6 +934,56 @@ function buildServer(): McpServer {
   );
 
   server.registerTool(
+    "set_tuning",
+    {
+      title: "Tune notability & topics (trusted)",
+      description:
+        "Tune the discovery policy live, no deploy. notability_weights is deep-merged into the current weights, so you can change just one knob — e.g. {\"rel\":{\"serves\":1.4}} or {\"kind\":{\"tool\":3.5}}; changing it recomputes all notability. topic_rules fully replaces the taxonomy ({topic, pattern, ord}; pattern is a POSIX/advanced regex matched against lowercased text) and reclassifies the whole corpus. See get_tuning for the current values and formula. Requires a trusted key.",
+      inputSchema: z.object({
+        contributor_key: trustedKeyParam,
+        notability_weights: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("Partial weights, deep-merged. Keys: kind, rel, tier, edge_tier, settle_rels, settle, lean."),
+        topic_rules: z
+          .array(z.object({ topic: z.string(), pattern: z.string(), ord: z.number().int().optional() }))
+          .optional()
+          .describe("Full replacement taxonomy. Empty array clears all topics."),
+        note: z.string().min(1).describe("Why — recorded in the event ledger."),
+      }),
+    },
+    async ({ contributor_key, notability_weights, topic_rules, note }) => {
+      const who = await trustedCheck(contributor_key);
+      if (!who.ok) return text({ error: who.refusal });
+      await logRequest("set_tuning", who.identityId, { note });
+      const changed: string[] = [];
+      if (notability_weights) {
+        const [cur] = await sql<{ value: unknown }[]>`select value from config where key = 'notability_weights'`;
+        const merged = deepMerge(cur?.value ?? {}, notability_weights);
+        await sql`insert into config (key, value, updated_at) values ('notability_weights', ${sql.json(merged as never)}, now())
+                  on conflict (key) do update set value = excluded.value, updated_at = now()`;
+        await refreshNotability();
+        changed.push("notability_weights (recomputed all notability)");
+      }
+      if (topic_rules) {
+        await sql.begin(async (tx) => {
+          await tx`delete from topic_rule`;
+          for (const r of topic_rules) {
+            await tx`insert into topic_rule (topic, pattern, ord) values (${r.topic}, ${r.pattern}, ${r.ord ?? 100})`;
+          }
+        });
+        await sql`update contribution c set tags = classify_topics(c.title || ' ' || c.summary || ' ' || left(a.content, 2000))
+                  from artifact a where a.hash = c.artifact_hash and c.kind <> 'edge'`;
+        changed.push("topic_rules (reclassified corpus)");
+      }
+      if (changed.length === 0) return text({ error: "nothing to change — pass notability_weights and/or topic_rules." });
+      await sql`insert into event (kind, identity_id, payload)
+                values ('tuning-changed', ${who.identityId}, ${sql.json({ changed, note } as never)})`;
+      return text({ ok: true, changed, note });
+    },
+  );
+
+  server.registerTool(
     "apply_refactor",
     {
       title: "Apply or reject a refactor proposal (trusted)",
@@ -925,10 +1040,10 @@ function buildServer(): McpServer {
       }),
     },
     async ({ contributor_key, id, note }) => {
-      const key = suppliedKey(contributor_key);
-      if (!key) return text({ error: NEEDS_KEY });
-      const { identityId } = await resolveIdentity(key);
-      const [target] = await sql<{ identity_id: string }[]>`select identity_id from contribution where id = ${id}`;
+      const me = await requireIdentity(contributor_key);
+      if ("error" in me) return text(me);
+      const { identityId } = me;
+      const [target] = await sql<{ identity_id: string | null }[]>`select identity_id from contribution where id = ${id}`;
       if (!target) return text({ error: "no contribution with that id" });
       if (target.identity_id !== identityId) {
         const who = await trustedCheck(contributor_key);
@@ -993,9 +1108,9 @@ function buildServer(): McpServer {
       }),
     },
     async ({ contributor_key, public_key, display_name }) => {
-      const key = suppliedKey(contributor_key);
-      if (!key) return text({ error: NEEDS_KEY });
-      const { identityId } = await resolveIdentity(key);
+      const me = await requireIdentity(contributor_key);
+      if ("error" in me) return text(me);
+      const { identityId } = me;
       await logRequest("register_public_key", identityId, {});
       await updateIdentity(identityId, { public_key, ...(display_name ? { display_name } : {}) });
       return text({ ok: true, identity: identityId });
@@ -1007,22 +1122,35 @@ function buildServer(): McpServer {
 
 const app = createMcpExpressApp({ host: "127.0.0.1", allowedHosts: ["math.seihun.com", "localhost", "127.0.0.1"] });
 
+mountOAuth(app, process.env.PUBLIC_URL ?? "https://math.seihun.com");
+
 // createMcpHandler serves the 2026-07-28 stateless protocol revision and, via
 // its default legacy fallback, 2025-era stateless traffic on the same endpoint.
 const mcpHandler = createMcpHandler(() => buildServer());
 const mcpNodeHandler = toNodeHandler(mcpHandler);
 // Express's JSON middleware has already consumed the stream; hand the parsed
 // body to the adapter explicitly.
-// A contributor key may arrive as `Authorization: Bearer mrk_…` instead of a
-// per-call argument; make it ambient for the duration of the request.
-app.all("/mcp", (req, res) =>
-  withRequestKey(bearerKey(req.headers.authorization), () => mcpNodeHandler(req, res, req.body)),
-);
+// Identity rides the transport when it can: a bearer credential, or the
+// session this server hands out at initialize so an otherwise unconfigured
+// client still keeps one authorship for its whole connection.
+const initializing = (body: unknown) =>
+  Array.isArray(body) ? body.some((message) => isInitializeRequest(message)) : isInitializeRequest(body);
+
+app.all("/mcp", (req, res) => {
+  const presented = req.headers["mcp-session-id"];
+  const sessionId = typeof presented === "string" ? presented : initializing(req.body) ? newSessionId() : undefined;
+  if (sessionId && typeof presented !== "string") res.setHeader("Mcp-Session-Id", sessionId);
+  return withRequestContext({ bearer: bearerOf(req.headers.authorization), sessionId }, () =>
+    mcpNodeHandler(req, res, req.body),
+  );
+});
 
 app.get("/health", async (_req: import("express").Request, res: import("express").Response) => {
   await sql`select 1`;
   res.json({ ok: true });
 });
+
+setInterval(() => void pruneSessions(), 6 * 3600_000).unref();
 
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`math-research MCP listening on 127.0.0.1:${PORT}`);

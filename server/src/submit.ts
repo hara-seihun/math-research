@@ -2,7 +2,6 @@ import { sql } from "./db.ts";
 import { sha256hex } from "./identity.ts";
 import { issueReceipt } from "./receipts.ts";
 import { createEdge, refreshNotability } from "./graph.ts";
-import { classifyTopics } from "./topics.ts";
 
 const MAX_CONTENT_BYTES = 1 << 20; // 1 MiB
 
@@ -25,7 +24,7 @@ export type SubmitResult =
   | { ok: true; id: string; tier: number; duplicate_of?: string; lean_queued: boolean; receipt: unknown; notes: string[] }
   | { ok: false; error: string };
 
-export async function submit(identityId: string, input: SubmitInput): Promise<SubmitResult> {
+export async function submit(identityId: string | null, input: SubmitInput): Promise<SubmitResult> {
   const notes: string[] = [];
   const content = input.content ?? "";
   if (!input.title?.trim() || !input.summary?.trim() || !content.trim()) {
@@ -52,14 +51,14 @@ export async function submit(identityId: string, input: SubmitInput): Promise<Su
              values (${hash}, ${mediaType}, ${content}, ${Buffer.byteLength(content)})
              on conflict do nothing`;
 
-    const tags = classifyTopics(`${input.title}\n${input.summary}\n${content}`);
+    const classifyText = `${input.title}\n${input.summary}\n${content}`.slice(0, 4000);
     const names = (input.names ?? []).map((n) => n.trim()).filter(Boolean).slice(0, 12);
     const [contribution] = await tx<
-      { id: string; created_at: Date; artifact_hash: string; identity_id: string }[]
+      { id: string; created_at: Date; artifact_hash: string; identity_id: string | null }[]
     >`
       insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id, tags, names)
       values (${input.kind}, ${input.title}, ${input.summary}, ${hash},
-              ${sql.json((input.metadata ?? {}) as never)}, ${identityId}, ${tags}::text[], ${names}::text[])
+              ${sql.json((input.metadata ?? {}) as never)}, ${identityId}, classify_topics(${classifyText}), ${names}::text[])
       returning id, created_at, artifact_hash, identity_id`;
 
     await tx`insert into event (kind, contribution_id, identity_id, payload)

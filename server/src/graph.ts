@@ -97,13 +97,13 @@ export async function refreshNotability(ids?: string[]): Promise<void> {
 // independent contributions, which is the signal that a link is corroborated.
 export async function createEdge(
   tx: Tx,
-  e: { identityId: string; src: string; dst: string; rel: string; note?: string; metadata?: Record<string, unknown> },
+  e: { identityId: string | null; src: string; dst: string; rel: string; note?: string; metadata?: Record<string, unknown> },
 ): Promise<{ id: string } | { skipped: string }> {
   if (e.src === e.dst) return { skipped: "self-link" };
   const [dup] = await tx<{ id: string }[]>`
     select e.contribution_id as id from edge e join contribution c on c.id = e.contribution_id
     where e.src = ${e.src} and e.dst = ${e.dst} and e.rel = ${e.rel}
-      and c.identity_id = ${e.identityId} and c.status = 'active' limit 1`;
+      and c.identity_id is not distinct from ${e.identityId} and c.status = 'active' limit 1`;
   if (dup) return { skipped: dup.id };
 
   const content = (e.note?.trim() || e.rel).slice(0, 4000);

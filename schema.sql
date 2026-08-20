@@ -26,6 +26,12 @@ create extension if not exists vector;
 -- an Ed25519 public key so contributors can produce independently
 -- verifiable authorship signatures.
 --
+-- Identity is never a toll. Reading needs nothing, contributing needs
+-- nothing (unattributed work is recorded with identity_id null), and an
+-- identity materializes only when someone actually claims authorship — by
+-- presenting a key, by authorizing over OAuth, or by contributing over an
+-- MCP session, which mints one key and hands it back exactly once.
+--
 -- `role` is the trust ladder. Anyone may submit (everything lands at T0).
 -- Only a *trusted* identity (role 'trusted' or 'operator') may move anything
 -- along the review ladder; 'operator' additionally administers trust and the
@@ -103,7 +109,7 @@ create table contribution (
   summary           text not null,
   artifact_hash     text not null references artifact(hash),
   metadata          jsonb not null default '{}'::jsonb,
-  identity_id       text not null references identity(id),
+  identity_id       text references identity(id),   -- null = contributed anonymously
   tier              smallint not null default 0 check (tier between 0 and 3),
   status            text not null default 'active'
                     check (status in ('active', 'retracted', 'superseded')),
@@ -193,6 +199,52 @@ create table receipt (
   server_signature text not null
 );
 
+-- ——— Transport identity ———————————————————————————————————————————————
+-- Three ways to be someone, none of them required. A session is the zero
+-- setup path: the server issues an Mcp-Session-Id at initialize, and the
+-- first contribution over that connection mints one identity that the whole
+-- session then shares. OAuth is the durable path for clients that speak it
+-- (there is nothing to log into — authorizing mints or adopts an identity).
+-- A contributor key presented as a bearer token or a tool argument always
+-- wins over both.
+
+create table mcp_session (
+  id           text primary key,
+  identity_id  text references identity(id),
+  created_at   timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
+);
+create index mcp_session_last_seen_idx on mcp_session (last_seen_at);
+
+create table oauth_client (
+  id            text primary key,
+  secret_hash   text,                    -- sha256(client_secret), confidential clients only
+  name          text,
+  redirect_uris text[] not null default '{}',
+  identity_id   text references identity(id),   -- client_credentials: the machine's own identity
+  created_at    timestamptz not null default now()
+);
+
+create table oauth_code (
+  code_hash      text primary key,
+  client_id      text not null references oauth_client(id),
+  identity_id    text not null references identity(id),
+  redirect_uri   text not null,
+  code_challenge text not null,           -- PKCE S256 only
+  expires_at     timestamptz not null
+);
+
+-- Access tokens do not expire: an identity is a credential you hold, not a
+-- session someone grants you. Revocation is deleting the row.
+create table oauth_token (
+  token_hash   text primary key,          -- sha256(access_token)
+  identity_id  text not null references identity(id),
+  client_id    text references oauth_client(id),
+  created_at   timestamptz not null default now(),
+  last_used_at timestamptz
+);
+create index oauth_token_identity_idx on oauth_token (identity_id);
+
 -- Full request log for post-hoc heuristic scanning. Bodies over 8 KiB are
 -- replaced by their hash (the artifact table has the content anyway).
 create table request_log (
@@ -214,57 +266,72 @@ select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
                  and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified
 from contribution c;
 
+-- ——— Tunable policy ————————————————————————————————————————————————————
+-- The notability weights and the topic taxonomy live in the database as data,
+-- not in code, so a trusted operator can tune them live over the MCP
+-- (set_tuning) instead of shipping a deploy. Defaults come from
+-- tools/tuning-defaults.sql (one source, loaded below).
+create table config (
+  key        text primary key,
+  value      jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
+create table topic_rule (
+  topic   text primary key,
+  pattern text not null,   -- POSIX (advanced) regex matched against lower(text)
+  ord     integer not null default 100
+);
+
+-- Subject classification, in one engine (Postgres regex) so submit-time
+-- tagging and any reclassify agree exactly. Returns up to four topics.
+create or replace function classify_topics(t text) returns text[] language sql stable as $$
+  select coalesce(array_agg(topic order by ord), '{}')
+  from (select topic, ord from topic_rule where lower($1) ~ pattern order by ord limit 4) x;
+$$;
+
 -- ——— Notability ———————————————————————————————————————————————————————
 -- Importance is derived, never hand-set. A contribution scores for what it is
 -- (kind, tier, kernel-verification), for how much the graph builds on it
 -- (incoming edges, each weighted by that edge's own review tier so an
 -- unreviewed T0 link barely counts and a trusted T2 link counts fully), and
--- for settling known questions.
+-- for settling known questions. Every weight is read from config at run time.
+create or replace function refresh_notability(ids uuid[] default null) returns void language plpgsql as $$
+declare
+  w jsonb;
+  settle_rels text[];
+begin
+  select value into w from config where key = 'notability_weights';
+  if w is null then w := '{}'::jsonb; end if;
+  settle_rels := array(select jsonb_array_elements_text(
+    coalesce(w->'settle_rels', '["answers","proves","disproves","refutes","serves"]'::jsonb)));
 
-create or replace function kind_weight(k text) returns real language sql immutable as $$
-  select case k
-    when 'theorem' then 3.0 when 'tool' then 3.0 when 'proof' then 2.5
-    when 'theory' then 2.5 when 'counterexample' then 2.0 when 'conjecture' then 2.0
-    when 'definition' then 1.5 when 'problem' then 1.5 when 'computation' then 1.0
-    when 'edge' then 0.0 else 1.0 end $$;
-
-create or replace function rel_weight(r text) returns real language sql immutable as $$
-  select case r
-    when 'proves' then 1.5 when 'answers' then 1.5 when 'serves' then 1.2
-    when 'disproves' then 1.2 when 'refutes' then 1.2 when 'generalizes' then 1.2
-    when 'uses' then 1.0 when 'depends-on' then 1.0 when 'equivalent-to' then 1.0
-    when 'refines' then 0.8 when 'specializes' then 0.6 when 'repairs' then 0.6
-    when 'about' then 0.3 when 'reviews' then 0.3 when 'supersedes' then 0.2
-    when 'in-front' then 0.1 when 'duplicates' then 0.1 else 0.5 end $$;
-
--- tier -> multiplier for an edge's contribution to notability (index tier+1)
--- and tier -> own-score for a contribution.
-create or replace function refresh_notability(ids uuid[] default null) returns void language sql as $$
   with base as (
-    select c.id, c.kind, c.tier,
-           kind_weight(c.kind)
-             + (array[0.0, 1.0, 3.0, 6.0])[c.tier + 1]
+    select c.id,
+           coalesce((w->'kind'->>c.kind)::real, (w->'kind'->>'_default')::real, 1.0)
+             + coalesce((w->'tier'->>c.tier::text)::real, 0.0)
              + case when exists (select 1 from verification v
                                  where v.contribution_id = c.id
                                    and v.method = 'lean-kernel' and v.outcome = 'passed')
-                    then 2.0 else 0.0 end as own
+                    then coalesce((w->>'lean')::real, 2.0) else 0.0 end as own
     from contribution c
     where c.kind <> 'edge' and (ids is null or c.id = any (ids))
   ),
   incoming as (
     select e.dst as id,
-           sum(rel_weight(e.rel) * (array[0.25, 0.5, 1.0, 1.0])[ec.tier + 1]) as s
+           sum(coalesce((w->'rel'->>e.rel)::real, (w->'rel'->>'_default')::real, 0.5)
+               * coalesce((w->'edge_tier'->>ec.tier::text)::real, 0.0)) as s
     from edge e join contribution ec on ec.id = e.contribution_id
     where ec.status = 'active' and (ids is null or e.dst = any (ids))
     group by e.dst
   ),
   settles as (
     select e.src as id,
-           sum((array[0.0, 1.0, 3.0, 6.0])[tgt.tier + 1] * 0.5) as s
+           sum(coalesce((w->'tier'->>tgt.tier::text)::real, 0.0) * coalesce((w->>'settle')::real, 0.5)) as s
     from edge e
     join contribution ec on ec.id = e.contribution_id
     join contribution tgt on tgt.id = e.dst
-    where ec.status = 'active' and e.rel in ('answers', 'proves', 'disproves')
+    where ec.status = 'active' and e.rel = any (settle_rels)
       and tgt.kind in ('problem', 'conjecture')
       and (ids is null or e.src = any (ids))
     group by e.src
@@ -275,4 +342,6 @@ create or replace function refresh_notability(ids uuid[] default null) returns v
     left join incoming i on i.id = b.id
     left join settles s on s.id = b.id
    where c.id = b.id;
-$$;
+end $$;
+
+\ir tools/tuning-defaults.sql

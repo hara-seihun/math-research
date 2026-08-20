@@ -103,15 +103,19 @@ function titleOf(path: string, content: string): string {
 }
 
 function docs(): Doc[] {
-  return ROOTS.flatMap((root) =>
+  const listed = ROOTS.flatMap((root, rank) =>
     readdirSync(root.dir)
       .filter((name) => name.endsWith(".md"))
       .map((name) => {
         const path = `${root.rel}/${name}`;
         const content = readFileSync(join(root.dir, name), "utf8");
-        return { path, slug: slugOf(path, content), title: titleOf(path, content), content };
+        const doc: Doc = { path, slug: slugOf(path, content), title: titleOf(path, content), content };
+        // Home page, then the rest of the pages, then the guides: the order
+        // someone editing the site thinks in.
+        return { doc, order: `${rank}${name === "index.md" ? "" : name}` };
       }),
-  ).sort((a, b) => a.path.localeCompare(b.path));
+  );
+  return listed.sort((a, b) => a.order.localeCompare(b.order)).map((entry) => entry.doc);
 }
 
 async function state() {

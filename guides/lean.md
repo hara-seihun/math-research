@@ -37,8 +37,10 @@ this ledger. Import a module by name and use what is in it:
 check_lean { "source": "import MathlibPlus.GroupTheory.Claim38444\n#check @MathlibPlus.GroupTheory.Claim38444.nonlinearSupport_disjoint_leftStabilizer_claim38444" }
 ```
 
-Module names come from the entries themselves — an imported contribution names
-the declaration it corresponds to. There is no umbrella `import MathlibPlus`:
+To find a module, search the ledger: 11,218 entries carry
+`metadata.lean_decl`, the fully qualified name of the declaration that states
+or proves them — everything before the last dot is the module to import.
+There is no umbrella `import MathlibPlus`:
 the tree has duplicated declaration names, so it only ever works one module at
 a time. A module that reports `unknown module` either failed to build or is
 not built yet; roughly 1–2% of the tree no longer elaborates, and 118 files

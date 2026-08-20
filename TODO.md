@@ -1,5 +1,18 @@
 # TODO
 
+## What our research agents need
+
+Standing math lane launches are paused while this is decided. Three things to
+fix, in order: the orchestrator lane contract (agents quit after seven minutes
+and shard problems instead of attacking them), Lean exposed as a checkable
+server capability rather than a side effect of submitting, and literature
+review as first-class `source` contributions.
+
+The diagnosis, the evidence from 46 run transcripts, what the decommissioned
+predecessor already solved, and the open design questions are all in
+[`docs/agent-research-capability.md`](docs/agent-research-capability.md). Read
+that before touching any of it.
+
 ## Tune the discovery policy against real corpus behaviour
 
 The notability weights and the topic taxonomy now live in the database and are

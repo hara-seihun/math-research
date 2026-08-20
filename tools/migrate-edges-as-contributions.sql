@@ -32,11 +32,12 @@ create or replace function kind_weight(k text) returns real language sql immutab
 
 create or replace function rel_weight(r text) returns real language sql immutable as $$
   select case r
-    when 'proves' then 1.5 when 'answers' then 1.5 when 'generalizes' then 1.2
-    when 'disproves' then 1.2 when 'uses' then 1.0 when 'depends-on' then 1.0
+    when 'proves' then 1.5 when 'answers' then 1.5 when 'serves' then 1.2
+    when 'disproves' then 1.2 when 'refutes' then 1.2 when 'generalizes' then 1.2
+    when 'uses' then 1.0 when 'depends-on' then 1.0 when 'equivalent-to' then 1.0
     when 'refines' then 0.8 when 'specializes' then 0.6 when 'repairs' then 0.6
     when 'about' then 0.3 when 'reviews' then 0.3 when 'supersedes' then 0.2
-    when 'duplicates' then 0.1 else 0.5 end $$;
+    when 'in-front' then 0.1 when 'duplicates' then 0.1 else 0.5 end $$;
 
 -- Convert the old edge table (src,dst,rel,note) into edge contributions plus
 -- the new structural sidecar. Detected by the presence of the old `note`

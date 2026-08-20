@@ -326,14 +326,14 @@ function buildServer(): McpServer {
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview m on m.id = e.src
         where e.dst = ${id} and ec.status = 'active' and m.status = 'active'
-          and e.rel in ('answers', 'proves', 'disproves', 'partially-answers', 'refines', 'about')
-        order by (e.rel in ('answers', 'proves', 'disproves')) desc, m.notability desc limit 20`;
+          and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'serves', 'partially-answers', 'refines', 'about')
+        order by (e.rel in ('answers', 'proves', 'disproves', 'refutes')) desc, m.notability desc limit 20`;
       const openSub = await sql`
         select t.id, t.kind, t.title, t.tier, t.notability, e.rel
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview t on t.id = e.dst
         where e.src = ${id} and ec.status = 'active' and t.status = 'active'
-          and e.rel in ('reduces-to', 'depends-on', 'splits-into', 'specializes')
+          and e.rel in ('reduces-to', 'depends-on', 'splits-into', 'specializes', 'serves')
           and t.kind in ('problem', 'conjecture')
         order by t.notability desc limit 20`;
       const feeds = await sql`
@@ -341,7 +341,7 @@ function buildServer(): McpServer {
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview s on s.id = e.src
         where e.dst = ${id} and ec.status = 'active' and s.status = 'active'
-          and e.rel in ('reduces-to', 'depends-on') and s.kind in ('problem', 'conjecture')
+          and e.rel in ('reduces-to', 'depends-on', 'specializes', 'serves') and s.kind in ('problem', 'conjecture')
         order by s.notability desc limit 10`;
       const trails = await trailsTouching([id]);
       const settled = progress.some((p) => ["answers", "proves", "disproves"].includes(p.rel as string));

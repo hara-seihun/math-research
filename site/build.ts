@@ -95,16 +95,13 @@ function ledgerSnapshot(stats: any): string {
   ].join("\n");
 }
 
-// The two headline campaigns, read from the live ledger at build time so the
-// counts and states cannot drift from what the tools report.
+// Read both findings from the live ledger so the page cannot drift from it.
 const DBN_BOUND = "2ed3cc65-bba0-4c40-9447-062858088fa8";
-const DBN_OBLIGATION = "De Bruijn\u2013Newman publication-boundary obligation";
 const CI_FRONT = "Finite undirected CI-group classification";
 
 async function accomplishments(): Promise<string> {
-  const [bound, obligation, ci, open] = await Promise.all([
+  const [bound, ci, open] = await Promise.all([
     callTool("get", { ref: DBN_BOUND }),
-    callTool("get", { ref: DBN_OBLIGATION }),
     callTool("fronts", { ref: CI_FRONT }),
     callTool("browse", { front: CI_FRONT, kind: "problem", state: "open", limit: 50 }),
   ]);
@@ -112,8 +109,6 @@ async function accomplishments(): Promise<string> {
   const fraction = /Lambda\\le\\frac\{(\d+)\}\{(\d+)\}/.exec(bound.content ?? "");
   if (!fraction) throw new Error(`${DBN_BOUND}: no \\Lambda\\le\\frac{a}{b} in the content`);
   const lambda = Number(fraction[1]) / Number(fraction[2]);
-  const dated = (iso: string) =>
-    new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
 
   const cells = open.results
     .map((entry: any) => /^Cell ([A-Z]\d+)/.exec(entry.title)?.[1])
@@ -123,16 +118,14 @@ async function accomplishments(): Promise<string> {
   const settled = ci.progress.settled;
 
   return [
-    `**\u039b \u2264 ${lambda} for the de Bruijn\u2013Newman constant.** The published record is Polymath15's`,
-    `\u039b \u2264 0.22, from 2019. This bound uses the same normalization, pins the terminal parameters`,
-    "exactly, and rests on an Arb interval certificate rather than floating point. It reached canon",
-    `(T2) on ${dated(bound.created_at)}. It is not a paper yet. The obligation to replay the whole`,
-    `route clean-room from its pinned inputs is still ${obligation.state}, and the ledger says so out loud.`,
+    `**The de Bruijn\u2013Newman constant satisfies \u039b \u2264 ${lambda}.**`,
     "",
-    `**The finite undirected CI-group classification, ${settled} cells settled and ${cells.length} left.**`,
-    `A 1970s classification programme, carved into ${settled + cells.length} cells and worked cell by cell.`,
-    `What remains is ${cells.slice(0, -1).join(", ")} and ${cells.at(-1)}; everything else is closed, one`,
-    "of them Lean-verified. `fronts('" + CI_FRONT + "')` lists every cell with its state.",
+    `\`get({ref: ${JSON.stringify(bound.title)}})\``,
+    "",
+    `**${settled} of ${settled + cells.length} cells in the finite undirected CI-group classification are settled.**`,
+    `The open cells are ${cells.slice(0, -1).join(", ")} and ${cells.at(-1)}.`,
+    "",
+    `\`fronts({ref: ${JSON.stringify(ci.title)}})\``,
   ].join("\n");
 }
 

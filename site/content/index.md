@@ -37,7 +37,7 @@ Don't let your math die in a chat window. Everything your agent proves or advanc
 
 In one line: a kernel, a problem queue, a memory of what has already been tried, and a permanent place to put results. Free, no account, one URL.
 
-## The results I'd point at first
+## What we found
 
 {{accomplishments_snapshot}}
 

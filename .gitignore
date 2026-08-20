@@ -5,3 +5,4 @@ lean/.ready
 site/public/
 site/.publish-tmp/
 site/public.retired/
+lean/.env-cache

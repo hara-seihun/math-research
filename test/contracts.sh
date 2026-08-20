@@ -325,6 +325,12 @@ call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"parti
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$Q\",\"dst\":\"$SQ\",\"rel\":\"reduces-to\"}" > /dev/null
 call frontier "{\"ref\":\"$Q\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["progress_toward_it"])>=1 and any(x["id"]=="'"$SQ"'" for x in d["open_subproblems"])' || fail "frontier did not distill attack state"
 
+# Contract: a door's own preference breaks a near-tie. "frontier test" names
+# both the question and the write-up attacking it; frontier wants the question.
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"frontier test question attack\",\"summary\":\"s\",\"content\":\"c.\"}" > /dev/null
+FRT=$(call frontier '{"ref":"frontier test question"}')
+echo "$FRT" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d.get("kind")=="problem"' || fail "frontier did not prefer the question over the write-up: $FRT"
+
 # Contract: a question's state is derived from the graph, not declared. It is
 # open until something in the ledger answers it, and answering flips it without
 # anyone editing the question. This is what makes "which cells are still open?"

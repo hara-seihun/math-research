@@ -580,8 +580,10 @@ function buildServer(): McpServer {
       const stalls = routes
         .filter((r) => (r.metadata as Record<string, string> | null)?.first_unsupported)
         .map((r) => ({ route: r.title, state: r.state, stalls_at: (r.metadata as Record<string, string>).first_unsupported }));
+      const { state: qState, ...question } = q!;
       return text({
-        ...q,
+        ...question,
+        ...(qState ? { state: qState } : {}),
         matched_by: found.matched,
         stands: q!.state === "settled"
           ? "settled — something in the ledger answers it (see answered_by)"

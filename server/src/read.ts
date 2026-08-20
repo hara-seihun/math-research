@@ -42,7 +42,7 @@ export async function deref(
     exact.length === 1 ? exact[0] : titled.length === 1 ? titled[0] : preferred.length === 1 ? preferred[0] : undefined;
   if (winner) return { id: winner.id, title: winner.title, kind: winner.kind, matched: winner.how as "name" | "title" };
   if (exact.length > 1) {
-    return { error: `"${raw}" names ${exact.length} entries — pass one of these ids.`, candidates: exact };
+    return { error: `"${raw}" names ${exact.length} entries — pass one of these, by id or exact title.`, candidates: exact };
   }
   const fuzzy = await sql.begin(async (tx) => {
     await tx`select set_config('pg_trgm.word_similarity_threshold', '0.35', true)`;
@@ -57,9 +57,14 @@ export async function deref(
       order by score desc, notability desc limit 5`;
   });
   if (!fuzzy.length) return { error: `nothing here is called "${raw}" — try search, or browse a topic.` };
-  const best = fuzzy[0]!;
-  if (fuzzy.length > 1 && fuzzy[1]!.score > best.score - 0.05) {
-    return { error: `"${raw}" is ambiguous — pass one of these ids.`, candidates: fuzzy };
+  // A tie the door itself can break: "cell N4 residual" asked of frontier is
+  // the question, not the write-up attacking it.
+  const top = fuzzy[0]!;
+  const tied = fuzzy.filter((r) => r.score > top.score - 0.05);
+  const preferredTied = prefer ? tied.filter((r) => prefer.includes(r.kind)) : [];
+  const best = tied.length === 1 ? top : preferredTied.length === 1 ? preferredTied[0]! : undefined;
+  if (!best) {
+    return { error: `"${raw}" is ambiguous — pass one of these, by id or exact title.`, candidates: fuzzy };
   }
   return { id: best.id, title: best.title, kind: best.kind, matched: "fuzzy" };
 }

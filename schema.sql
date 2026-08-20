@@ -229,24 +229,6 @@ create table if not exists lean_check (
 );
 create index if not exists lean_check_pending_idx on lean_check (created_at) where outcome = 'pending';
 
--- Kernel checks, content-addressed. A check is a pure function of (source,
--- pinned toolchain), so the same lemma checked by forty agents costs one
--- kernel run. Both callers share this table: the `check_lean` tool, which
--- creates nothing else, and contribution verification, whose `verification`
--- row records the judgement made from these facts. Rows are the raw facts —
--- what compiled, what was proven, which axioms it rests on — never a verdict.
-create table lean_check (
-  source_hash text primary key,          -- sha256(extracted source)
-  source      text not null,
-  outcome     text not null default 'pending'
-              check (outcome in ('pending', 'passed', 'failed', 'inconclusive')),
-  detail      jsonb not null default '{}'::jsonb,
-  claimed_at  timestamptz,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
-);
-create index lean_check_pending_idx on lean_check (created_at) where outcome = 'pending';
-
 -- Server-signed submission receipts: an Ed25519 signature over the canonical
 -- receipt payload, so a contributor can prove to anyone that this server
 -- accepted exactly this artifact from exactly this identity at this time.

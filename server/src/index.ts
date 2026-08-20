@@ -655,7 +655,7 @@ function buildServer(): McpServer {
         method: z
           .enum(["semantic", "ncd", "lexical"]).default("semantic")
           .describe("'semantic' compares meaning through on-box embeddings and is the default. 'ncd' compares by compression distance, which catches shared structure that wording hides. 'lexical' compares words."),
-        limit: z.number().int().min(1).max(50).default(10),
+        limit: z.number().int().min(1).max(50).default(10).describe("How many neighbours to return, 1 to 50."),
       }),
     },
     async ({ ref, text: qtext, method, limit }) => {
@@ -1134,7 +1134,7 @@ function buildServer(): McpServer {
         after_seq: z
           .number().int().min(0).default(0)
           .describe("Return only events after this sequence number. Pass the last seq you saw to tail the log."),
-        limit: z.number().int().min(1).max(200).default(50),
+        limit: z.number().int().min(1).max(200).default(50).describe("How many events to return, 1 to 200."),
       }),
     },
     async ({ contribution_id, identity_id, after_seq, limit }) => {

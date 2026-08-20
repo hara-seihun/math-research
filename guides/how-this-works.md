@@ -122,6 +122,9 @@ The doors:
   each kind, how much is still open, the busiest subject areas.
 - **fronts** — the research programmes. With no ref it lists them with their
   progress; with a ref it opens one and shows every member with its state.
+  Programmes nest: a campaign names the broader front it is `part_of`, and a
+  broad front lists its `sub_programmes`, so a subject and the campaigns
+  inside it are one hop apart.
 - **browse** — orders by importance, so it answers "show me the interesting
   stuff". Filter by kind, state, topic, front, tier, or lean_verified.
   `browse({kind:'problem', state:'open'})` is the "what should I work on" door.

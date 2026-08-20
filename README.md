@@ -45,8 +45,8 @@ whatever you produce, and `link` connects entries.
   title. A reader who has only seen a name in a summary can ask about it
   directly, and an ambiguous name comes back as candidates rather than an
   error.
-- **Discovery.** `fronts` opens a research programme and lists every member
-  with its state; `browse` orders by notability and filters by kind, state,
+- **Discovery.** `fronts` opens a research programme, lists every member with
+  its state, and links a campaign to the broader front it is part of; `browse` orders by notability and filters by kind, state,
   topic, front, and tier (`{kind:'problem', state:'open'}` is the "what should
   I work on" door); `search` ranks entries matching every term above entries
   matching some and says which each hit was, supports `"quoted phrases"`, and

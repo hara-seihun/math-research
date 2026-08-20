@@ -46,19 +46,44 @@ _ABBREV = re.compile(r"(?:^|\s)(?:e\.g|i\.e|cf|resp|vs|Fig|Thm|Def|no|approx|w\.
 # Markdown decoration that is layout, not title: fences, heading marks, list
 # bullets, emphasis. A title cut straight from a write-up otherwise starts
 # "### R-4464.7 —" or, worse, "```text".
-_FENCE = re.compile(r"```[a-zA-Z0-9_-]*")
+# Write-ups are hard-wrapped, so the first *line* is a fragment ("…minimal in")
+# and the sentence continues on the next one. Titles are cut from the first
+# paragraph instead, with markdown scaffolding — fences, heading marks, list
+# bullets, emphasis — removed line by line.
+_FENCE = re.compile(r"^```")
 
 
 def headline(text: str) -> str:
-    """The first line of prose, with markdown scaffolding removed."""
+    """The first paragraph of prose, unwrapped, with markdown removed."""
+    para: list[str] = []
+    fenced = False
     for raw in (text or "").splitlines():
-        line = _FENCE.sub(" ", raw).strip()
-        line = re.sub(r"^\s*(#{1,6}|[-*+]|\d+[.)])\s+", "", line)
+        stripped = raw.strip()
+        if _FENCE.match(stripped):
+            if para:
+                break
+            fenced = not fenced
+            continue
+        if not stripped:
+            if para:
+                break
+            continue
+        if fenced:
+            para.append(stripped)
+            continue
+        heading = stripped.startswith("#")
+        line = re.sub(r"^\s*(#{1,6}|[-*+]|\d+[.)])\s+", "", stripped)
         line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
-        line = line.strip("*_` \t")
-        if len(line) >= 12 or (line and not re.fullmatch(r"[^A-Za-z0-9]*", line)):
-            return line
-    return " ".join((text or "").split())
+        line = line.strip("*_ \t")
+        # A backtick pair around the whole line is decoration; a leading
+        # backtick that opens inline code (`n`, and both …) is not.
+        if line.startswith("`") and line.endswith("`"):
+            line = line.strip("` \t")
+        if line:
+            para.append(line)
+        if heading:
+            break
+    return " ".join(para)
 
 
 def first_sentence(text: str, limit: int = 160) -> str:

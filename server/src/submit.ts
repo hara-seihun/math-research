@@ -1,7 +1,7 @@
 import { sql } from "./db.ts";
 import { sha256hex } from "./identity.ts";
 import { issueReceipt } from "./receipts.ts";
-import { createEdge, refreshNotability } from "./graph.ts";
+import { createEdge, refreshNotability, refreshState } from "./graph.ts";
 
 const MAX_CONTENT_BYTES = 1 << 20; // 1 MiB
 
@@ -11,6 +11,7 @@ export type SubmitInput = {
   summary: string;
   content: string;
   media_type?: string;
+  state?: string;
   metadata?: Record<string, unknown>;
   names?: string[];
   relates_to?: { id: string; rel: string; note?: string }[];
@@ -56,9 +57,10 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
     const [contribution] = await tx<
       { id: string; created_at: Date; artifact_hash: string; identity_id: string | null }[]
     >`
-      insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id, tags, names)
+      insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id, tags, names, state)
       values (${input.kind}, ${input.title}, ${input.summary}, ${hash},
-              ${sql.json((input.metadata ?? {}) as never)}, ${identityId}, classify_topics(${classifyText}), ${names}::text[])
+              ${sql.json((input.metadata ?? {}) as never)}, ${identityId}, classify_topics(${classifyText}), ${names}::text[],
+              ${input.state ?? null})
       returning id, created_at, artifact_hash, identity_id`;
 
     await tx`insert into event (kind, contribution_id, identity_id, payload)
@@ -81,6 +83,7 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
     notes.push(`heads up: identical content already exists as ${existing.id} — linked it for you.`);
   }
   const touched = [result.id, ...(input.relates_to ?? []).map((l) => l.id), ...(input.supersedes ?? [])];
+  await refreshState(touched);
   await refreshNotability(touched);
 
   if ((input.supersedes ?? []).length > 0) {

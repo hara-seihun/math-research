@@ -37,7 +37,7 @@ create extension if not exists vector;
 -- along the review ladder; 'operator' additionally administers trust and the
 -- server itself. To start, exactly one identity is an operator and there are
 -- no other trusted identities — trust expands later by granting the role.
-create table identity (
+create table if not exists identity (
   id           text primary key,          -- sha256(contributor_key), hex
   display_name text,
   public_key   text,                      -- optional Ed25519 public key, base64
@@ -47,7 +47,7 @@ create table identity (
 );
 
 -- Content-addressed immutable artifacts. All submission bodies live here.
-create table artifact (
+create table if not exists artifact (
   hash       text primary key,            -- sha256(content), hex
   media_type text not null default 'text/markdown',
   content    text not null,
@@ -55,10 +55,10 @@ create table artifact (
   created_at timestamptz not null default now(),
   search     tsvector generated always as (to_tsvector('english', left(content, 200000))) stored
 );
-create index artifact_search_idx on artifact using gin (search);
+create index if not exists artifact_search_idx on artifact using gin (search);
 
 -- The append-only event ledger.
-create table event (
+create table if not exists event (
   seq             bigserial primary key,
   kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | refactor-applied | refactor-rejected | flagged | identity-updated | imported | role-granted
   contribution_id uuid,
@@ -66,13 +66,14 @@ create table event (
   payload         jsonb not null default '{}'::jsonb,
   created_at      timestamptz not null default now()
 );
-create index event_contribution_idx on event (contribution_id, seq);
-create index event_identity_idx on event (identity_id, seq);
+create index if not exists event_contribution_idx on event (contribution_id, seq);
+create index if not exists event_identity_idx on event (identity_id, seq);
 
-create function forbid_mutation() returns trigger language plpgsql as $$
+create or replace function forbid_mutation() returns trigger language plpgsql as $$
 begin
   raise exception 'the event ledger is append-only';
 end $$;
+drop trigger if exists event_append_only on event;
 create trigger event_append_only
   before update or delete on event
   for each row execute function forbid_mutation();
@@ -98,11 +99,20 @@ create trigger event_append_only
 -- surfaced as `lean_verified`. A kernel-checked proof of a vacuous or
 -- mis-formalized statement stays at whatever tier review has earned it.
 --
+-- `state` is where a *work item* stands, which is a different question from
+-- `status` (is this entry live?) and from `tier` (how far has review got?).
+-- A problem is 'open', 'settled' (something active answers it), or 'retired';
+-- a route is 'open' | 'partial' | 'blocked' | 'refuted' | 'closed'. Anything
+-- that is not a work item has no state, and null means exactly that. Problem
+-- state is derived from the graph by refresh_state and never hand-set, so
+-- "which cells of this classification are still open?" is answerable from the
+-- same edges that record the mathematics.
+--
 -- `notability` is a derived importance score (see refresh_notability): a
 -- contribution's own tier/kind/verification plus how much the rest of the
 -- graph builds on it, weighted by each incoming edge's own tier. It is the
 -- gradient that ordering and highlights read from; never hand-set.
-create table contribution (
+create table if not exists contribution (
   id                uuid primary key default gen_random_uuid(),
   kind              text not null,
   title             text not null,
@@ -114,6 +124,7 @@ create table contribution (
   status            text not null default 'active'
                     check (status in ('active', 'retracted', 'superseded')),
   notability        real not null default 0,
+  state             text,                           -- work-item lifecycle; null when not a work item
   tags              text[] not null default '{}',  -- derived subject facet (see topics.ts)
   names             text[] not null default '{}',  -- canonical names/aliases for resolve
   embedding         vector(384),                    -- semantic vector (bge-small); see server/embedder/
@@ -122,15 +133,21 @@ create table contribution (
   search            tsvector generated always as
                     (to_tsvector('english', title || ' ' || summary)) stored
 );
-create index contribution_search_idx on contribution using gin (search);
-create index contribution_trgm_idx on contribution using gin ((title || ' ' || summary) gin_trgm_ops);
-create index contribution_kind_idx on contribution (kind, status, tier);
-create index contribution_notability_idx on contribution (status, notability desc);
-create index contribution_tags_idx on contribution using gin (tags);
-create index contribution_names_idx on contribution using gin (names);
-create index contribution_embedding_idx on contribution using hnsw (embedding vector_cosine_ops);
-create index contribution_identity_idx on contribution (identity_id, created_at);
-create index contribution_artifact_idx on contribution (artifact_hash);
+create index if not exists contribution_search_idx on contribution using gin (search);
+create index if not exists contribution_trgm_idx on contribution using gin ((title || ' ' || summary) gin_trgm_ops);
+create index if not exists contribution_kind_idx on contribution (kind, status, tier);
+create index if not exists contribution_notability_idx on contribution (status, notability desc);
+create index if not exists contribution_tags_idx on contribution using gin (tags);
+create index if not exists contribution_names_idx on contribution using gin (names);
+create index if not exists contribution_embedding_idx on contribution using hnsw (embedding vector_cosine_ops);
+create index if not exists contribution_identity_idx on contribution (identity_id, created_at);
+create index if not exists contribution_artifact_idx on contribution (artifact_hash);
+alter table contribution add column if not exists state text;
+create index if not exists contribution_state_idx on contribution (kind, state, notability desc);
+-- Migrated work keeps the predecessor's identifier in metadata.import_key, and
+-- the importer reconciles by it on every run.
+create unique index if not exists contribution_import_key_idx
+  on contribution ((metadata->>'import_key')) where metadata ? 'import_key';
 
 -- A typed relation between two contributions. The edge *is* a contribution
 -- (kind='edge'); this table is its structural sidecar, so traversal and
@@ -139,31 +156,35 @@ create index contribution_artifact_idx on contribution (artifact_hash);
 -- generalizes, specializes, refactors, supersedes, duplicates, reviews,
 -- about, repairs. Multiple identities may assert the same (src,dst,rel);
 -- each is its own contribution and the strongest active one wins in the graph.
-create table edge (
+create table if not exists edge (
   contribution_id uuid primary key references contribution(id),
   src             uuid not null references contribution(id),
   dst             uuid not null references contribution(id),
   rel             text not null,
   created_at      timestamptz not null default now()
 );
-create index edge_src_idx on edge (src, rel);
-create index edge_dst_idx on edge (dst, rel);
+create index if not exists edge_src_idx on edge (src, rel);
+create index if not exists edge_dst_idx on edge (dst, rel);
 
 -- Exploration trails: append-only diaries agents keep while investigating.
 -- Purely advisory — a trail never grants ownership and never blocks anyone.
-create table trail (
+create table if not exists trail (
   id          uuid primary key default gen_random_uuid(),
   identity_id text not null references identity(id),
   title       text not null,
   status      text not null default 'open' check (status in ('open', 'closed')),
+  metadata    jsonb not null default '{}'::jsonb,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
   search      tsvector generated always as (to_tsvector('english', title)) stored
 );
-create index trail_search_idx on trail using gin (search);
-create index trail_status_idx on trail (status, updated_at);
+alter table trail add column if not exists metadata jsonb not null default '{}'::jsonb;
+create unique index if not exists trail_import_key_idx
+  on trail ((metadata->>'import_key')) where metadata ? 'import_key';
+create index if not exists trail_search_idx on trail using gin (search);
+create index if not exists trail_status_idx on trail (status, updated_at);
 
-create table trail_entry (
+create table if not exists trail_entry (
   id               bigserial primary key,
   trail_id         uuid not null references trail(id),
   note             text not null,
@@ -171,13 +192,13 @@ create table trail_entry (
   created_at       timestamptz not null default now(),
   search           tsvector generated always as (to_tsvector('english', note)) stored
 );
-create index trail_entry_trail_idx on trail_entry (trail_id, id);
-create index trail_entry_search_idx on trail_entry using gin (search);
-create index trail_entry_contributions_idx on trail_entry using gin (contribution_ids);
+create index if not exists trail_entry_trail_idx on trail_entry (trail_id, id);
+create index if not exists trail_entry_search_idx on trail_entry using gin (search);
+create index if not exists trail_entry_contributions_idx on trail_entry using gin (contribution_ids);
 
 -- Machine and review verification records. `method` vocabulary:
 -- lean-kernel, exact-certificate, reproduction, review, imported.
-create table verification (
+create table if not exists verification (
   id              bigserial primary key,
   contribution_id uuid not null references contribution(id),
   method          text not null,
@@ -187,8 +208,26 @@ create table verification (
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
-create index verification_pending_idx on verification (method, outcome, id);
-create index verification_contribution_idx on verification (contribution_id);
+create index if not exists verification_pending_idx on verification (method, outcome, id);
+create index if not exists verification_contribution_idx on verification (contribution_id);
+
+-- Kernel checks, content-addressed. A check is a pure function of (source,
+-- pinned toolchain), so the same lemma checked by forty agents costs one
+-- kernel run. Both callers share this table: the `check_lean` tool, which
+-- creates nothing else, and contribution verification, whose `verification`
+-- row records the judgement made from these facts. Rows are the raw facts —
+-- what compiled, what was proven, which axioms it rests on — never a verdict.
+create table if not exists lean_check (
+  source_hash text primary key,          -- sha256(extracted source)
+  source      text not null,
+  outcome     text not null default 'pending'
+              check (outcome in ('pending', 'passed', 'failed', 'inconclusive')),
+  detail      jsonb not null default '{}'::jsonb,
+  claimed_at  timestamptz,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists lean_check_pending_idx on lean_check (created_at) where outcome = 'pending';
 
 -- Kernel checks, content-addressed. A check is a pure function of (source,
 -- pinned toolchain), so the same lemma checked by forty agents costs one
@@ -211,7 +250,7 @@ create index lean_check_pending_idx on lean_check (created_at) where outcome = '
 -- Server-signed submission receipts: an Ed25519 signature over the canonical
 -- receipt payload, so a contributor can prove to anyone that this server
 -- accepted exactly this artifact from exactly this identity at this time.
-create table receipt (
+create table if not exists receipt (
   contribution_id  uuid primary key references contribution(id),
   payload          jsonb not null,
   server_signature text not null
@@ -226,15 +265,15 @@ create table receipt (
 -- A contributor key presented as a bearer token or a tool argument always
 -- wins over both.
 
-create table mcp_session (
+create table if not exists mcp_session (
   id           text primary key,
   identity_id  text references identity(id),
   created_at   timestamptz not null default now(),
   last_seen_at timestamptz not null default now()
 );
-create index mcp_session_last_seen_idx on mcp_session (last_seen_at);
+create index if not exists mcp_session_last_seen_idx on mcp_session (last_seen_at);
 
-create table oauth_client (
+create table if not exists oauth_client (
   id            text primary key,
   secret_hash   text,                    -- sha256(client_secret), confidential clients only
   name          text,
@@ -243,7 +282,7 @@ create table oauth_client (
   created_at    timestamptz not null default now()
 );
 
-create table oauth_code (
+create table if not exists oauth_code (
   code_hash      text primary key,
   client_id      text not null references oauth_client(id),
   identity_id    text not null references identity(id),
@@ -254,34 +293,35 @@ create table oauth_code (
 
 -- Access tokens do not expire: an identity is a credential you hold, not a
 -- session someone grants you. Revocation is deleting the row.
-create table oauth_token (
+create table if not exists oauth_token (
   token_hash   text primary key,          -- sha256(access_token)
   identity_id  text not null references identity(id),
   client_id    text references oauth_client(id),
   created_at   timestamptz not null default now(),
   last_used_at timestamptz
 );
-create index oauth_token_identity_idx on oauth_token (identity_id);
+create index if not exists oauth_token_identity_idx on oauth_token (identity_id);
 
 -- Full request log for post-hoc heuristic scanning. Bodies over 8 KiB are
 -- replaced by their hash (the artifact table has the content anyway).
-create table request_log (
+create table if not exists request_log (
   id          bigserial primary key,
   tool        text not null,
   identity_id text,
   args        jsonb,
   created_at  timestamptz not null default now()
 );
-create index request_log_identity_idx on request_log (identity_id, id);
+create index if not exists request_log_identity_idx on request_log (identity_id, id);
 
 -- The one public shape of a contribution, including the derived lean_verified
 -- property, so no query re-derives it ad hoc.
-create view contribution_overview as
+create or replace view contribution_overview as
 select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
        c.artifact_hash, c.metadata, c.notability, c.tags, c.names, c.created_at, c.updated_at, c.search,
        exists (select 1 from verification v
                where v.contribution_id = c.id
-                 and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified
+                 and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified,
+       c.state
 from contribution c;
 
 -- ——— Tunable policy ————————————————————————————————————————————————————
@@ -289,17 +329,52 @@ from contribution c;
 -- not in code, so a trusted operator can tune them live over the MCP
 -- (set_tuning) instead of shipping a deploy. Defaults come from
 -- tools/tuning-defaults.sql (one source, loaded below).
-create table config (
+create table if not exists config (
   key        text primary key,
   value      jsonb not null,
   updated_at timestamptz not null default now()
 );
 
-create table topic_rule (
+create table if not exists topic_rule (
   topic   text primary key,
   pattern text not null,   -- POSIX (advanced) regex matched against lower(text)
   ord     integer not null default 100
 );
+
+-- Name folding, shared by every lookup door: unicode dashes to ascii, accents
+-- stripped, lowercased. "de Bruijn–Newman" and "de bruijn-newman" are the same
+-- name, and asking for an entry by the name written in its own summary works.
+-- Everything this touches is schema-qualified: Postgres 17 runs CREATE INDEX
+-- with a restricted search_path, so an unqualified dictionary name here fails
+-- when the expression index below is built.
+create or replace function normalize_ref(t text) returns text language sql immutable as $$
+  select lower(public.unaccent('public.unaccent'::regdictionary,
+                               pg_catalog.regexp_replace(coalesce(t, ''), '[‐-―−]', '-', 'g')))
+$$;
+create index if not exists contribution_ref_title_idx on contribution (normalize_ref(title));
+
+-- Topic inheritance. A one-line extracted statement rarely names its own
+-- field, but the write-up it came from does, and a classification cell's
+-- programme does. Rather than leave half the corpus unbrowsable by subject, a
+-- child with no topics of its own borrows its parent's. Idempotent, and it
+-- never overwrites a classification the text earned itself.
+create or replace function inherit_topics() returns bigint language plpgsql as $$
+declare n bigint;
+begin
+  with parent as (
+    select e.src as child, (array_agg(distinct t))[1:4] as tags
+    from edge e
+    join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+    join contribution p on p.id = e.dst and p.status = 'active'
+    cross join lateral unnest(p.tags) as t
+    where e.rel in ('part-of', 'in-front', 'answers', 'attacks')
+    group by e.src
+  )
+  update contribution c set tags = parent.tags
+  from parent where c.id = parent.child and cardinality(c.tags) = 0;
+  get diagnostics n = row_count;
+  return n;
+end $$;
 
 -- Subject classification, in one engine (Postgres regex) so submit-time
 -- tagging and any reclassify agree exactly. Returns up to four topics.
@@ -335,10 +410,15 @@ begin
     from contribution c
     where c.kind <> 'edge' and (ids is null or c.id = any (ids))
   ),
+  -- Damped, because incoming weight spans four orders of magnitude: a hub
+  -- problem carries thousands of supporting edges and a fresh theorem carries
+  -- two, and without damping the hub's pull is the only thing any ordering can
+  -- see. ln keeps the ranking but puts every kind on one comparable scale.
   incoming as (
     select e.dst as id,
-           sum(coalesce((w->'rel'->>e.rel)::real, (w->'rel'->>'_default')::real, 0.5)
-               * coalesce((w->'edge_tier'->>ec.tier::text)::real, 0.0)) as s
+           coalesce((w->>'edge_scale')::real, 2.0)
+             * ln(1 + sum(coalesce((w->'rel'->>e.rel)::real, (w->'rel'->>'_default')::real, 0.5)
+                          * coalesce((w->'edge_tier'->>ec.tier::text)::real, 0.0))) as s
     from edge e join contribution ec on ec.id = e.contribution_id
     where ec.status = 'active' and (ids is null or e.dst = any (ids))
     group by e.dst
@@ -355,11 +435,34 @@ begin
     group by e.src
   )
   update contribution c
-     set notability = round((b.own + coalesce(i.s, 0) + coalesce(s.s, 0))::numeric, 3)
+     set notability = round(greatest(b.own + coalesce(i.s, 0) + coalesce(s.s, 0), 0)::numeric, 3)
     from base b
     left join incoming i on i.id = b.id
     left join settles s on s.id = b.id
    where c.id = b.id;
+end $$;
+
+-- ——— Work-item state ———————————————————————————————————————————————————
+-- A question is settled when something active in the graph answers it. That
+-- is a fact about the edges, so it is derived here rather than declared, and
+-- it stays true when a later answer arrives or a link is retracted. Routes
+-- and other work items carry a state their author set; this only ever touches
+-- question kinds.
+create or replace function refresh_state(ids uuid[] default null) returns void language plpgsql as $$
+begin
+  update contribution c
+     set state = case
+           when c.status <> 'active' then 'retired'
+           when exists (
+             select 1 from edge e
+             join contribution ec on ec.id = e.contribution_id
+             join contribution src on src.id = e.src
+             where e.dst = c.id and ec.status = 'active' and src.status = 'active'
+               and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+           ) then 'settled'
+           else 'open' end
+   where c.kind in ('problem', 'conjecture')
+     and (ids is null or c.id = any (ids));
 end $$;
 
 \ir tools/tuning-defaults.sql

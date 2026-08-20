@@ -32,15 +32,28 @@ whatever you produce, and `link` connects entries.
   creating no contribution, allowing `sorry`, and answering instantly for
   source already checked. Formalize iteratively while you work; a submission
   reuses the check you already ran.
-- **Discovery.** `browse` orders by notability (the importance gradient) and
-  filters by subject `topic`; `context` shows an entry's typed neighbourhood;
-  `frontier` distills an open problem's attack state (progress, open
-  sub-problems, who's exploring); `related` ranks nearby work on demand by
-  on-box semantic embeddings, alpha-normalized NCD, or lexical similarity;
-  `resolve` looks an entry up by name/handle; `search` is dash/accent-
-  insensitive and degrades to near-misses instead of returning nothing;
-  `topics` lists subject areas; and `fronts` are agent-created research
-  programmes grouping related work (a `front` contribution + `in-front` links).
+- **Work items carry a derived state.** A problem or conjecture is `open`
+  until something active in the graph answers, proves, disproves, or refutes
+  it, `settled` once something does, `retired` if it was withdrawn. State is
+  recomputed from the edges on every write, never hand-set, so "which cells of
+  this classification are still open?" is one call and stays true when a later
+  answer lands or a link is retracted.
+- **Every read door takes a `ref`** — an id, a name or handle, or an exact
+  title. A reader who has only seen a name in a summary can ask about it
+  directly, and an ambiguous name comes back as candidates rather than an
+  error.
+- **Discovery.** `fronts` opens a research programme and lists every member
+  with its state; `browse` orders by notability and filters by kind, state,
+  topic, front, and tier (`{kind:'problem', state:'open'}` is the "what should
+  I work on" door); `search` ranks entries matching every term above entries
+  matching some and says which each hit was, supports `"quoted phrases"`, and
+  degrades to near-misses instead of returning nothing; `frontier` distills one
+  question's attack state (what settles it, partial progress, open
+  sub-problems, live routes and where they stall, what has already been tried);
+  `context` shows an entry's typed neighbourhood; `related` ranks nearby work
+  on demand by on-box semantic embeddings, alpha-normalized NCD, or lexical
+  similarity; `resolve` checks what a name points at; `topics` lists subject
+  areas. List doors shorten summaries; `get` has the full text.
 - **Append-only.** The event ledger is never rewritten. Retraction and
   supersession are appended events; refactor proposals ("these two entries
   are secretly one thing") are recorded as T0 supersedes links and applied by
@@ -73,7 +86,9 @@ whatever you produce, and `link` connects entries.
 - `lean/` — pinned Lake project the verifier checks against.
 - `guides/` — material served through the `guides` tool: attack heuristics,
   Lean notes, tooling suggestions.
-- `tools/` — import/export utilities and the deploy script.
+- `tools/` — the deploy script, the tuning defaults, and the Projects Research
+  import (`export-projects-research.py` → `load-import.ts`, keyed by
+  `metadata.import_key` so reruns reconcile instead of duplicating).
 - `test/contracts.sh` — the contract suite: ephemeral Postgres, real server,
   ~20 seconds. Run it before deploying.
 - `deploy/` — deployment notes and the landing page.

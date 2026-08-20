@@ -129,7 +129,7 @@ VID=$(psql -h "$WORK" -d math -tAc "select id from verification where contributi
 await_spool "$HASH"
 runner_says "$HASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"t","type":"1 + 1 = 2","axioms":[]}]}'
 [[ $(await_verification "$VID") == passed ]] || fail "a clean check did not pass"
-GOT=$(call get "{\"id\":\"$CID\"}")
+GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '["lean_verified"]') == True ]] || fail "pass did not set lean_verified"
 [[ $(echo "$GOT" | field '["tier"]') == 0 ]] || fail "verification changed the tier — it must not"
 
@@ -192,13 +192,13 @@ runner_says "$HASH2" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":
 [[ $(await_verification "$VID2") == failed ]] || fail "disallowed axiom was not rejected"
 
 # Contract: tier changes are trusted-only and land in the event ledger.
-DENIED=$(call set_tier "{\"contributor_key\":\"$KEY\",\"id\":\"$CID\",\"tier\":2,\"note\":\"x\"}")
+DENIED=$(call set_tier "{\"contributor_key\":\"$KEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"x\"}")
 echo "$DENIED" | field '["error"]' | grep -qi trusted || fail "non-trusted was allowed to set tier"
 OPKEY="mrk_test_operator"
 OPID=$(python3 -c "import hashlib; print(hashlib.sha256(b'$OPKEY').hexdigest())")
 psql -q -h "$WORK" -d math -c "insert into identity (id, role) values ('$OPID', 'operator')"
-call set_tier "{\"contributor_key\":\"$OPKEY\",\"id\":\"$CID\",\"tier\":2,\"note\":\"reviewed\"}" | field '["ok"]' > /dev/null
-GOT=$(call get "{\"id\":\"$CID\"}")
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"reviewed\"}" | field '["ok"]' > /dev/null
+GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '["tier"]') == 2 ]] || fail "operator set_tier did not apply"
 echo "$GOT" | python3 -c 'import sys,json; evs=[e["kind"] for e in json.loads(sys.stdin.read())["events"]]; assert "tier-changed" in evs' || fail "no tier-changed event"
 
@@ -206,11 +206,11 @@ echo "$GOT" | python3 -c 'import sys,json; evs=[e["kind"] for e in json.loads(sy
 T=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"exploring the test theorem\",\"note\":\"starting out\",\"relates_to\":[\"$CID\"]}")
 TID=$(echo "$T" | field '["trail_id"]')
 call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$TID\",\"note\":\"found a reduction\"}" | field '["ok"]' > /dev/null
-GOT=$(call get "{\"id\":\"$CID\"}")
+GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '["exploring_now"][0]["latest_note"]') == "found a reduction" ]] || fail "trail not surfaced on get"
 call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$TID\",\"note\":\"wrapping up\",\"close\":true}" | field '["status"]' | grep -q closed || fail "close failed"
-GOT=$(call get "{\"id\":\"$CID\"}")
-[[ $(echo "$GOT" | field '["exploring_now"]') == "[]" ]] || fail "closed trail still shown as active"
+GOT=$(call get "{\"ref\":\"$CID\"}")
+echo "$GOT" | python3 -c 'import sys,json; assert not json.loads(sys.stdin.read()).get("exploring_now")' || fail "closed trail still shown as active"
 FULL=$(call trails "{\"trail_id\":\"$TID\"}")
 [[ $(echo "$FULL" | field '["activity"]') == closed ]] || fail "trail history wrong"
 
@@ -232,13 +232,13 @@ HITS=$(call search '{"query":"de Bruijn-Newman constant"}' | field '["results"]'
 A=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"lemma A\",\"summary\":\"s\",\"content\":\"A.\"}" | field '["id"]')
 B=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"thm B\",\"summary\":\"s\",\"content\":\"B via A.\",\"relates_to\":[{\"id\":\"$A\",\"rel\":\"uses\"}]}" | field '["id"]')
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from contribution where kind='edge'") -ge 1 ]] || fail "link was not recorded as a contribution"
-call context "{\"id\":\"$A\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(x for xs in d["links"]["in"].values() for x in xs)' || fail "link not in neighbourhood"
+call context "{\"ref\":\"$A\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(x for xs in d["links"]["in"].values() for x in xs)' || fail "link not in neighbourhood"
 NA=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$A'")
 python3 -c "assert float('$NA')>0" || fail "notability not derived for a contribution built upon"
 
 # Contract: trusted promotion of a link (edges climb the same ladder).
 EID=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where dst='$A' limit 1")
-call set_tier "{\"contributor_key\":\"$OPKEY\",\"id\":\"$EID\",\"tier\":2,\"note\":\"confirmed link\"}" | field '["ok"]' > /dev/null
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$EID\",\"tier\":2,\"note\":\"confirmed link\"}" | field '["ok"]' > /dev/null
 [[ $(psql -h "$WORK" -d math -tAc "select tier from contribution where id='$EID'") == 2 ]] || fail "edge did not promote"
 
 # Contract: submissions are auto-tagged with subject topics (submit wiring to
@@ -250,18 +250,66 @@ call browse '{"topic":"analytic-number-theory"}' | python3 -c 'import sys,json;a
 # Contract: a front groups work and its members surface (fronts read tool).
 FR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"front\",\"title\":\"test front\",\"summary\":\"s\",\"content\":\"grouping.\"}" | field '["id"]')
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$A\",\"dst\":\"$FR\",\"rel\":\"in-front\"}" | field '["ok"]' > /dev/null
-call fronts "{\"id\":\"$FR\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(m["id"] for m in d["members"])' || fail "front member not surfaced"
+call fronts "{\"ref\":\"$FR\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(m["id"] for ms in d["members_by_kind"].values() for m in ms)' || fail "front member not surfaced"
 
 # Contract: resolve finds an entry by an alias, even when the title differs.
 RN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"obscure internal title zzq\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"Kolmogorov width marker\"]}" | field '["id"]')
-call resolve '{"name":"Kolmogorov width marker"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["match"]=="exact" and d["results"][0]["id"]=="'"$RN"'"' || fail "resolve did not find entry by alias"
+call resolve '{"ref":"Kolmogorov width marker"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["match"]=="exact" and d["results"][0]["id"]=="'"$RN"'"' || fail "resolve did not find entry by alias"
 
 # Contract: frontier distills a question's attack state from the graph.
 Q=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"frontier test question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
 SQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"sub-question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"partial attempt\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$Q\",\"rel\":\"refines\"}]}" > /dev/null
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$Q\",\"dst\":\"$SQ\",\"rel\":\"reduces-to\"}" > /dev/null
-call frontier "{\"id\":\"$Q\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["progress"])>=1 and any(x["id"]=="'"$SQ"'" for x in d["open_subproblems"])' || fail "frontier did not distill attack state"
+call frontier "{\"ref\":\"$Q\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["progress_toward_it"])>=1 and any(x["id"]=="'"$SQ"'" for x in d["open_subproblems"])' || fail "frontier did not distill attack state"
+
+# Contract: a question's state is derived from the graph, not declared. It is
+# open until something in the ledger answers it, and answering flips it without
+# anyone editing the question. This is what makes "which cells are still open?"
+# answerable, so it is checked end to end through the read doors.
+[[ $(call frontier "{\"ref\":\"$Q\"}" | field '["state"]') == open ]] || fail "fresh problem was not open"
+call browse '{"kind":"problem","state":"open"}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "open problem missing from the open list"
+ANS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"settles the sub-question\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$SQ\",\"rel\":\"answers\"}]}" | field '["id"]')
+SQF=$(call frontier "{\"ref\":\"$SQ\"}")
+[[ $(echo "$SQF" | field '["state"]') == settled ]] || fail "answered problem did not become settled"
+echo "$SQF" | python3 -c 'import sys,json;assert any(a["id"]=="'"$ANS"'" for a in json.load(sys.stdin)["answered_by"])' || fail "frontier did not name what settled the question"
+call browse '{"kind":"problem","state":"open"}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "settled problem still listed as open"
+call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"note\":\"withdrawn\"}" | field '["ok"]' > /dev/null
+[[ $(call frontier "{\"ref\":\"$SQ\"}" | field '["state"]') == open ]] || fail "retracting the answer did not reopen the question"
+
+# Contract: every read door takes a name, not just a uuid. A reader who has
+# only seen an entry's name in a summary can ask about it directly.
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"named cell\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"cell-q4n-residual\"]}" > /dev/null
+for door in 'get {"ref":"cell-q4n-residual"}' 'context {"ref":"cell-q4n-residual"}' 'frontier {"ref":"cell-q4n-residual"}'; do
+  [[ $(call "${door%% *}" "${door#* }" | field '["title"]') == "named cell" ]] || fail "${door%% *} did not accept a name"
+done
+[[ $(call fronts '{"ref":"test front"}' | field '["title"]') == "test front" ]] || fail "fronts did not accept a title"
+
+# Contract: search says how each hit matched, and hits carrying every term rank
+# above hits carrying one. Otherwise a two-word query is swamped by whatever
+# shares its commonest word.
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"quaternionic residual growth\",\"summary\":\"s\",\"content\":\"c.\"}" > /dev/null
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"unrelated residual note\",\"summary\":\"s\",\"content\":\"c.\"}" > /dev/null
+SR=$(call search '{"query":"quaternionic residual"}')
+echo "$SR" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+top = d["results"][0]
+assert top["title"] == "quaternionic residual growth", top
+assert top["matched"] == "every term", top
+assert any(r["matched"] != "every term" for r in d["results"][1:]), "weaker matches were not labelled"
+' || fail "search did not rank or label complete matches"
+
+# Contract: list rows are scannable. A summary in a list is shortened; the full
+# text is one get away. Twenty 2000-character summaries is not a list.
+LONG=$(python3 -c 'print("Sigma " * 300)')
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"long summary entry\",\"summary\":\"$LONG\",\"content\":\"$LONG full body.\"}" > /dev/null
+call search '{"query":"long summary entry"}' | python3 -c '
+import sys, json
+r = json.load(sys.stdin)["results"][0]
+assert len(r["summary"]) <= 281, len(r["summary"])
+' || fail "search returned an untruncated summary"
+[[ $(call get '{"ref":"long summary entry"}' | field '["content"]' | wc -c) -gt 1000 ]] || fail "get did not return the full content"
 
 # Contract: every read door says when. A reader must be able to date anything
 # it is shown without a second round trip — including a *link*, whose
@@ -280,24 +328,24 @@ for o in objs:
         datetime.datetime.fromisoformat(str(o[k]).replace("Z", "+00:00"))
 ' "$1" "$3" || fail "$1 returned undated or unparseable entries: $(echo "$2" | head -c 400)"
 }
-GOTQ=$(call get "{\"id\":\"$Q\"}")
+GOTQ=$(call get "{\"ref\":\"$Q\"}")
 dated "get" "$GOTQ" '[d]'
 dated "get links" "$GOTQ" '(x for xs in list(d["links"]["in"].values()) + list(d["links"]["out"].values()) for x in xs)'
 dated "get events" "$GOTQ" 'd["events"]'
-CTX=$(call context "{\"id\":\"$Q\"}")
+CTX=$(call context "{\"ref\":\"$Q\"}")
 dated "context" "$CTX" '[d]'
 dated "context links" "$CTX" '(x for xs in list(d["links"]["in"].values()) + list(d["links"]["out"].values()) for x in xs)'
-FRO=$(call frontier "{\"id\":\"$Q\"}")
+FRO=$(call frontier "{\"ref\":\"$Q\"}")
 dated "frontier" "$FRO" '[d]'
-dated "frontier progress" "$FRO" 'd["progress"]'
+dated "frontier progress" "$FRO" 'd["progress_toward_it"]'
 dated "frontier open_subproblems" "$FRO" 'd["open_subproblems"]'
 dated "fronts list" "$(call fronts '{}')" 'd["fronts"]'
-FRD=$(call fronts "{\"id\":\"$FR\"}")
+FRD=$(call fronts "{\"ref\":\"$FR\"}")
 dated "front" "$FRD" '[d]'
-dated "front members" "$FRD" 'd["members"] + d["open_problems"]'
+dated "front members" "$FRD" '[m for ms in d["members_by_kind"].values() for m in ms]'
 dated "browse" "$(call browse '{"limit":3}')" 'd["results"]'
 dated "search" "$(call search '{"query":"frontier test question"}')" 'd["results"]'
-dated "related" "$(call related "{\"id\":\"$Q\",\"method\":\"lexical\",\"limit\":3}")" 'd["related"]'
+dated "related" "$(call related "{\"ref\":\"$Q\",\"method\":\"lexical\",\"limit\":3}")" 'd["related"]'
 dated "hello most_notable" "$(call hello '{}')" 'd["most_notable"]'
 
 # Contract: a contributor key may arrive as an Authorization: Bearer header
@@ -311,7 +359,7 @@ MINE=$(AUTH=$KEY call my_submissions '{}' | field '["submissions"]' | python3 -c
 OPID2=$(AUTH=$OPKEY call hello "{\"contributor_key\":\"$KEY\"}" | field '["you"]["identity"]')
 [[ "$OPID2" == "$SID" ]] || fail "per-call contributor_key did not win over the header"
 HDRT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"header gate target\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-AUTH=$OPKEY call set_tier "{\"id\":\"$HDRT\",\"tier\":2,\"note\":\"reviewed via header\"}" | field '["ok"]' > /dev/null
+AUTH=$OPKEY call set_tier "{\"ref\":\"$HDRT\",\"tier\":2,\"note\":\"reviewed via header\"}" | field '["ok"]' > /dev/null
 [[ $(psql -h "$WORK" -d math -tAc "select tier from contribution where id='$HDRT'") == 2 ]] || fail "operator header did not pass the trusted gate"
 
 # Contract: OAuth is a complete, accountless path to an identity -- the one
@@ -323,15 +371,15 @@ curl -sf "$PUBLIC_URL/.well-known/oauth-authorization-server" | field '["token_e
 
 REG=$(curl -sf -X POST "$PUBLIC_URL/oauth/register" -H 'Content-Type: application/json' \
   -d '{"client_name":"contract client","redirect_uris":["http://127.0.0.1:9999/callback"]}')
-CID=$(echo "$REG" | field '["client_id"]')
+OACID=$(echo "$REG" | field '["client_id"]')
 VERIFIER=$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')
 CHALLENGE=$(python3 -c 'import hashlib,base64,sys; print(base64.urlsafe_b64encode(hashlib.sha256(sys.argv[1].encode()).digest()).rstrip(b"=").decode())' "$VERIFIER")
-curl -sf "$PUBLIC_URL/oauth/authorize?response_type=code&client_id=$CID&redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcallback&code_challenge=$CHALLENGE&code_challenge_method=S256&state=xyz" \
+curl -sf "$PUBLIC_URL/oauth/authorize?response_type=code&client_id=$OACID&redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcallback&code_challenge=$CHALLENGE&code_challenge_method=S256&state=xyz" \
   | grep -qi "contract client" || fail "authorization page did not name the client"
 authorize_code() { # -> a fresh authorization code from a consent round
   local location
   location=$(curl -sf -o /dev/null -w '%{redirect_url}' -X POST "$PUBLIC_URL/oauth/authorize" \
-    --data-urlencode "client_id=$CID" --data-urlencode "redirect_uri=http://127.0.0.1:9999/callback" \
+    --data-urlencode "client_id=$OACID" --data-urlencode "redirect_uri=http://127.0.0.1:9999/callback" \
     --data-urlencode "code_challenge=$CHALLENGE" --data-urlencode "state=xyz" --data-urlencode "decision=new")
   [[ $location == *"state=xyz"* ]] || fail "consent did not redirect back with state"
   python3 -c 'import sys,urllib.parse as u; print(u.parse_qs(u.urlparse(sys.argv[1]).query)["code"][0])' "$location"
@@ -339,11 +387,11 @@ authorize_code() { # -> a fresh authorization code from a consent round
 # A failed PKCE check burns the code, as OAuth 2.1 requires, so the good
 # exchange below starts from its own consent round.
 curl -s -X POST "$PUBLIC_URL/oauth/token" --data-urlencode "grant_type=authorization_code" \
-  --data-urlencode "code=$(authorize_code)" --data-urlencode "client_id=$CID" --data-urlencode "code_verifier=wrong-verifier" \
+  --data-urlencode "code=$(authorize_code)" --data-urlencode "client_id=$OACID" --data-urlencode "code_verifier=wrong-verifier" \
   | field '["error"]' | grep -q invalid_grant || fail "PKCE verification is not enforced"
 CODE=$(authorize_code)
 TOKEN=$(curl -sf -X POST "$PUBLIC_URL/oauth/token" --data-urlencode "grant_type=authorization_code" \
-  --data-urlencode "code=$CODE" --data-urlencode "client_id=$CID" --data-urlencode "code_verifier=$VERIFIER" | field '["access_token"]')
+  --data-urlencode "code=$CODE" --data-urlencode "client_id=$OACID" --data-urlencode "code_verifier=$VERIFIER" | field '["access_token"]')
 [[ $TOKEN == mrt_* ]] || fail "authorization code did not exchange for a token"
 OAID=$(AUTH=$TOKEN call submit '{"kind":"result","title":"oauth attribution","summary":"s","content":"c."}' | field '["attributed_to"]')
 [[ $OAID != anonymous ]] || fail "an OAuth token did not attribute the contribution"
@@ -370,16 +418,15 @@ PROPOSAL=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"ti
 # new line here.
 declare -A DOORS=(
   [hello]='{}'
-  [get_problems]='{}'
   [search]='{"query":"frontier test question"}'
-  [resolve]='{"name":"frontier test question"}'
+  [resolve]='{"ref":"frontier test question"}'
   [browse]='{}'
   [topics]='{}'
   [fronts]='{}'
-  [frontier]="{\"id\":\"$Q\"}"
-  [context]="{\"id\":\"$Q\"}"
-  [related]="{\"id\":\"$Q\",\"method\":\"lexical\"}"
-  [get]="{\"id\":\"$Q\"}"
+  [frontier]="{\"ref\":\"$Q\"}"
+  [context]="{\"ref\":\"$Q\"}"
+  [related]="{\"ref\":\"$Q\",\"method\":\"lexical\"}"
+  [get]="{\"ref\":\"$Q\"}"
   [submit]='{"kind":"result","title":"every door","summary":"s","content":"c."}'
   [check_lean]="{\"contributor_key\":\"$KEY\",\"source\":\"$CHECK_SRC\"}"
   [link]="{\"contributor_key\":\"$KEY\",\"src\":\"$Q\",\"dst\":\"$SQ\",\"rel\":\"uses\"}"
@@ -389,13 +436,13 @@ declare -A DOORS=(
   [guides]='{}'
   [stats]='{}'
   [events]='{}'
-  [get_tuning]='{}'
+  [get_tuning]="{\"contributor_key\":\"$OPKEY\"}"
   [set_tuning]="{\"contributor_key\":\"$OPKEY\",\"notability_weights\":{},\"note\":\"no-op\"}"
   [review_queue]="{\"contributor_key\":\"$OPKEY\"}"
-  [set_tier]="{\"contributor_key\":\"$OPKEY\",\"id\":\"$Q\",\"tier\":1,\"note\":\"n\"}"
+  [set_tier]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$Q\",\"tier\":1,\"note\":\"n\"}"
   [apply_refactor]="{\"contributor_key\":\"$OPKEY\",\"refactor_id\":\"$PROPOSAL\",\"decision\":\"reject\",\"note\":\"n\"}"
   [grant_trust]="{\"contributor_key\":\"$OPKEY\",\"identity_id\":\"$OPID\",\"role\":\"operator\",\"note\":\"n\"}"
-  [retract]="{\"contributor_key\":\"$OPKEY\",\"id\":\"$SQ\",\"note\":\"contract test\"}"
+  [retract]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$SQ\",\"note\":\"contract test\"}"
   [register_public_key]="{\"contributor_key\":\"$KEY\",\"public_key\":\"$(python3 -c 'import base64,os; print(base64.b64encode(os.urandom(32)).decode())')\"}"
 )
 REGISTERED=$(curl -sf --max-time 10 -X POST "$MCP" -H 'Content-Type: application/json' \

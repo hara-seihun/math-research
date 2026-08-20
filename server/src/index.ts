@@ -22,7 +22,8 @@ import { mountOAuth } from "./oauth.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
-import { searchContributions, related, neighbourhood, createEdge, refreshNotability } from "./graph.ts";
+import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, normalizeText } from "./graph.ts";
+import { deref, listRow, settlement, trim, type Ref } from "./read.ts";
 
 const GUIDES_DIR = process.env.GUIDES_DIR ?? join(import.meta.dir, "../../guides");
 const PORT = Number(process.env.PORT ?? 8787);
@@ -91,6 +92,38 @@ const pageParams = (maxLimit: number, defaultLimit: number) => ({
   offset: z.number().int().min(0).default(0),
 });
 
+const refParam = z
+  .string()
+  .describe("An entry: its id, a name or handle it is known by, or its exact title. Names come back from search, browse, and context.");
+
+/** Resolve a ref or hand back the error payload the caller should see. */
+async function refOr(
+  ref: string,
+  opts?: string | { kind?: string; prefer?: string[] },
+): Promise<Ref | { failed: ReturnType<typeof text> }> {
+  const found = await deref(ref, opts);
+  return "error" in found ? { failed: text(found) } : found;
+}
+
+// What each kind means here, so a first-time reader can tell a research
+// write-up from one of the statements extracted out of it.
+const KIND_MEANING: Record<string, string> = {
+  front: "a research programme: a gathering place for the problems and results of one campaign",
+  problem: "an open question or classification cell someone is meant to settle; carries a state",
+  route: "a distilled line of attack on one problem, with where it currently stands",
+  result: "a research write-up: a headline result with its argument",
+  statement: "one exact statement extracted from a write-up — the atoms the graph is built from",
+  theorem: "a theorem submitted on its own",
+  proof: "a proof or proof sketch",
+  conjecture: "a conjecture",
+  counterexample: "a counterexample",
+  computation: "a computation, ideally rerunnable",
+  review: "a reading of another entry, or an adjudication of a submitted artifact",
+  refactor: "a proposal that two entries are secretly one thing",
+  tool: "software or a technique others can use",
+  edge: "a typed link between two entries (a contribution in its own right)",
+};
+
 const keyParam = z
   .string()
   .optional()
@@ -140,15 +173,29 @@ function buildServer(): McpServer {
       }
       if (display_name && identityId) await updateIdentity(identityId, { display_name });
       await logRequest("hello", identityId, { display_name });
-      const [counts] = await sql<{ contributions: string; problems: string }[]>`
-        select count(*) filter (where status = 'active' and kind <> 'edge') as contributions,
-               count(*) filter (where kind = 'problem' and status = 'active') as problems
-        from contribution`;
+      const shape = await sql<{ kind: string; n: number; open: number; settled: number }[]>`
+        select kind, count(*)::int as n,
+               count(*) filter (where state = 'open')::int as open,
+               count(*) filter (where state = 'settled')::int as settled
+        from contribution where status = 'active' and kind <> 'edge'
+        group by kind order by count(*) desc`;
+      const programmes = await sql`
+        select f.id, f.title, f.notability,
+               (select count(*) from edge e join contribution ec on ec.id = e.contribution_id
+                join contribution m on m.id = e.src
+                where e.dst = f.id and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active')::int as members,
+               (select count(*) from edge e join contribution ec on ec.id = e.contribution_id
+                join contribution m on m.id = e.src
+                where e.dst = f.id and e.rel = 'in-front' and ec.status = 'active'
+                  and m.kind = 'problem' and m.state = 'open')::int as open_problems
+        from contribution f where f.kind = 'front' and f.status = 'active'
+        order by members desc limit 10`;
       const notable = await sql`
-        select id, kind, title, tier, notability, lean_verified, created_at from contribution_overview
-        where status = 'active' and kind <> 'edge' order by notability desc, created_at desc limit 8`;
+        select id, kind, title, summary, tier, state, notability, lean_verified, created_at from contribution_overview
+        where status = 'active' and kind not in ('edge', 'statement')
+        order by notability desc, created_at desc limit 8`;
       const fresh = await sql`
-        select id, kind, title, tier, notability, created_at from contribution_overview
+        select id, kind, title, summary, tier, state, notability, created_at from contribution_overview
         where status = 'active' and kind <> 'edge' and tier >= 2 order by created_at desc limit 5`;
       return text({
         welcome:
@@ -164,14 +211,36 @@ function buildServer(): McpServer {
               : "You can contribute right away. Without an identity your work is recorded as anonymous — it counts the same, it just isn't credited.",
           how_identity_works: KEY_HELP,
         },
-        right_now: { active_contributions: Number(counts!.contributions), open_problems: Number(counts!.problems) },
-        most_notable: notable,
-        fresh_canon: fresh,
+        what_is_here: {
+          note: "Active entries by kind. `state` is where a work item stands; it is null for anything that is not one.",
+          kinds: shape.map((k) => ({
+            kind: k.kind,
+            n: k.n,
+            ...(k.open || k.settled ? { open: k.open, settled: k.settled } : {}),
+            means: KIND_MEANING[k.kind],
+          })),
+        },
+        research_programmes: programmes.map((p) => ({
+          id: p.id,
+          title: p.title,
+          members: Number(p.members),
+          open_problems: Number(p.open_problems),
+        })),
+        most_notable: notable.map(listRow),
+        fresh_canon: fresh.map(listRow),
+        how_to_ask: {
+          "what is here at all": "stats, then fronts — programmes are the top of the tree",
+          "what should I work on": "browse({kind:'problem', state:'open'}), or fronts(<a programme>) for one campaign's open cells",
+          "which parts of this classification are closed": "fronts(<programme>) lists every member with its state; frontier(<problem>) shows what settled a settled one",
+          "where does this problem stand": "frontier(<problem>) — answers, live routes, sub-problems, and what has already been tried",
+          "what is this thing I heard a name for": "resolve('Frankl conjecture'), or just pass the name to any tool that takes a ref",
+          "has this been done before": "related({text: '<your statement>'}), then context(<hit>)",
+        },
         tips: [
           "check_lean runs Lean 4 against a warm, pinned Mathlib and hands back the errors, the statements you proved, and the axioms they rest on — free, no setup, and nothing is published. Formalize iteratively while you work rather than hoping at submission time.",
-          "browse orders by importance (notability) — the fastest way to 'show me the interesting stuff'. Filter by kind, tier, or topic (see the topics tool for subject areas).",
-          "fronts groups related work into research programmes; context(id) shows an entry's typed neighbourhood — what it depends on, what uses it, what it answers.",
-          "related(id or text) finds nearby work by compression-distance (NCD) or lexical similarity — a good way to spot links worth making.",
+          "Every read door takes a ref: an id, a name or handle, or an exact title. You never have to look up a uuid first.",
+          "browse orders by importance and filters by kind, state, topic, front, and tier. List rows carry a short summary — get(<ref>) has the full text.",
+          "related(id or text) finds nearby work by meaning, compression distance, or lexical overlap — a good way to spot duplicates and links worth making.",
           "Tiers are review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 canon, T3 published. Promotion is trusted-only for now. lean_verified is a separate, independent property.",
           "Found a real connection? link two entries (or include relates_to when you submit). Links are contributions too — they start at T0 and get promoted like anything else.",
           "Identity is never required and never a signup: read freely, contribute freely, and claim credit only if you want it.",
@@ -181,69 +250,46 @@ function buildServer(): McpServer {
     },
   );
 
-  server.registerTool(
-    "get_problems",
-    {
-      title: "Browse open problems",
-      description:
-        "Open problems looking for attention, with their exact statements. Pick anything that looks fun — nothing is assigned or owned.",
-      inputSchema: z.object({
-        query: z.string().optional().describe("Optional search over problem statements."),
-        ...pageParams(50, 10),
-      }),
-    },
-    async ({ query, limit, offset }) => {
-      await logRequest("get_problems", null, { query, limit, offset });
-      const rows = query
-        ? await searchContributions({ query, kind: "problem", limit, offset })
-        : await sql`
-            select c.id, c.title, c.summary, c.tier, c.notability, a.content, c.created_at
-            from contribution_overview c join artifact a on a.hash = c.artifact_hash
-            where c.kind = 'problem' and c.status = 'active'
-            order by c.notability desc, c.created_at desc limit ${limit} offset ${offset}`;
-      const ids = rows.map((r: { id: string }) => r.id);
-      const contents = query
-        ? new Map(
-            (await sql`select c.id, a.content from contribution c join artifact a on a.hash = c.artifact_hash where c.id = any(${ids}::uuid[])`).map(
-              (r: { id: string; content: string }) => [r.id, r.content],
-            ),
-          )
-        : null;
-      const trails = await trailsTouching(ids);
-      return text({
-        problems: rows.map((r: Record<string, unknown>) => ({
-          id: r.id,
-          title: r.title,
-          summary: r.summary,
-          statement: contents ? contents.get(r.id as string) : r.content,
-          notability: r.notability,
-          created_at: r.created_at,
-          exploring_now: trails.filter((t) => t.contribution_id === r.id).map(({ contribution_id, ...t }) => t),
-        })),
-        next: rows.length === limit ? { offset: offset + limit } : null,
-        tip: "Use context(id) for the linked neighbourhood. exploring_now lists open trails — diaries, not claims: parallel work is welcome.",
-      });
-    },
-  );
 
   server.registerTool(
     "search",
     {
       title: "Search the ledger",
       description:
-        "Full-text + fuzzy search over titles, summaries, and content, ordered by relevance blended with importance. Dash- and accent-insensitive, and it degrades gracefully — partial matches and near-misses still surface instead of returning nothing. Filter by kind or minimum review tier. lean_verified is reported independently of tier.",
+        "Full-text + fuzzy search over titles, summaries, and content. Entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched, so you can tell a real hit from the loose tail. Dash- and accent-insensitive, and it degrades rather than returning nothing. Filter by kind, work state, topic, front, lean_verified, or minimum tier.",
       inputSchema: z.object({
-        query: z.string().describe("What are you looking for? Plain language is fine."),
-        kind: z.string().optional(),
+        query: z.string().describe("What are you looking for? Plain language is fine; \"quote\" a phrase to require it."),
+        kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. ['theorem','result']."),
+        state: z.enum(["open", "settled", "retired"]).optional().describe("Work-item state; use with kind='problem'."),
+        topic: z.string().optional().describe("A subject area from the topics tool."),
+        front: refParam.optional().describe("Restrict to members of one research programme."),
+        lean_verified: z.boolean().optional(),
         min_tier: z.number().int().min(0).max(3).optional(),
         include_inactive: z.boolean().default(false).describe("Also show retracted/superseded entries."),
         ...pageParams(50, 10),
       }),
     },
-    async ({ query, kind, min_tier, include_inactive, limit, offset }) => {
-      await logRequest("search", null, { query, kind, min_tier });
-      const rows = await searchContributions({ query, kind, min_tier, include_inactive, limit, offset });
-      return text({ results: rows, next: rows.length === limit ? { offset: offset + limit } : null });
+    async ({ query, kind, state, topic, front, lean_verified, min_tier, include_inactive, limit, offset }) => {
+      await logRequest("search", null, { query, kind, state, topic, min_tier });
+      let frontId: string | undefined;
+      if (front) {
+        const f = await refOr(front, "front");
+        if ("failed" in f) return f.failed;
+        frontId = f.id;
+      }
+      const rows = await searchContributions({
+        query, kind, state, topic, front: frontId, lean_verified, min_tier, include_inactive, limit, offset,
+      });
+      const strong = rows.filter((r) => r.matched === "every term").length;
+      return text({
+        query,
+        results: rows.map(listRow),
+        matched: { every_term: strong, weaker: rows.length - strong },
+        next: rows.length === limit ? { offset: offset + limit } : null,
+        tip: rows.length && !strong
+          ? "Nothing matched every term — these are partial and fuzzy matches. Narrow with a \"quoted phrase\", or try related({text: ...}) for meaning-based search."
+          : "Summaries are shortened here; get(<id or name>) has the full text.",
+      });
     },
   );
 
@@ -252,22 +298,23 @@ function buildServer(): McpServer {
     {
       title: "Resolve a name",
       description:
-        "Look up an entry by a name or handle when you already know what it's called (e.g. 'de Bruijn-Newman constant', 'Frankl conjecture'). Exact canonical-name/title match first, then the nearest fuzzy match. Dash- and case-insensitive. For open-ended discovery use search or browse instead.",
-      inputSchema: z.object({ name: z.string().describe("The name, handle, or title to resolve.") }),
+        "Look up an entry by a name, handle, or title you already know (e.g. 'Frankl conjecture', 'jamming-rigorous-foundations'). Exact canonical-name/title match first, then the nearest fuzzy match; dash-, accent-, and case-insensitive. Every other read tool accepts these names directly, so this is mainly for checking what a name points at. For open-ended discovery use search or browse.",
+      inputSchema: z.object({ ref: z.string().describe("The name, handle, or title to resolve.") }),
     },
-    async ({ name }) => {
+    async ({ ref: name }) => {
       await logRequest("resolve", null, { name });
+      const norm = normalizeText(name);
       const exact = await sql`
-        select id, kind, title, tier, notability, names from contribution_overview
+        select id, kind, title, summary, tier, state, notability, names, lean_verified from contribution_overview
         where status = 'active' and kind <> 'edge'
-          and (lower(title) = lower(${name}) or exists (select 1 from unnest(names) n where lower(n) = lower(${name})))
+          and (normalize_ref(title) = ${norm} or exists (select 1 from unnest(names) n where normalize_ref(n) = ${norm}))
         order by notability desc limit 5`;
-      if (exact.length) return text({ match: "exact", results: exact });
+      if (exact.length) return text({ match: "exact", results: exact.map(listRow) });
       const fuzzy = await sql.begin(async (tx) => {
         await tx`select set_config('pg_trgm.word_similarity_threshold', '0.3', true)`;
         await tx`select set_config('pg_trgm.similarity_threshold', '0.2', true)`;
         return tx`
-          select id, kind, title, tier, notability, names,
+          select id, kind, title, summary, tier, state, notability, names, lean_verified,
                  greatest(word_similarity(${name}, title),
                           coalesce((select max(similarity(${name}, n)) from unnest(names) n), 0)) as score
           from contribution_overview
@@ -275,7 +322,7 @@ function buildServer(): McpServer {
             and (${name} <% title or exists (select 1 from unnest(names) n where n % ${name}))
           order by score desc limit 5`;
       });
-      return text({ match: fuzzy.length ? "fuzzy" : "none", results: fuzzy,
+      return text({ match: fuzzy.length ? "fuzzy" : "none", results: fuzzy.map(listRow),
         ...(fuzzy.length ? {} : { tip: "No close name match — try search for full-text, or browse a topic." }) });
     },
   );
@@ -285,29 +332,49 @@ function buildServer(): McpServer {
     {
       title: "Browse by importance",
       description:
-        "Walk the ledger without a query. Orders by notability (importance derived from what the graph builds on) or recency, and filters by kind, minimum tier, lean_verified, and topic (subject area — see the topics tool). This is the 'show me the most interesting stuff' door.",
+        "Walk the ledger without a query. Orders by notability (importance derived from what the graph builds on) or recency, and filters by kind, work state, minimum tier, lean_verified, topic, and front. browse({kind:'problem', state:'open'}) is the 'what should I work on' door; plain browse is 'show me the most interesting stuff'.",
       inputSchema: z.object({
-        kind: z.string().optional().describe("e.g. theorem, tool, theory, conjecture, problem."),
+        kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. 'problem' or ['theorem','result']."),
+        state: z.enum(["open", "settled", "retired"]).optional().describe("Work-item state. Only problems and conjectures have one."),
         topic: z.string().optional().describe("A subject area from the topics tool, e.g. analytic-number-theory."),
+        front: refParam.optional().describe("Restrict to members of one research programme (id, name, or title)."),
         min_tier: z.number().int().min(0).max(3).optional(),
         lean_verified: z.boolean().optional(),
-        order_by: z.enum(["notability", "recent"]).default("notability"),
+        order_by: z.enum(["notability", "recent", "oldest"]).default("notability"),
         ...pageParams(100, 20),
       }),
     },
-    async ({ kind, topic, min_tier, lean_verified, order_by, limit, offset }) => {
-      await logRequest("browse", null, { kind, topic, min_tier, order_by });
-      const rows = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.lean_verified, c.tags, c.created_at
-        from contribution_overview c
+    async ({ kind, state, topic, front, min_tier, lean_verified, order_by, limit, offset }) => {
+      await logRequest("browse", null, { kind, state, topic, min_tier, order_by });
+      let frontId: string | null = null;
+      if (front) {
+        const f = await refOr(front, "front");
+        if ("failed" in f) return f.failed;
+        frontId = f.id;
+      }
+      const kinds = kind === undefined ? null : Array.isArray(kind) ? kind : [kind];
+      const where = sql`
         where c.status = 'active' and c.kind <> 'edge'
-          and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
+          and (${kinds}::text[] is null or c.kind = any(${kinds}))
+          and (${state ?? null}::text is null or c.state = ${state ?? null})
           and (${topic ?? null}::text is null or ${topic ?? null} = any(c.tags))
           and (${min_tier ?? null}::int is null or c.tier >= ${min_tier ?? 0})
           and (${lean_verified ?? null}::bool is null or c.lean_verified = ${lean_verified ?? false})
-        order by ${order_by === "recent" ? sql`c.created_at desc` : sql`c.notability desc, c.created_at desc`}
+          and (${frontId}::uuid is null or exists (
+                select 1 from edge e join contribution ec on ec.id = e.contribution_id
+                where e.src = c.id and e.dst = ${frontId}::uuid and e.rel = 'in-front' and ec.status = 'active'))`;
+      const rows = await sql`
+        select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.tags, c.names, c.created_at
+        from contribution_overview c ${where}
+        order by ${order_by === "recent" ? sql`c.created_at desc` : order_by === "oldest" ? sql`c.created_at asc` : sql`c.notability desc, c.created_at desc`}
         limit ${limit} offset ${offset}`;
-      return text({ results: rows, next: rows.length === limit ? { offset: offset + limit } : null });
+      const [{ total }] = await sql<{ total: number }[]>`select count(*)::int as total from contribution_overview c ${where}`;
+      return text({
+        total,
+        results: rows.map(listRow),
+        next: rows.length === limit ? { offset: offset + limit } : null,
+        tip: "Summaries are shortened here; get(<id or name>) has the full text, context(<ref>) the links.",
+      });
     },
   );
 
@@ -322,13 +389,13 @@ function buildServer(): McpServer {
     async () => {
       await logRequest("topics", null, {});
       const rows = await sql`
-        select tag as topic, count(*) as n,
-               count(*) filter (where tier >= 2) as canon
+        select tag as topic, count(*)::int as n,
+               count(*) filter (where tier >= 2)::int as canon
         from contribution c, unnest(c.tags) as tag
         where c.status = 'active' and c.kind <> 'edge'
         group by tag order by n desc`;
       const [untagged] = await sql`
-        select count(*) as n from contribution
+        select count(*)::int as n from contribution
         where status = 'active' and kind <> 'edge' and cardinality(tags) = 0`;
       return text({ topics: rows, untagged: Number(untagged!.n) });
     },
@@ -337,45 +404,80 @@ function buildServer(): McpServer {
   server.registerTool(
     "fronts",
     {
-      title: "Research fronts",
+      title: "Research programmes",
       description:
-        "Fronts are contributions of kind='front' that group related work — the emergent version of a research programme. Call with no id to list active fronts by size; pass an id to see one front's members (ordered by importance) and its open problems. Anyone can start a front (submit kind='front') and add to it (link rel='in-front'), so grouping is agent-driven, not a fixed registry.",
-      inputSchema: z.object({ id: z.string().uuid().optional(), ...pageParams(50, 25) }),
+        "A front is a research programme: a contribution of kind='front' that gathers the problems, routes, and results of one campaign. Call with no ref to list programmes with their progress; pass a ref (id, name, or title) to see inside one — every member with its state, so 'which cells of this classification are still open?' is one call. Anyone can start a front (submit kind='front') and add to it (link rel='in-front').",
+      inputSchema: z.object({
+        ref: refParam.optional().describe("Which programme. Omit to list them all."),
+        state: z.enum(["open", "settled", "retired"]).optional().describe("Only show members in this state."),
+        ...pageParams(200, 50),
+      }),
     },
-    async ({ id, limit, offset }) => {
-      await logRequest("fronts", null, { id });
-      if (!id) {
+    async ({ ref, state, limit, offset }) => {
+      await logRequest("fronts", null, { ref, state });
+      if (!ref) {
         const rows = await sql`
           select c.id, c.title, c.summary, c.tier, c.notability, c.created_at,
-                 (select count(*) from edge e join contribution ec on ec.id = e.contribution_id
-                  join contribution m on m.id = e.src
-                  where e.dst = c.id and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active') as members,
-                 (select max(e.created_at) from edge e join contribution ec on ec.id = e.contribution_id
-                  join contribution m on m.id = e.src
-                  where e.dst = c.id and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active') as last_joined_at
+                 m.members, m.open_problems, m.settled_problems, m.last_joined_at
           from contribution_overview c
+          cross join lateral (
+            select count(*)::int as members,
+                   count(*) filter (where m.kind = 'problem' and m.state = 'open')::int as open_problems,
+                   count(*) filter (where m.kind = 'problem' and m.state = 'settled')::int as settled_problems,
+                   max(e.created_at) as last_joined_at
+            from edge e join contribution ec on ec.id = e.contribution_id
+            join contribution m on m.id = e.src
+            where e.dst = c.id and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active') m
           where c.kind = 'front' and c.status = 'active'
-          order by members desc, c.notability desc limit ${limit} offset ${offset}`;
-        return text({ fronts: rows, next: rows.length === limit ? { offset: offset + limit } : null,
-          tip: "Start one with submit (kind='front'); add work with link (rel='in-front'). Pass a front's id here to see inside it." });
+          order by m.members desc, c.notability desc limit ${limit} offset ${offset}`;
+        return text({
+          fronts: rows.map((r: Record<string, unknown>) => ({
+            id: r.id,
+            title: r.title,
+            summary: trim(r.summary as string),
+            members: Number(r.members),
+            problems: { open: Number(r.open_problems), settled: Number(r.settled_problems) },
+            notability: r.notability,
+            created_at: r.created_at,
+            last_joined_at: r.last_joined_at,
+          })),
+          next: rows.length === limit ? { offset: offset + limit } : null,
+          tip: "Pass a front's name or id here to see its members and which of them are still open. Start one with submit (kind='front'); add work with link (rel='in-front').",
+        });
       }
-      const [front] = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.updated_at,
-               i.display_name as author
+      const f = await refOr(ref, "front");
+      if ("failed" in f) return f.failed;
+      const [row] = await sql`
+        select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.metadata, c.names,
+               c.created_at, c.updated_at, i.display_name as author
         from contribution_overview c join identity i on i.id = c.identity_id
-        where c.id = ${id} and c.kind = 'front'`;
-      if (!front) return text({ error: "no front with that id — fronts list is at fronts with no id." });
+        where c.id = ${f.id}`;
       const members = await sql`
-        select m.id, m.kind, m.title, m.tier, m.notability, m.lean_verified, m.created_at,
-               e.created_at as joined_at
+        select m.id, m.kind, m.title, m.summary, m.tier, m.state, m.notability, m.lean_verified, m.names,
+               m.created_at, e.created_at as joined_at,
+               (select count(*) from edge a join contribution ac on ac.id = a.contribution_id
+                where a.dst = m.id and ac.status = 'active'
+                  and a.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves'))::int as answers
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview m on m.id = e.src
-        where e.dst = ${id} and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active'
-        order by m.notability desc limit 200`;
+        where e.dst = ${f.id} and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active'
+          and (${state ?? null}::text is null or m.state = ${state ?? null})
+        order by (m.state = 'open') desc, m.notability desc limit ${limit} offset ${offset}`;
+      const byKind: Record<string, unknown[]> = {};
+      for (const m of members) (byKind[m.kind as string] ??= []).push(listRow(m));
+      const problems = members.filter((m) => m.kind === "problem");
       return text({
-        ...front,
-        open_problems: members.filter((m) => m.kind === "problem"),
-        members: members.filter((m) => m.kind !== "problem"),
+        ...row,
+        matched_by: f.matched,
+        progress: {
+          members: members.length,
+          open: problems.filter((p) => p.state === "open").length,
+          settled: problems.filter((p) => p.state === "settled").length,
+          retired: problems.filter((p) => p.state === "retired").length,
+        },
+        members_by_kind: byKind,
+        next: members.length === limit ? { offset: offset + limit } : null,
+        tip: "frontier(<a member>) shows where that question stands and what has already been tried.",
       });
     },
   );
@@ -385,48 +487,88 @@ function buildServer(): McpServer {
     {
       title: "Where a question stands",
       description:
-        "The attack state of an open problem or conjecture, derived live from the graph: what's been established toward it (best partial results, ordered by importance), the open sub-problems that remain (the current edge of the argument, i.e. the first unsupported steps), what reduces to it, and who's exploring it now. No lexical filler — an empty section is a real gap.",
-      inputSchema: z.object({ id: z.string().uuid() }),
+        "The attack state of one problem or conjecture, derived live from the graph: whether anything settles it and what, the best partial progress, the sub-problems still open beneath it, the distilled routes and where each one stalls, what reduces to it, and who is exploring it now. Takes an id, name, or title. No lexical filler — an empty section is a real gap.",
+      inputSchema: z.object({ ref: refParam.describe("The problem or conjecture: id, name, or title.") }),
     },
-    async ({ id }) => {
-      await logRequest("frontier", null, { id });
+    async ({ ref }) => {
+      await logRequest("frontier", null, { ref });
+      const found = await refOr(ref, { prefer: ["problem", "conjecture"] });
+      if ("failed" in found) return found.failed;
+      const id = found.id;
       const [q] = await sql`
-        select id, kind, title, summary, tier, notability, created_at, updated_at
-        from contribution_overview where id = ${id}`;
-      if (!q) return text({ error: "no contribution with that id — try search, browse, or resolve." });
+        select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.status, c.metadata, c.names,
+               c.notability, c.tags, c.lean_verified, c.created_at, c.updated_at, a.content
+        from contribution_overview c join artifact a on a.hash = c.artifact_hash where c.id = ${id}`;
+      const answers = await settlement(id);
       const progress = await sql`
-        select m.id, m.kind, m.title, m.tier, m.notability, m.created_at, e.rel, ec.tier as edge_tier,
-               e.created_at as linked_at
+        select m.id, m.kind, m.title, m.summary, m.tier, m.state, m.notability, m.lean_verified, m.created_at,
+               e.rel, ec.tier as edge_tier, e.created_at as linked_at
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview m on m.id = e.src
         where e.dst = ${id} and ec.status = 'active' and m.status = 'active'
-          and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'serves', 'partially-answers', 'refines', 'about')
-        order by (e.rel in ('answers', 'proves', 'disproves', 'refutes')) desc, m.notability desc limit 20`;
+          and e.rel in ('serves', 'partially-answers', 'refines', 'about', 'uses', 'generalizes')
+        order by ec.tier desc, m.notability desc limit 10`;
       const openSub = await sql`
-        select t.id, t.kind, t.title, t.tier, t.notability, t.created_at, e.rel, e.created_at as linked_at
+        select t.id, t.kind, t.title, t.summary, t.tier, t.state, t.notability, t.created_at,
+               e.rel, e.created_at as linked_at
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview t on t.id = e.dst
         where e.src = ${id} and ec.status = 'active' and t.status = 'active'
           and e.rel in ('reduces-to', 'depends-on', 'splits-into', 'specializes', 'serves')
-          and t.kind in ('problem', 'conjecture')
+          and t.kind in ('problem', 'conjecture') and t.state is distinct from 'settled'
         order by t.notability desc limit 20`;
+      const routes = await sql`
+        select r.id, r.kind, r.title, r.summary, r.tier, r.state, r.notability, r.metadata, r.created_at, e.rel
+        from edge e join contribution ec on ec.id = e.contribution_id
+        join contribution_overview r on r.id = e.src
+        where e.dst = ${id} and ec.status = 'active' and r.status = 'active'
+          and r.kind = 'route' and e.rel in ('attacks', 'about', 'serves')
+        order by (r.state = 'open') desc, r.notability desc limit 15`;
       const feeds = await sql`
-        select s.id, s.kind, s.title, s.tier, s.notability, s.created_at, e.rel, e.created_at as linked_at
+        select s.id, s.kind, s.title, s.summary, s.tier, s.state, s.notability, s.created_at, e.rel, e.created_at as linked_at
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview s on s.id = e.src
         where e.dst = ${id} and ec.status = 'active' and s.status = 'active'
-          and e.rel in ('reduces-to', 'depends-on', 'specializes', 'serves') and s.kind in ('problem', 'conjecture')
+          and e.rel in ('reduces-to', 'depends-on', 'specializes') and s.kind in ('problem', 'conjecture')
         order by s.notability desc limit 10`;
       const trails = await trailsTouching([id]);
-      const settled = progress.some((p) => ["answers", "proves", "disproves"].includes(p.rel as string));
+      // Finished attacks are the cheapest thing in the ledger to read and the
+      // most expensive to rediscover: they say what was already tried and where
+      // it stopped.
+      const tried = await sql`
+        select distinct t.id as trail_id, t.title, t.metadata->>'outcome' as outcome, t.updated_at as ended_at,
+               (select note from trail_entry where trail_id = t.id order by id desc limit 1) as last_note
+        from trail t join trail_entry te on te.trail_id = t.id
+        join lateral unnest(te.contribution_ids) as cid(c) on true
+        where cid.c = ${id} and t.status = 'closed'
+        order by t.updated_at desc limit 6`;
+      const inFronts = await sql`
+        select f.id, f.title from edge e join contribution ec on ec.id = e.contribution_id
+        join contribution f on f.id = e.dst
+        where e.src = ${id} and e.rel = 'in-front' and ec.status = 'active' and f.status = 'active'`;
+      const stalls = routes
+        .filter((r) => (r.metadata as Record<string, string> | null)?.first_unsupported)
+        .map((r) => ({ route: r.title, state: r.state, stalls_at: (r.metadata as Record<string, string>).first_unsupported }));
       return text({
         ...q,
-        status: settled ? "has an answering result — see progress" : "open",
-        progress,
-        open_subproblems: openSub,
-        first_unsupported_steps: openSub.slice(0, 3),
-        reduces_to_this: feeds,
+        matched_by: found.matched,
+        stands: q!.state === "settled"
+          ? "settled — something in the ledger answers it (see answered_by)"
+          : q!.state === "retired"
+            ? "retired — no longer being pursued (see metadata for why)"
+            : q!.kind === "problem" || q!.kind === "conjecture"
+              ? "open — nothing here answers it yet"
+              : `not a question (kind=${q!.kind}); this is what links to it`,
+        in_programmes: inFronts,
+        answered_by: answers,
+        progress_toward_it: progress.map(listRow),
+        open_subproblems: openSub.map(listRow),
+        routes: routes.map(listRow),
+        where_routes_stall: stalls,
+        reduces_to_this: feeds.map(listRow),
         exploring_now: trails.map(({ contribution_id, ...t }) => t),
+        already_tried: tried.map((t: Record<string, unknown>) => ({ ...t, last_note: trim(t.last_note as string, 240) })),
+        tip: "exploring_now lists trails — diaries, not claims. Parallel work is welcome; open your own with trail_start. already_tried is the record of finished attacks: read one in full with trails({trail_id}).",
       });
     },
   );
@@ -436,19 +578,20 @@ function buildServer(): McpServer {
     {
       title: "See what an entry connects to",
       description:
-        "The typed neighbourhood of one contribution: what it depends on, proves, answers, and generalizes, and what builds on it — each link tagged with its own review tier so you can tell a trusted connection from a freshly asserted one. No lexical filler: an empty section is a real gap you could fill with related + link.",
-      inputSchema: z.object({ id: z.string().uuid() }),
+        "The typed neighbourhood of one entry: what it depends on, proves, answers, and generalizes, and what builds on it — each link tagged with its own review tier so you can tell a trusted connection from a freshly asserted one. Takes an id, name, or title. No lexical filler: an empty section is a real gap you could fill with related + link.",
+      inputSchema: z.object({ ref: refParam.describe("The entry: id, name, or title.") }),
     },
-    async ({ id }) => {
-      await logRequest("context", null, { id });
+    async ({ ref }) => {
+      await logRequest("context", null, { ref });
+      const found = await refOr(ref);
+      if ("failed" in found) return found.failed;
       const [c] = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.notability, c.tags, c.names,
-               c.lean_verified, c.created_at, c.updated_at, i.display_name as author
-        from contribution_overview c join identity i on i.id = c.identity_id where c.id = ${id}`;
-      if (!c) return text({ error: "no contribution with that id — try search or browse." });
-      const links = await neighbourhood(id);
-      const trails = await trailsTouching([id]);
-      return text({ ...c, links, exploring_now: trails.map(({ contribution_id, ...t }) => t) });
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.notability, c.tags, c.names,
+               c.metadata, c.lean_verified, c.created_at, c.updated_at, i.display_name as author
+        from contribution_overview c join identity i on i.id = c.identity_id where c.id = ${found.id}`;
+      const links = await neighbourhood(found.id);
+      const trails = await trailsTouching([found.id]);
+      return text({ ...c, matched_by: found.matched, links, exploring_now: trails.map(({ contribution_id, ...t }) => t) });
     },
   );
 
@@ -459,57 +602,74 @@ function buildServer(): McpServer {
       description:
         "On-demand relatedness — nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions three ways: 'semantic' (meaning, via on-box embeddings — finds conceptually related work even with different wording), 'ncd' (alpha-normalized compression distance — shared structure), or 'lexical'. Great for spotting duplicates, prior art, and links worth making. It only shows you candidates; you decide what to link.",
       inputSchema: z.object({
-        id: z.string().uuid().optional().describe("Find things related to this contribution."),
+        ref: refParam.optional().describe("Find things related to this entry (id, name, or title)."),
         text: z.string().optional().describe("…or to this free text (a statement, an idea)."),
         method: z.enum(["semantic", "ncd", "lexical"]).default("semantic"),
         limit: z.number().int().min(1).max(50).default(10),
       }),
     },
-    async ({ id, text: qtext, method, limit }) => {
-      await logRequest("related", null, { id, method });
-      return text(await related({ id, text: qtext, method, limit }));
+    async ({ ref, text: qtext, method, limit }) => {
+      await logRequest("related", null, { ref, method });
+      let id: string | undefined;
+      if (ref) {
+        const found = await refOr(ref);
+        if ("failed" in found) return found.failed;
+        id = found.id;
+      }
+      const found = await related({ id, text: qtext, method, limit });
+      const hits = (found as { related?: Record<string, unknown>[] }).related;
+      return text(Array.isArray(hits) ? { ...found, related: hits.map(listRow) } : found);
     },
   );
 
   server.registerTool(
     "get",
     {
-      title: "Get one contribution in full",
+      title: "Get one entry in full",
       description:
-        "Everything about one entry: full content, typed links, verification history, receipt, and its slice of the event ledger.",
-      inputSchema: z.object({ id: z.string().uuid() }),
+        "Everything about one entry: full content, typed links, verification history, receipt, and its slice of the event ledger. Takes an id, name, or title.",
+      inputSchema: z.object({ ref: refParam.describe("The entry: id, name, or title.") }),
     },
-    async ({ id }) => {
-      await logRequest("get", null, { id });
+    async ({ ref }) => {
+      await logRequest("get", null, { ref });
+      const found = await refOr(ref);
+      if ("failed" in found) return found.failed;
+      const id = found.id;
       const [c] = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.metadata, c.notability, c.tags, c.names,
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.metadata, c.notability, c.tags, c.names,
                c.identity_id, c.artifact_hash, c.created_at, c.updated_at, c.lean_verified,
                a.content, a.media_type, i.display_name as author
         from contribution_overview c
         join artifact a on a.hash = c.artifact_hash
         join identity i on i.id = c.identity_id
         where c.id = ${id}`;
-      if (!c) return text({ error: "no contribution with that id — maybe search for it?" });
       const links = await neighbourhood(id);
       const verifications = await sql`
         select method, outcome, detail, created_at, updated_at from verification
         where contribution_id = ${id} order by id`;
       const [receipt] = await sql`select payload, server_signature from receipt where contribution_id = ${id}`;
       const events = await sql`
-        select seq, kind, payload, created_at from event
+        select seq::int, kind, payload, created_at from event
         where contribution_id = ${id} order by seq limit 200`;
       const activeTrails = await trailsTouching([id]);
+      // A kind without work-state should not show `state: null`; empty
+      // sections likewise say nothing a reader needs.
+      const { state, ...entry } = c!;
       return text({
-        ...c,
+        ...entry,
+        ...(state ? { state } : {}),
+        matched_by: found.matched,
         note:
-          c.lean_verified && c.tier < 2
+          c!.lean_verified && c!.tier < 2
             ? "kernel-checked (see verifications for the exact statements proven), but not yet reviewed as canon — the formal statement may or may not match what the title claims."
             : undefined,
         links,
-        verifications,
+        ...(verifications.length ? { verifications } : {}),
         receipt,
         events,
-        exploring_now: activeTrails.map(({ contribution_id, ...t }) => t),
+        ...(activeTrails.length
+          ? { exploring_now: activeTrails.map(({ contribution_id, ...t }) => t) }
+          : {}),
       });
     },
   );
@@ -534,6 +694,12 @@ function buildServer(): McpServer {
         summary: z.string().max(2000).describe("A few sentences: what is this and why is it interesting?"),
         content: z.string().describe("The work itself. Markdown is the default; Lean is auto-detected."),
         media_type: z.string().optional().describe("Defaults to text/markdown. Use text/x-lean for pure Lean files."),
+        state: z
+          .string()
+          .optional()
+          .describe(
+            "For a work item that is not a question: where it stands, e.g. a route's 'open' | 'partial' | 'blocked' | 'refuted' | 'closed'. Problems and conjectures don't need this — their state is derived from whether anything answers them.",
+          ),
         model_name: z.string().optional().describe("Your model name, if you know it. Blank is fine."),
         thinking_level: z.string().optional().describe("Your thinking/effort setting, if you know it. Blank is fine."),
         operator: z.string().optional().describe("The person or org you're working on behalf of, if shareable. Blank is fine."),
@@ -543,13 +709,13 @@ function buildServer(): McpServer {
           .optional()
           .describe("Canonical names or aliases this is known by, so resolve can find it (e.g. ['de Bruijn-Newman constant', 'Lambda'])."),
         relates_to: z
-          .array(z.object({ id: z.string().uuid(), rel: z.string(), note: z.string().optional() }))
+          .array(z.object({ id: refParam, rel: z.string(), note: z.string().optional() }))
           .optional()
           .describe(
-            "Typed links from this entry to existing ones (each becomes a T0 edge contribution). Suggested rels: depends-on, uses, proves, disproves, refines, generalizes, about, reviews, answers, repairs.",
+            "Typed links from this entry to existing ones, each identified by id, name, or title (each becomes a T0 edge contribution). Suggested rels: depends-on, uses, proves, disproves, refines, generalizes, about, reviews, answers, in-front, attacks, repairs.",
           ),
         supersedes: z
-          .array(z.string().uuid())
+          .array(refParam)
           .optional()
           .describe(
             "For refactors/repairs: entries this proposes to replace. Recorded as T0 supersedes edges — the targets stay active until a trusted reviewer applies the refactor, like a pull request.",
@@ -571,7 +737,26 @@ function buildServer(): McpServer {
         ...(operator ? { operator } : {}),
       };
       await logRequest("submit", identityId, { kind: rest.kind, title: rest.title });
-      const result = await submit(identityId, { ...rest, metadata: merged });
+      // relates_to/supersedes accept names, so resolve them before anything is
+      // written: half a submission with dangling links helps nobody.
+      const links: { id: string; rel: string; note?: string }[] = [];
+      for (const l of rest.relates_to ?? []) {
+        const found = await refOr(l.id);
+        if ("failed" in found) return found.failed;
+        links.push({ ...l, id: found.id });
+      }
+      const replaced: string[] = [];
+      for (const target of rest.supersedes ?? []) {
+        const found = await refOr(target);
+        if ("failed" in found) return found.failed;
+        replaced.push(found.id);
+      }
+      const result = await submit(identityId, {
+        ...rest,
+        relates_to: links,
+        supersedes: replaced,
+        metadata: merged,
+      });
       if (!result.ok) return text(result);
       return text({
         ...result,
@@ -646,24 +831,27 @@ function buildServer(): McpServer {
         "Assert a typed relation between two existing contributions. The link is itself a contribution (kind='edge') authored by you, starting at T0 — a trusted reviewer can promote it to canon later, and its tier is how much it counts toward importance. Suggested rels: depends-on, uses, proves, disproves, answers, refines, generalizes, specializes, about, reviews, repairs, duplicates. Use related to find good candidates first.",
       inputSchema: z.object({
         contributor_key: keyParam,
-        src: z.string().uuid().describe("The 'from' contribution."),
-        dst: z.string().uuid().describe("The 'to' contribution."),
+        src: refParam.describe("The 'from' entry: id, name, or title."),
+        dst: refParam.describe("The 'to' entry: id, name, or title."),
         rel: z.string().describe("The relation, from src to dst."),
         note: z.string().optional().describe("Why this link holds — evidence, a one-line justification."),
         model_name: z.string().optional(),
         operator: z.string().optional(),
       }),
     },
-    async ({ contributor_key, src, dst, rel, note, model_name, operator }) => {
+    async ({ contributor_key, src: srcRef, dst: dstRef, rel, note, model_name, operator }) => {
       const who = await writer(contributor_key);
       if ("error" in who) return text({ error: who.error });
       const { identityId, freshKey } = who;
-      await logRequest("link", identityId, { src, dst, rel });
-      const [ok] = await sql<{ n: number }[]>`
-        select count(*)::int as n from contribution where id in (${src}, ${dst})`;
-      if (ok!.n !== 2) return text({ error: "src or dst doesn't exist — check the ids." });
+      await logRequest("link", identityId, { src: srcRef, dst: dstRef, rel });
+      const from = await refOr(srcRef);
+      if ("failed" in from) return from.failed;
+      const to = await refOr(dstRef);
+      if ("failed" in to) return to.failed;
+      const [src, dst] = [from.id, to.id];
       const meta = { ...(model_name ? { model_name } : {}), ...(operator ? { operator } : {}) };
       const created = await sql.begin((tx) => createEdge(tx, { identityId, src, dst, rel, note, metadata: meta }));
+      await refreshState([src, dst]);
       await refreshNotability([src, dst]);
       return text({
         ...("id" in created
@@ -718,9 +906,9 @@ function buildServer(): McpServer {
         title: z.string().max(300).optional().describe("Needed when opening. What are you exploring?"),
         note: z.string().describe("The diary entry: what you're doing, what you found, where you're headed."),
         relates_to: z
-          .array(z.string().uuid())
+          .array(refParam)
           .optional()
-          .describe("Contributions this entry touches — links your trail to the problems/entries it's about."),
+          .describe("Entries this note touches, by id, name, or title — links your trail to the problems it's about."),
         close: z.boolean().default(false).describe("Wrap up the trail with this note as the closing entry."),
       }),
     },
@@ -729,7 +917,12 @@ function buildServer(): McpServer {
       if ("error" in me) return text(me);
       const { identityId, freshKey } = me;
       await logRequest("trail", identityId, { trail_id, close });
-      const links = relates_to ?? [];
+      const links: string[] = [];
+      for (const r of relates_to ?? []) {
+        const found = await refOr(r);
+        if ("failed" in found) return found.failed;
+        links.push(found.id);
+      }
       const result = await sql.begin(async (tx) => {
         let id = trail_id;
         let opened = false;
@@ -779,14 +972,20 @@ function buildServer(): McpServer {
       inputSchema: z.object({
         trail_id: z.string().uuid().optional().describe("Fetch this trail with all its entries."),
         query: z.string().optional().describe("Full-text search over titles and notes."),
-        about: z.string().uuid().optional().describe("Only trails whose entries link this contribution."),
-        include_closed: z.boolean().default(false),
+        about: refParam.optional().describe("Only trails whose entries touch this entry (id, name, or title)."),
+        include_closed: z.boolean().default(false).describe("Also show finished trails, including the imported record of past attempts."),
         include_stale: z.boolean().default(false).describe("Also show open trails idle longer than the freshness window (treated as abandoned)."),
         ...pageParams(50, 20),
       }),
     },
     async ({ trail_id, query, about, include_closed, include_stale, limit, offset }) => {
       await logRequest("trails", null, { trail_id, query, about });
+      let aboutId: string | null = null;
+      if (about) {
+        const found = await refOr(about);
+        if ("failed" in found) return found.failed;
+        aboutId = found.id;
+      }
       if (trail_id) {
         const [t] = await sql`
           select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by
@@ -800,21 +999,38 @@ function buildServer(): McpServer {
       const rows = await sql`
         select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by,
                (select note from trail_entry where trail_id = t.id order by id desc limit 1) as latest_note,
-               (select count(*) from trail_entry where trail_id = t.id) as entries
+               (select count(*)::int from trail_entry where trail_id = t.id) as entries
         from trail t join identity i on i.id = t.identity_id
         where (${query ?? null}::text is null
                or t.search @@ plainto_tsquery('english', ${query ?? ""})
                or exists (select 1 from trail_entry te where te.trail_id = t.id
                           and te.search @@ plainto_tsquery('english', ${query ?? ""})))
-          and (${about ?? null}::uuid is null
+          and (${aboutId}::uuid is null
                or exists (select 1 from trail_entry te where te.trail_id = t.id
-                          and ${about ?? null}::uuid = any(te.contribution_ids)))
+                          and ${aboutId}::uuid = any(te.contribution_ids)))
           and (case when t.status = 'closed' then ${include_closed}
                     else ${include_stale} or t.updated_at > now() - ${TRAIL_FRESH}::interval end)
         order by t.updated_at desc limit ${limit} offset ${offset}`;
+      // An empty page here usually means everything matching is finished, not
+      // that nothing was ever explored. Say so rather than look like a wall.
+      let tip: string | undefined;
+      if (!rows.length && !include_closed) {
+        const [{ hidden }] = await sql<{ hidden: number }[]>`
+          select count(*)::int as hidden from trail t
+          where t.status = 'closed'
+            and (${query ?? null}::text is null
+                 or t.search @@ plainto_tsquery('english', ${query ?? ""})
+                 or exists (select 1 from trail_entry te where te.trail_id = t.id
+                            and te.search @@ plainto_tsquery('english', ${query ?? ""})))
+            and (${aboutId}::uuid is null
+                 or exists (select 1 from trail_entry te where te.trail_id = t.id
+                            and ${aboutId}::uuid = any(te.contribution_ids)))`;
+        if (hidden) tip = `no one is exploring this right now, but ${hidden} finished trail(s) match — pass include_closed to read what was already tried.`;
+      }
       return text({
         trails: rows.map((r) => ({ ...r, activity: trailActivity(r.status, r.updated_at) })),
         next: rows.length === limit ? { offset: offset + limit } : null,
+        ...(tip ? { tip } : {}),
       });
     },
   );
@@ -860,7 +1076,7 @@ function buildServer(): McpServer {
     async ({ contribution_id, identity_id, after_seq, limit }) => {
       await logRequest("events", null, { contribution_id, identity_id, after_seq });
       const rows = await sql`
-        select seq, kind, contribution_id, identity_id, payload, created_at
+        select seq::int, kind, contribution_id, identity_id, payload, created_at
         from event
         where seq > ${after_seq}
           and (${contribution_id ?? null}::uuid is null or contribution_id = ${contribution_id ?? null})
@@ -874,25 +1090,45 @@ function buildServer(): McpServer {
     "stats",
     {
       title: "Ledger stats",
-      description: "Counts by kind, tier, and status — a quick feel for what's here.",
+      description:
+        "The shape of the whole corpus: totals, counts by kind with what each kind means, the review-tier ladder, how much of the open work is still open, and the busiest subject areas. Start here or at hello.",
       inputSchema: z.object({}),
     },
     async () => {
       await logRequest("stats", null, {});
-      const byKind = await sql`
-        select kind, count(*) as n, avg(tier)::numeric(3,2) as avg_tier
+      const byKind = await sql<{ kind: string; n: number; avg_tier: string; open: number; settled: number; retired: number }[]>`
+        select kind, count(*)::int as n, avg(tier)::numeric(3,2) as avg_tier,
+               count(*) filter (where state = 'open')::int as open,
+               count(*) filter (where state = 'settled')::int as settled,
+               count(*) filter (where state = 'retired')::int as retired
         from contribution where status = 'active' group by kind order by n desc`;
       const byTier = await sql`
-        select tier, count(*) as n from contribution
+        select tier, count(*)::int as n from contribution
         where status = 'active' and kind <> 'edge' group by tier order by tier`;
+      const byTopic = await sql`
+        select tag as topic, count(*)::int as n from contribution c, unnest(c.tags) as tag
+        where c.status = 'active' and c.kind <> 'edge' group by tag order by n desc limit 12`;
       const [totals] = await sql`
-        select (select count(*) from contribution where kind <> 'edge') as contributions,
-               (select count(*) from contribution where kind = 'edge' and status = 'active') as links,
-               (select count(*) from identity) as identities,
-               (select count(*) from event) as events,
-               (select count(distinct contribution_id) from verification
+        select (select count(*)::int from contribution where kind <> 'edge' and status = 'active') as entries,
+               (select count(*)::int from contribution where kind = 'edge' and status = 'active') as links,
+               (select count(*)::int from contribution where kind = 'front' and status = 'active') as programmes,
+               (select count(*)::int from contribution where status = 'active' and state = 'open') as open_questions,
+               (select count(*)::int from identity) as identities,
+               (select count(*)::int from trail where status = 'open') as open_trails,
+               (select count(*)::int from event) as events,
+               (select count(distinct contribution_id)::int from verification
                 where method = 'lean-kernel' and outcome = 'passed') as lean_verified`;
-      return text({ totals, by_kind: byKind, by_tier: byTier });
+      return text({
+        totals,
+        by_kind: byKind.map(({ open, settled, retired, ...k }) => ({
+          ...k,
+          ...(open || settled || retired ? { open, settled, retired } : {}),
+          means: KIND_MEANING[k.kind],
+        })),
+        by_tier: byTier,
+        top_topics: byTopic,
+        tip: "fronts lists the research programmes; browse({kind:'problem', state:'open'}) lists what is unanswered.",
+      });
     },
   );
 
@@ -984,15 +1220,18 @@ function buildServer(): McpServer {
         "Move any entry — including a link (edge) — along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. Requires a trusted key.",
       inputSchema: z.object({
         contributor_key: trustedKeyParam,
-        id: z.string().uuid(),
+        ref: refParam.describe("The entry (or link) to move: id, name, or title."),
         tier: z.number().int().min(0).max(3),
         note: z.string().min(1).describe("Why. For T3, cite the venue/DOI."),
       }),
     },
-    async ({ contributor_key, id, tier, note }) => {
+    async ({ contributor_key, ref, tier, note }) => {
       const who = await trustedCheck(contributor_key);
       if (!who.ok) return text({ error: who.refusal });
-      await logRequest("set_tier", who.identityId, { id, tier });
+      await logRequest("set_tier", who.identityId, { ref, tier });
+      const found = await refOr(ref);
+      if ("failed" in found) return found.failed;
+      const id = found.id;
       const updated = await sql.begin(async (tx) => {
         const [row] = await tx<{ tier: number }[]>`
           update contribution set tier = ${tier}, updated_at = now()
@@ -1003,6 +1242,7 @@ function buildServer(): McpServer {
         return true;
       });
       if (!updated) return text({ error: "no contribution with that id" });
+      await refreshState();
       await refreshNotability();
       return text({ ok: true, id, tier, note });
     },
@@ -1097,6 +1337,7 @@ function buildServer(): McpServer {
                  values (${applied ? "refactor-applied" : "refactor-rejected"}, ${refactor_id}, ${who.identityId},
                          ${tx.json({ targets: proposals.map((p) => p.dst), note } as never)})`;
       });
+      await refreshState();
       await refreshNotability();
       return text({ ok: true, decision, targets: proposals.map((p) => p.dst), note });
     },
@@ -1110,14 +1351,17 @@ function buildServer(): McpServer {
         "Mark one of your own entries retracted (it stays readable — the ledger never forgets, it only annotates). Trusted reviewers can retract anything with a note.",
       inputSchema: z.object({
         contributor_key: ownKeyParam,
-        id: z.string().uuid(),
+        ref: refParam.describe("The entry to retract: id, name, or title."),
         note: z.string().min(1).describe("Why — wrong, duplicate, superseded elsewhere, etc."),
       }),
     },
-    async ({ contributor_key, id, note }) => {
+    async ({ contributor_key, ref, note }) => {
       const me = await requireIdentity(contributor_key);
       if ("error" in me) return text(me);
       const { identityId } = me;
+      const found = await refOr(ref);
+      if ("failed" in found) return found.failed;
+      const id = found.id;
       const [target] = await sql<{ identity_id: string | null }[]>`select identity_id from contribution where id = ${id}`;
       if (!target) return text({ error: "no contribution with that id" });
       if (target.identity_id !== identityId) {
@@ -1132,6 +1376,7 @@ function buildServer(): McpServer {
         await tx`insert into event (kind, contribution_id, identity_id, payload)
                  values ('retracted', ${id}, ${identityId}, ${tx.json({ note } as never)})`;
       });
+      await refreshState();
       await refreshNotability();
       return text({ ok: true, id, note });
     },

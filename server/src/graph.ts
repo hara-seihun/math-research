@@ -1,7 +1,10 @@
+import type { TransactionSql } from "postgres";
 import { sql } from "./db.ts";
 import { sha256hex } from "./identity.ts";
 
-type Tx = Parameters<Parameters<typeof sql.begin>[0]>[0];
+/** The handle a sql.begin callback receives — spelled out, because
+ *  sql.begin is overloaded and inferring it lands on `never`. */
+export type Tx = TransactionSql;
 
 // ——— Text normalization ————————————————————————————————————————————————
 // Fold every unicode dash/minus to ascii '-' and NFKD-lower, so a query typed
@@ -13,20 +16,35 @@ export function normalizeText(s: string): string {
     .toLowerCase();
 }
 
-/** Salient lexemes of a query, for an OR tsquery that ranks instead of gating. */
-function tsTerms(q: string): string {
-  const terms = [...new Set(normalizeText(q).split(/[^a-z0-9]+/).filter((t) => t.length >= 2))];
-  return terms.length ? terms.join(" | ") : "zzzznomatchzzzz";
+/** Query lexemes, split into required phrases and salient terms. */
+function queryParts(q: string): { all: string; any: string } {
+  const norm = normalizeText(q);
+  const phrases = [...norm.matchAll(/"([^"]+)"/g)].map((m) => m[1]!.trim()).filter(Boolean);
+  const rest = norm.replace(/"[^"]*"/g, " ");
+  const terms = [...new Set(rest.split(/[^a-z0-9]+/).filter((t) => t.length >= 2))];
+  const phraseQ = phrases.map((p) => `(${p.split(/[^a-z0-9]+/).filter(Boolean).join(" <-> ")})`);
+  const atoms = [...phraseQ, ...terms];
+  return {
+    all: atoms.length ? atoms.join(" & ") : "zzzznomatchzzzz",
+    any: atoms.length ? atoms.join(" | ") : "zzzznomatchzzzz",
+  };
 }
 
 // ——— Degrading search ——————————————————————————————————————————————————
-// One query that never returns empty when anything is even loosely related:
-// OR-of-terms full-text (so partial term overlap still ranks) unioned with
-// trigram similarity (so typos, symbols, and substring names still land),
-// ordered by text relevance blended with the notability gradient.
+// Two demands pull against each other: a multi-word query must not be swamped
+// by entries that merely share its commonest word, and a query that matches
+// nothing exactly must still return the nearest thing rather than silence. So
+// everything loosely related stays eligible, but rows carrying every term (or
+// an exact "quoted phrase") rank in a band above rows carrying only some, and
+// each row reports which band it came from. A reader can then stop at the
+// first weak match instead of mistaking the tail for more of the same.
 export type SearchArgs = {
   query: string;
-  kind?: string;
+  kind?: string | string[];
+  state?: string;
+  topic?: string;
+  front?: string;
+  lean_verified?: boolean;
   min_tier?: number;
   include_inactive?: boolean;
   limit: number;
@@ -34,29 +52,43 @@ export type SearchArgs = {
 };
 
 export async function searchContributions(args: SearchArgs) {
-  const tsq = tsTerms(args.query);
+  const { all, any } = queryParts(args.query);
   const raw = normalizeText(args.query);
+  const kinds = args.kind === undefined ? null : Array.isArray(args.kind) ? args.kind : [args.kind];
   return sql.begin(async (tx: Tx) => {
     await tx`select set_config('pg_trgm.similarity_threshold', '0.2', true)`;
     return tx`
-      select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.created_at,
-             c.lean_verified, c.notability,
-             ts_rank(c.search, to_tsquery('english', ${tsq}))
-               + ts_rank(a.search, to_tsquery('english', ${tsq})) as text_rank,
-             similarity(lower(c.title || ' ' || c.summary), ${raw}) as fuzzy
-      from contribution_overview c join artifact a on a.hash = c.artifact_hash
-      where c.kind <> 'edge'
-        and (c.search @@ to_tsquery('english', ${tsq})
-             or a.search @@ to_tsquery('english', ${tsq})
-             or lower(c.title || ' ' || c.summary) % ${raw})
-        and (${args.kind ?? null}::text is null or c.kind = ${args.kind ?? null})
-        and (${args.min_tier ?? null}::int is null or c.tier >= ${args.min_tier ?? 0})
-        and (${args.include_inactive ?? false} or c.status = 'active')
-      order by ((ts_rank(c.search, to_tsquery('english', ${tsq}))
-                   + ts_rank(a.search, to_tsquery('english', ${tsq}))) * 3
-                + similarity(lower(c.title || ' ' || c.summary), ${raw}) * 2)
-               * (1 + 0.2 * ln(1 + greatest(c.notability, 0))) desc,
-               c.created_at desc
+      with hit as (
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.tags, c.names,
+               c.created_at, c.lean_verified, c.notability,
+               (c.search @@ to_tsquery('english', ${all}) or a.search @@ to_tsquery('english', ${all})) as complete,
+               ts_rank(c.search, to_tsquery('english', ${any})) * 2
+                 + ts_rank(a.search, to_tsquery('english', ${any})) as text_rank,
+               similarity(lower(c.title || ' ' || c.summary), ${raw}) as fuzzy
+        from contribution_overview c join artifact a on a.hash = c.artifact_hash
+        where c.kind <> 'edge'
+          and (c.search @@ to_tsquery('english', ${any})
+               or a.search @@ to_tsquery('english', ${any})
+               or lower(c.title || ' ' || c.summary) % ${raw})
+          and (${kinds}::text[] is null or c.kind = any(${kinds}))
+          and (${args.state ?? null}::text is null or c.state = ${args.state ?? null})
+          and (${args.topic ?? null}::text is null or ${args.topic ?? null} = any(c.tags))
+          and (${args.lean_verified ?? null}::bool is null or c.lean_verified = ${args.lean_verified ?? false})
+          and (${args.min_tier ?? null}::int is null or c.tier >= ${args.min_tier ?? 0})
+          and (${args.include_inactive ?? false} or c.status = 'active')
+          and (${args.front ?? null}::uuid is null or exists (
+                select 1 from edge e join contribution ec on ec.id = e.contribution_id
+                where e.src = c.id and e.dst = ${args.front ?? null}::uuid
+                  and e.rel = 'in-front' and ec.status = 'active'))
+      )
+      select id, kind, title, summary, tier, status, state, tags, names, created_at,
+             lean_verified, notability,
+             case when complete then 'every term' when text_rank > 0 then 'some terms' else 'fuzzy' end as matched,
+             round((text_rank * 3 + fuzzy * 2)::numeric, 4) as score
+      from hit
+      order by complete desc,
+               (text_rank * 3 + fuzzy * 2) * (1 + 0.2 * ln(1 + greatest(notability, 0))) desc,
+               created_at desc
       limit ${args.limit} offset ${args.offset}`;
   });
 }
@@ -88,6 +120,13 @@ const asVector = (a: number[]): string => `[${a.join(",")}]`;
 export async function refreshNotability(ids?: string[]): Promise<void> {
   if (ids && ids.length === 0) return;
   await sql`select refresh_notability(${ids ?? null}::uuid[])`;
+}
+
+/** Recompute whether questions are answered. Cheap, and run wherever an edge
+ *  or a status could have changed the answer. */
+export async function refreshState(ids?: string[]): Promise<void> {
+  if (ids && ids.length === 0) return;
+  await sql`select refresh_state(${ids ?? null}::uuid[])`;
 }
 
 // ——— Edges are contributions ———————————————————————————————————————————
@@ -199,7 +238,7 @@ export async function related(args: RelatedArgs) {
     const v = await embed(queryText);
     if (!v) return { error: "semantic search is warming up — use method 'ncd' or 'lexical' for now." };
     const rows = await sql`
-      select co.id, co.kind, co.title, co.tier, co.notability, co.created_at,
+      select co.id, co.kind, co.title, co.summary, co.tier, co.state, co.notability, co.lean_verified, co.created_at,
              round((1 - (c.embedding <=> ${asVector(v)}::vector))::numeric, 4) as similarity
       from contribution c join contribution_overview co on co.id = c.id
       where c.kind <> 'edge' and co.status = 'active' and c.embedding is not null
@@ -208,12 +247,13 @@ export async function related(args: RelatedArgs) {
     return { method: "semantic", related: rows };
   }
 
-  const tsq = tsTerms(queryText);
+  const { any: tsq } = queryParts(queryText);
   const raw = normalizeText(`${queryText}`).slice(0, 300);
   const candidates = await sql.begin(async (tx: Tx) => {
     await tx`select set_config('pg_trgm.similarity_threshold', '0.15', true)`;
-    return tx<{ id: string; kind: string; title: string; tier: number; notability: number; created_at: string; content: string }[]>`
-      select c.id, c.kind, c.title, c.tier, c.notability, c.created_at, left(a.content, 4000) as content
+    return tx<({ id: string; content: string } & Record<string, unknown>)[]>`
+      select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.created_at,
+             left(a.content, 4000) as content
       from contribution_overview c join artifact a on a.hash = c.artifact_hash
       where c.kind <> 'edge' and c.status = 'active'
         and (${selfId}::uuid is null or c.id <> ${selfId})
@@ -225,9 +265,9 @@ export async function related(args: RelatedArgs) {
   });
 
   const q = normalizeForNcd(queryText);
-  const scored = candidates.map((c) => ({
-    id: c.id, kind: c.kind, title: c.title, tier: c.tier, notability: c.notability, created_at: c.created_at,
-    similarity: args.method === "ncd" ? Number((1 - ncd(q, normalizeForNcd(c.content))).toFixed(4)) : undefined,
+  const scored = candidates.map(({ content, ...c }) => ({
+    ...c,
+    similarity: args.method === "ncd" ? Number((1 - ncd(q, normalizeForNcd(content as string))).toFixed(4)) : undefined,
   }));
   if (args.method === "ncd") scored.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
   const top = scored.slice(0, args.limit);

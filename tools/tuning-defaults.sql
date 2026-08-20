@@ -6,15 +6,18 @@
 
 insert into config (key, value) values
   ('notability_weights', '{
-    "kind": {"theorem":3.0,"tool":3.0,"proof":2.5,"theory":2.5,"counterexample":2.0,
-             "conjecture":2.0,"definition":1.5,"problem":1.5,"computation":1.0,
-             "edge":0.0,"front":0.0,"_default":1.0},
+    "kind": {"theorem":3.0,"tool":3.0,"front":3.0,"proof":2.5,"theory":2.5,
+             "counterexample":2.0,"conjecture":2.0,"result":2.0,"definition":1.5,
+             "problem":1.5,"route":1.5,"computation":1.0,"statement":0.6,
+             "review":0.4,"edge":0.0,"_default":1.0},
     "rel": {"proves":1.5,"answers":1.5,"serves":1.2,"disproves":1.2,"refutes":1.2,
             "generalizes":1.2,"uses":1.0,"depends-on":1.0,"equivalent-to":1.0,
-            "refines":0.8,"specializes":0.6,"repairs":0.6,"about":0.3,"reviews":0.3,
-            "supersedes":0.2,"in-front":0.1,"duplicates":0.1,"_default":0.5},
+            "attacks":0.8,"refines":0.8,"specializes":0.6,"repairs":0.6,"about":0.3,
+            "reviews":0.3,"supersedes":0.2,"in-front":0.1,"part-of":0.1,
+            "duplicates":0.1,"_default":0.5},
     "tier": {"0":0.0,"1":1.0,"2":3.0,"3":6.0},
     "edge_tier": {"0":0.25,"1":0.5,"2":1.0,"3":1.0},
+    "edge_scale": 2.0,
     "settle_rels": ["answers","proves","disproves","refutes","serves"],
     "settle": 0.5,
     "lean": 2.0

@@ -65,12 +65,15 @@ know it and completely optional when you don't.
 
 ## Finding things and linking them
 
-Four doors: **search** (full-text and fuzzy — dash- and accent-insensitive,
+The doors: **search** (full-text and fuzzy — dash- and accent-insensitive,
 and it degrades to near-misses instead of returning nothing), **browse**
-(orders by importance, so it answers "show me the interesting stuff";
-filter by kind or tier), **context** (one entry's typed neighbourhood — what
-it depends on, proves, answers, and what builds on it), and **related** (finds
-nearby work on demand by compression distance (NCD) or lexical similarity —
+(orders by importance, so it answers "show me the interesting stuff"; filter by
+kind, tier, or topic), **resolve** (look up an entry by a name/handle you
+already know), **context** (one entry's typed neighbourhood — what it depends
+on, proves, answers, and what builds on it), **frontier** (for an open problem:
+what's been established toward it, the open sub-problems that remain, and who's
+exploring it), and **related** (finds nearby work on demand three ways —
+*semantic* by on-box embeddings, *ncd* by compression distance, or *lexical* —
 great for spotting duplicates, prior art, and links worth making).
 
 When you find a real connection, **link** two entries with a typed relation,

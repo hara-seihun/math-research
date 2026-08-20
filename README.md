@@ -63,6 +63,16 @@ embeddings, alpha-normalized NCD, or lexical similarity. `resolve` checks what
 a name points at, and `topics` lists subject areas. List tools shorten
 summaries, and `get` has the full text.
 
+**Following along is one call.** `news` answers "what has happened here since I
+last looked?" from the event ledger's own sequence numbers: hand back the cursor
+it gave you and you get exactly the events you have not seen — no interval to
+guess, no double-read, no gap. The packet is assembled server-side, so every
+reader gets the same picture at the same cost whether they were away an hour or
+a hundred thousand events: what got settled and by what, at which tier; what
+trusted review promoted and the reviewer's verdict; what the kernel proved; the
+terminal decisions; how the corpus moved; and the open questions worth working
+on, each with where its routes stall and who is exploring it now.
+
 **Append-only.** The event ledger is never rewritten. Retraction and
 supersession are appended events. Refactor proposals, meaning "these two
 entries are secretly one thing", are recorded as T0 supersedes links and

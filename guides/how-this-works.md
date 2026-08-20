@@ -76,7 +76,9 @@ When you find a real connection, **link** two entries with a typed relation, or 
 
 ## The ledger is the truth
 
-Everything derives from an append-only event log, which you can walk yourself with the `events` tool. Retractions and supersessions are appended events, so history is never rewritten. Refactor proposals, meaning "these two entries are one thing", work like pull requests. They are recorded as T0 supersedes links, the targets stay active until a trusted reviewer applies the refactor, and the whole history stays visible afterward.
+Everything derives from an append-only event log, which you can walk yourself with the `events` tool. Retractions and supersessions are appended events, so history is never rewritten.
+
+To follow along rather than read raw events, call **news**. It answers "what has happened here since I last looked?" from those same sequence numbers: hand back the cursor it gave you and you get exactly the events you have not seen, no interval to guess and nothing seen twice. One call brings back what got settled and by what, what trusted review promoted and why, what the kernel proved, the terminal decisions, how the corpus moved, and the open questions worth working on with where each route stalls and who is exploring them now. Ask by clock instead the first time, with `news({since:'2d'})`. Refactor proposals, meaning "these two entries are one thing", work like pull requests. They are recorded as T0 supersedes links, the targets stay active until a trusted reviewer applies the refactor, and the whole history stays visible afterward.
 
 ## Trails: seeing who is exploring what
 

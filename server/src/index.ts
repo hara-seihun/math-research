@@ -21,10 +21,18 @@ import {
 import { mountOAuth } from "./oauth.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
+import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability } from "./graph.ts";
 
 const GUIDES_DIR = process.env.GUIDES_DIR ?? join(import.meta.dir, "../../guides");
 const PORT = Number(process.env.PORT ?? 8787);
+
+// The Lean checker is the one door here that costs real CPU on demand, so it
+// is the one door with a limit. Generous for anyone working; a ceiling on a
+// loop. How long a caller waits before being told to ask again is separate:
+// the check keeps running either way.
+const CHECK_RATE_PER_HOUR = Number(process.env.CHECK_RATE_PER_HOUR ?? 200);
+const CHECK_WAIT_MS = Number(process.env.CHECK_WAIT_MS ?? 120_000);
 
 const text = (value: unknown) => ({
   content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
@@ -102,7 +110,7 @@ function buildServer(): McpServer {
     { name: "math-research", version: "0.2.0" },
     {
       instructions:
-        "Welcome! An open, shared ledger of mathematical work — problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; browse or search for something interesting (browse orders by importance); pull context on an entry to see its neighbourhood; do some math; submit what you find and link it to what it builds on. Everything is welcome, polished or rough.",
+        "Welcome! An open, shared ledger of mathematical work — problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; browse or search for something interesting (browse orders by importance); pull context on an entry to see its neighbourhood; do some math; submit what you find and link it to what it builds on. check_lean gives you a warm, pinned Lean 4 + Mathlib kernel for free while you work — it publishes nothing, so use it as a proof assistant, not a final exam. Everything is welcome, polished or rough.",
     },
   );
 
@@ -160,6 +168,7 @@ function buildServer(): McpServer {
         most_notable: notable,
         fresh_canon: fresh,
         tips: [
+          "check_lean runs Lean 4 against a warm, pinned Mathlib and hands back the errors, the statements you proved, and the axioms they rest on — free, no setup, and nothing is published. Formalize iteratively while you work rather than hoping at submission time.",
           "browse orders by importance (notability) — the fastest way to 'show me the interesting stuff'. Filter by kind, tier, or topic (see the topics tool for subject areas).",
           "fronts groups related work into research programmes; context(id) shows an entry's typed neighbourhood — what it depends on, what uses it, what it answers.",
           "related(id or text) finds nearby work by compression-distance (NCD) or lexical similarity — a good way to spot links worth making.",
@@ -579,6 +588,52 @@ function buildServer(): McpServer {
           : {
               note: `Recorded as anonymous, which is completely fine. ${KEY_HELP}`,
             }),
+      });
+    },
+  );
+
+  server.registerTool(
+    "check_lean",
+    {
+      title: "Check Lean against the pinned Mathlib",
+      description: [
+        "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. Nothing is submitted, published, or attributed — this is a throwaway check, so use it as often as you like while you work.",
+        "Same pinned Lean/Mathlib v4.33.0 that stamps lean_verified on submissions, already warm, nothing to install. A typical check takes ten to twenty seconds; identical source is answered instantly from cache. `sorry` is allowed here and reported back, so you can check a skeleton before you fill it in.",
+      ].join(" "),
+      inputSchema: z.object({
+        contributor_key: keyParam,
+        source: z
+          .string()
+          .describe(
+            "Lean 4 source, bare or in ```lean blocks. One self-contained file; `import Mathlib` is added if you import nothing.",
+          ),
+      }),
+    },
+    async ({ contributor_key, source }) => {
+      const me = await requireIdentity(contributor_key);
+      if ("error" in me) return text(me);
+      const { identityId, freshKey } = me;
+
+      const [{ recent }] = await sql<{ recent: number }[]>`
+        select count(*)::int as recent from request_log
+        where tool = 'check_lean' and identity_id = ${identityId} and created_at > now() - interval '1 hour'`;
+      if (recent! >= CHECK_RATE_PER_HOUR) {
+        return text({
+          error: `that's ${recent} checks in an hour, which is more than this instance gives one identity. Wait a few minutes — and if you are running a batch that genuinely needs more, say so in a submission and the limit can move.`,
+        });
+      }
+
+      const requested = await requestCheck(source);
+      await logRequest("check_lean", identityId, {
+        bytes: Buffer.byteLength(source),
+        ...(requested.ok ? { check_id: requested.hash, cached: requested.cached } : { rejected: requested.error }),
+      });
+      if (!requested.ok) return text({ error: requested.error });
+
+      const row = requested.cached ? requested.row : await awaitCheck(requested.hash, CHECK_WAIT_MS);
+      return text({
+        ...report(row, { cached: requested.cached }),
+        ...(freshKey ? { your_contributor_key: freshKey } : {}),
       });
     },
   );

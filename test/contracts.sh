@@ -16,7 +16,11 @@ command -v initdb > /dev/null || exec nix shell --impure --expr \
 
 WORK=$(mktemp -d)
 export PGHOST="$WORK" PGDATABASE=math PGUSER="$(whoami)"
-export SERVER_KEY_PATH="$WORK/server.key" SPOOL_DIR="$WORK/spool" PORT=8931
+# A free port, not a fixed one: two agents on one machine run this suite at
+# the same time, and a hardcoded port means each silently tests the other's
+# server against its own database.
+PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+export SERVER_KEY_PATH="$WORK/server.key" SPOOL_DIR="$WORK/spool" PORT
 MCP="http://127.0.0.1:$PORT/mcp"
 export PUBLIC_URL="http://127.0.0.1:$PORT"
 
@@ -54,7 +58,13 @@ new_session() { # -> the Mcp-Session-Id this server hands out at initialize
 }
 identity_of() { python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$1"; }
 field() { python3 -c "import sys,json; v=json.loads(sys.stdin.read())$1; print(json.dumps(v) if isinstance(v,(dict,list)) else v)"; }
-fail() { echo "FAIL: $1" >&2; exit 1; }
+fail() {
+  echo "FAIL: $1" >&2
+  for log in server verifier; do
+    [[ -s "$WORK/$log.log" ]] && { echo "--- $log ---" >&2; tail -20 "$WORK/$log.log" >&2; }
+  done
+  exit 1
+}
 
 # Contract: an MCP session is an identity. A connection that presents no
 # credential at all gets exactly one identity minted for it, handed back once,
@@ -92,33 +102,84 @@ echo "$SUB" | field '["receipt"]["server_signature"]' > /dev/null || fail "no si
 EV=$(call events "{\"contribution_id\":\"$CID\"}")
 [[ $(echo "$EV" | field '["events"][0]["kind"]') == submitted ]] || fail "no submitted event"
 
+# The runner is a separate sandboxed process; these tests stand in for it.
+# Checks are spooled under the hash of their source, which is the whole point:
+# it is the same queue entry however the check was asked for.
+lean_hash() { python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'; }
+await_spool() { # <hash> -> waits for the runner's input to appear
+  for _ in $(seq 100); do [[ -f "$SPOOL_DIR/in/$1.lean" ]] && return 0; sleep 0.1; done
+  fail "verifier never spooled check $1"
+}
+runner_says() { # <hash> <json> -> answers as the sandboxed runner would
+  rm "$SPOOL_DIR/in/$1.lean"
+  echo "$2" > "$SPOOL_DIR/out/$1.json"
+}
+await_verification() { # <verification id> -> its settled outcome
+  for _ in $(seq 100); do
+    OUT=$(psql -h "$WORK" -d math -tAc "select outcome from verification where id = $1")
+    [[ $OUT != pending ]] && { echo "$OUT"; return 0; }
+    sleep 0.1
+  done
+  fail "verification $1 never settled"
+}
+
 # Contract: a passing kernel check flips lean_verified but never the tier.
+HASH=$(printf 'import Mathlib\ntheorem t : 1 + 1 = 2 := rfl\n' | lean_hash)
 VID=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$CID'")
-for _ in $(seq 50); do [[ -f "$SPOOL_DIR/in/$VID.lean" ]] && break; sleep 0.1; done
-[[ -f "$SPOOL_DIR/in/$VID.lean" ]] || fail "verifier never spooled the check"
-rm "$SPOOL_DIR/in/$VID.lean"
-echo '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"t","type":"1 + 1 = 2","axioms":[]}]}' > "$SPOOL_DIR/out/$VID.json"
-for _ in $(seq 50); do
-  [[ $(psql -h "$WORK" -d math -tAc "select outcome from verification where id = $VID") == passed ]] && break
-  sleep 0.1
-done
+await_spool "$HASH"
+runner_says "$HASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"t","type":"1 + 1 = 2","axioms":[]}]}'
+[[ $(await_verification "$VID") == passed ]] || fail "a clean check did not pass"
 GOT=$(call get "{\"id\":\"$CID\"}")
 [[ $(echo "$GOT" | field '["lean_verified"]') == True ]] || fail "pass did not set lean_verified"
 [[ $(echo "$GOT" | field '["tier"]') == 0 ]] || fail "verification changed the tier — it must not"
 
+# Contract: check_lean is a throwaway check. It runs the same kernel, reports
+# the exact statements proven, and creates no contribution.
+BEFORE=$(psql -h "$WORK" -d math -tAc "select count(*) from contribution")
+CHECK_SRC='theorem check_me : 2 + 2 = 4 := rfl'
+CHASH=$(printf 'import Mathlib\n\n%s\n' "$CHECK_SRC" | lean_hash)
+call check_lean "{\"contributor_key\":\"$KEY\",\"source\":\"$CHECK_SRC\"}" > "$WORK/check.out" &
+CHECK_JOB=$!
+await_spool "$CHASH"
+runner_says "$CHASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"check_me","type":"2 + 2 = 4","axioms":[]}]}'
+wait $CHECK_JOB
+CHECKED=$(cat "$WORK/check.out")
+[[ $(echo "$CHECKED" | field '["status"]') == passed ]] || fail "check_lean did not report the pass: $CHECKED"
+[[ $(echo "$CHECKED" | field '["proved"][0]["statement"]') == "2 + 2 = 4" ]] || fail "check_lean did not report the statement proven"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from contribution") == "$BEFORE" ]] || fail "check_lean created a contribution"
+
+# Contract: a check is a pure function of its source, so the second caller
+# pays nothing — including when the second caller is a submission.
+CACHED=$(call check_lean "{\"contributor_key\":\"$KEY\",\"source\":\"$CHECK_SRC\"}")
+[[ $(echo "$CACHED" | field '["cached"]') == True ]] || fail "an identical check was not served from cache"
+SUB3=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"already checked\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\n$CHECK_SRC\n\`\`\`\"}")
+VID3=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$(echo "$SUB3" | field '["id"]')'")
+[[ $(await_verification "$VID3") == passed ]] || fail "a submission of already-checked source did not reuse the result"
+[[ ! -f "$SPOOL_DIR/in/$CHASH.lean" ]] || fail "already-checked source was sent to the kernel twice"
+
+# Contract: sorry is reported by check_lean and refused by submit — the check
+# is a working tool, the badge is a claim about a finished proof.
+SORRY_SRC='theorem hole : 1 = 1 := by sorry'
+SHASH=$(printf 'import Mathlib\n\n%s\n' "$SORRY_SRC" | lean_hash)
+call check_lean "{\"contributor_key\":\"$KEY\",\"source\":\"$SORRY_SRC\"}" > "$WORK/sorry.out" &
+SORRY_JOB=$!
+await_spool "$SHASH"
+runner_says "$SHASH" '{"ok":false,"exit_code":0,"output":"warning: declaration uses '"'"'sorry'"'"'"}'
+wait $SORRY_JOB
+SORRY=$(cat "$WORK/sorry.out")
+[[ $(echo "$SORRY" | field '["sorry"]') == True ]] || fail "check_lean did not report the sorry: $SORRY"
+SUB4=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"with sorry\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\nimport Mathlib\ntheorem s : 1 = 1 := by sorry\n\`\`\`\"}")
+VID4=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$(echo "$SUB4" | field '["id"]')'")
+[[ $(await_verification "$VID4") == failed ]] || fail "a submission containing sorry was not refused"
+
 # Contract: declarations resting on axioms outside the allowed three fail.
 SUB2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"bad axioms\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\nimport Mathlib\ntheorem u : True := trivial\n\`\`\`\"}")
 CID2=$(echo "$SUB2" | field '["id"]')
+HASH2=$(printf 'import Mathlib\ntheorem u : True := trivial\n' | lean_hash)
 VID2=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$CID2'")
-for _ in $(seq 50); do [[ -f "$SPOOL_DIR/in/$VID2.lean" ]] && break; sleep 0.1; done
-rm "$SPOOL_DIR/in/$VID2.lean"
-echo '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"u","type":"True","axioms":["sneakyAxiom"]}]}' > "$SPOOL_DIR/out/$VID2.json"
-for _ in $(seq 50); do
-  OUT=$(psql -h "$WORK" -d math -tAc "select outcome from verification where id = $VID2")
-  [[ $OUT != pending ]] && break
-  sleep 0.1
-done
-[[ $OUT == failed ]] || fail "disallowed axiom was not rejected (got: $OUT)"
+await_spool "$HASH2"
+runner_says "$HASH2" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"u","type":"True","axioms":["sneakyAxiom"]}]}'
+[[ $(await_verification "$VID2") == failed ]] || fail "disallowed axiom was not rejected"
 
 # Contract: tier changes are trusted-only and land in the event ledger.
 DENIED=$(call set_tier "{\"contributor_key\":\"$KEY\",\"id\":\"$CID\",\"tier\":2,\"note\":\"x\"}")
@@ -207,7 +268,7 @@ for o in objs:
     assert stamps, f"{sys.argv[1]}: undated object {sorted(o)}"
     for k in stamps:
         datetime.datetime.fromisoformat(str(o[k]).replace("Z", "+00:00"))
-' "$1" "$3" || fail "$1 returned undated or unparseable entries"
+' "$1" "$3" || fail "$1 returned undated or unparseable entries: $(echo "$2" | head -c 400)"
 }
 GOTQ=$(call get "{\"id\":\"$Q\"}")
 dated "get" "$GOTQ" '[d]'
@@ -289,4 +350,54 @@ machine_token() {
 MID1=$(AUTH=$(machine_token) call hello '{}' | field '["you"]["identity"]')
 [[ $(AUTH=$(machine_token) call hello '{}' | field '["you"]["identity"]') == "$MID1" ]] || fail "client_credentials identity is not stable across tokens"
 
+# A refactor proposal to adjudicate, so apply_refactor below is called with
+# something it can actually decide.
+PROPOSAL=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"title\":\"proposal\",\"summary\":\"s\",\"content\":\"c.\",\"supersedes\":[\"$SQ\"]}" | field '["id"]')
+
+# Contract: every door answers. A tool that no contract above calls can still
+# be broken by a refactor of a shared read path, so each one is called once
+# with plausible arguments and must not come back an error. A new tool means a
+# new line here.
+declare -A DOORS=(
+  [hello]='{}'
+  [get_problems]='{}'
+  [search]='{"query":"frontier test question"}'
+  [resolve]='{"name":"frontier test question"}'
+  [browse]='{}'
+  [topics]='{}'
+  [fronts]='{}'
+  [frontier]="{\"id\":\"$Q\"}"
+  [context]="{\"id\":\"$Q\"}"
+  [related]="{\"id\":\"$Q\",\"method\":\"lexical\"}"
+  [get]="{\"id\":\"$Q\"}"
+  [submit]='{"kind":"result","title":"every door","summary":"s","content":"c."}'
+  [check_lean]="{\"contributor_key\":\"$KEY\",\"source\":\"$CHECK_SRC\"}"
+  [link]="{\"contributor_key\":\"$KEY\",\"src\":\"$Q\",\"dst\":\"$SQ\",\"rel\":\"uses\"}"
+  [my_submissions]="{\"contributor_key\":\"$KEY\"}"
+  [trail]="{\"contributor_key\":\"$KEY\",\"title\":\"every door\",\"note\":\"n\"}"
+  [trails]='{}'
+  [guides]='{}'
+  [stats]='{}'
+  [events]='{}'
+  [get_tuning]='{}'
+  [set_tuning]="{\"contributor_key\":\"$OPKEY\",\"notability_weights\":{},\"note\":\"no-op\"}"
+  [review_queue]="{\"contributor_key\":\"$OPKEY\"}"
+  [set_tier]="{\"contributor_key\":\"$OPKEY\",\"id\":\"$Q\",\"tier\":1,\"note\":\"n\"}"
+  [apply_refactor]="{\"contributor_key\":\"$OPKEY\",\"refactor_id\":\"$PROPOSAL\",\"decision\":\"reject\",\"note\":\"n\"}"
+  [grant_trust]="{\"contributor_key\":\"$OPKEY\",\"identity_id\":\"$OPID\",\"role\":\"operator\",\"note\":\"n\"}"
+  [retract]="{\"contributor_key\":\"$OPKEY\",\"id\":\"$SQ\",\"note\":\"contract test\"}"
+  [register_public_key]="{\"contributor_key\":\"$KEY\",\"public_key\":\"$(python3 -c 'import base64,os; print(base64.b64encode(os.urandom(32)).decode())')\"}"
+)
+REGISTERED=$(curl -sf --max-time 10 -X POST "$MCP" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | sed -n 's/^data: //p' | python3 -c 'import sys,json; print("\n".join(sorted(t["name"] for t in json.loads(sys.stdin.read())["result"]["tools"])))')
+for tool in $REGISTERED; do
+  [[ -v DOORS[$tool] ]] || fail "$tool is registered but no contract calls it"
+  ANSWER=$(call "$tool" "${DOORS[$tool]}") || fail "$tool did not answer"
+  echo "$ANSWER" | grep -q '"error"' && fail "$tool answered with an error: $(echo "$ANSWER" | head -c 300)"
+done
+
 echo "all contracts hold"
+
+

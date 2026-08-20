@@ -26,7 +26,7 @@ const READY = join(LEAN_DIR, ".ready");
 const CONCURRENCY = Number(process.env.LEAN_CONCURRENCY ?? 2);
 const TIMEOUT_MS = Number(process.env.LEAN_TIMEOUT_MS ?? 600_000);
 const AUDIT_TIMEOUT_MS = 120_000;
-const POLL_MS = 3_000;
+const POLL_MS = 1_000;
 
 /**
  * Environment (LEAN_PATH, toolchain PATH, …) captured by the project owner at

@@ -4,51 +4,160 @@
  * sandboxed `runner.ts` process (own user, no network, no database access);
  * the two communicate through a file spool:
  *
- *   verifier --(<id>.lean)--> SPOOL/in --> runner --(<id>.json)--> SPOOL/out
+ *   verifier --(<hash>.lean)--> SPOOL/in --> runner --(<hash>.json)--> SPOOL/out
+ *
+ * There is exactly one execution queue, `lean_check`, keyed by the hash of the
+ * source. The `check_lean` tool and contribution verification are both callers
+ * of it, so a lemma checked interactively costs nothing to check again on
+ * submission, and forty agents checking the same source cost one kernel run.
  *
  * A verification outcome never changes a contribution's tier: tiers are an
  * editorial ladder climbed through operator review. A kernel pass is recorded
  * as an independent `lean-kernel: passed` property, along with the exact
  * statements that were proven and the axioms they depend on.
  */
-import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, renameSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, renameSync, watch } from "node:fs";
 import { join } from "node:path";
 import { sql } from "../src/db.ts";
+import { extractLean, foreignAxioms, unsoundTokens, type CheckDetail, type Decl } from "../src/lean.ts";
+import { sha256hex } from "../src/identity.ts";
 
 const SPOOL = process.env.SPOOL_DIR ?? "/var/lib/lean-spool";
 const SPOOL_IN = join(SPOOL, "in");
 const SPOOL_OUT = join(SPOOL, "out");
 const TIMEOUT_MS = Number(process.env.LEAN_TIMEOUT_MS ?? 600_000);
 const GRACE_MS = 120_000; // runner queueing + audit slack on top of the compile timeout
-const POLL_MS = 5_000;
-
-// Defense in depth only — the real gate is the axiom audit reported by the
-// runner. These tokens either bypass the kernel or smuggle unproven facts.
-const FORBIDDEN = /\b(sorry|admit|native_decide|extern|implemented_by|ofReduceBool|ofReduceNat)\b/;
-
-// Axioms a clean Mathlib development may depend on. Anything else (including
-// sorryAx and user-declared axioms) fails the audit.
-const ALLOWED_AXIOMS = new Set(["propext", "Classical.choice", "Quot.sound"]);
-
-function extractLean(content: string): string {
-  const blocks = [...content.matchAll(/```lean\n([\s\S]*?)```/g)].map((m) => m[1]);
-  const source = blocks.length > 0 ? blocks.join("\n\n") : content;
-  return source.includes("import ") ? source : `import Mathlib\n\n${source}`;
-}
+const RECONCILE_MS = 5_000;
+const CLAIM_LIMIT = 4;
 
 type RunnerResult = {
   ok: boolean;
   exit_code?: number;
   timed_out?: boolean;
   output?: string;
-  decls?: { name: string; type: string; axioms: string[] }[];
+  decls?: Decl[];
   audit_ok?: boolean;
   audit_error?: string;
 };
 
+/** Spooled checks: source hash -> deadline. */
+const inflight = new Map<string, number>();
+
+const resolveCheck = (hash: string, outcome: string, detail: CheckDetail) =>
+  sql`update lean_check set outcome = ${outcome}, detail = ${sql.json(detail as never)}, updated_at = now()
+      where source_hash = ${hash}`;
+
+/**
+ * Give every pending contribution verification a check to wait on. Source that
+ * cannot pass is refused here rather than spending a kernel slot on it.
+ */
+async function adopt() {
+  const rows = await sql<{ id: number; contribution_id: string; content: string }[]>`
+    select v.id, v.contribution_id, a.content
+    from verification v
+    join contribution c on c.id = v.contribution_id
+    join artifact a on a.hash = c.artifact_hash
+    where v.method = 'lean-kernel' and v.outcome = 'pending' and (v.detail->>'check_hash') is null
+    order by v.id limit 20`;
+
+  for (const row of rows) {
+    const source = extractLean(row.content);
+    const unsound = unsoundTokens(source);
+    if (unsound.length > 0) {
+      await record(row.id, row.contribution_id, "failed", {
+        reason: `contains \`${unsound[0]}\`, which can bypass or smuggle past the kernel`,
+      });
+      continue;
+    }
+    const hash = sha256hex(source);
+    await sql`insert into lean_check (source_hash, source) values (${hash}, ${source}) on conflict do nothing`;
+    await sql`update verification set detail = jsonb_set(detail, '{check_hash}', to_jsonb(${hash}::text)),
+              updated_at = now() where id = ${row.id}`;
+  }
+}
+
+async function spool() {
+  const claimed = await sql<{ source_hash: string; source: string }[]>`
+    update lean_check set claimed_at = now(), updated_at = now()
+    where source_hash in (
+      select source_hash from lean_check
+      where outcome = 'pending' and claimed_at is null
+      order by created_at for update skip locked limit ${CLAIM_LIMIT})
+    returning source_hash, source`;
+
+  for (const row of claimed) {
+    writeFileSync(join(SPOOL_IN, `${row.source_hash}.lean.tmp`), row.source);
+    // Atomic same-directory rename so the runner never sees a half-written file.
+    renameSync(join(SPOOL_IN, `${row.source_hash}.lean.tmp`), join(SPOOL_IN, `${row.source_hash}.lean`));
+    inflight.set(row.source_hash, Date.now() + TIMEOUT_MS + GRACE_MS);
+  }
+}
+
+function interpret(result: RunnerResult, elapsedMs: number): { outcome: string; detail: CheckDetail } {
+  const detail: CheckDetail = {
+    exit_code: result.exit_code,
+    timed_out: result.timed_out,
+    output: result.output,
+    elapsed_ms: elapsedMs,
+  };
+  if (result.timed_out) {
+    return { outcome: "inconclusive", detail: { ...detail, reason: `compilation timed out after ${TIMEOUT_MS / 1000}s` } };
+  }
+  if (result.exit_code === undefined) {
+    return { outcome: "inconclusive", detail: { ...detail, reason: "the runner failed before compiling", audit_error: result.audit_error } };
+  }
+  if (!result.ok) {
+    const usedSorry = /declaration uses 'sorry'/.test(result.output ?? "");
+    return {
+      outcome: "failed",
+      detail: {
+        ...detail,
+        sorry: usedSorry,
+        reason: usedSorry ? "compiles, but a declaration is still `sorry`" : "does not compile",
+      },
+    };
+  }
+  if (!result.audit_ok || !result.decls) {
+    return {
+      outcome: "inconclusive",
+      detail: { ...detail, reason: "compiled, but the axiom/statement audit did not complete", audit_error: result.audit_error },
+    };
+  }
+  return { outcome: "passed", detail: { ...detail, decls: result.decls, audit_ok: true } };
+}
+
+async function collect() {
+  for (const [hash, deadline] of inflight) {
+    const resultPath = join(SPOOL_OUT, `${hash}.json`);
+    if (existsSync(resultPath)) {
+      const [started] = await sql<{ claimed_at: Date }[]>`select claimed_at from lean_check where source_hash = ${hash}`;
+      const elapsed = Date.now() - new Date(started!.claimed_at).getTime();
+      let parsed: RunnerResult;
+      try {
+        parsed = JSON.parse(readFileSync(resultPath, "utf8"));
+      } catch (error) {
+        await resolveCheck(hash, "inconclusive", { reason: `unreadable runner result: ${error}` });
+        rmSync(resultPath, { force: true });
+        inflight.delete(hash);
+        continue;
+      }
+      rmSync(resultPath, { force: true });
+      inflight.delete(hash);
+      const { outcome, detail } = interpret(parsed, elapsed);
+      await resolveCheck(hash, outcome, detail);
+      continue;
+    }
+    if (Date.now() > deadline) {
+      rmSync(join(SPOOL_IN, `${hash}.lean`), { force: true });
+      inflight.delete(hash);
+      await resolveCheck(hash, "inconclusive", { reason: "no runner result within the deadline (runner down or overloaded?)" });
+    }
+  }
+}
+
 async function record(id: number, contributionId: string, result: string, detail: Record<string, unknown>) {
   await sql.begin(async (tx) => {
-    await tx`update verification set outcome = ${result}, detail = ${tx.json(detail as never)},
+    await tx`update verification set outcome = ${result}, detail = detail || ${tx.json(detail as never)},
              updated_at = now() where id = ${id}`;
     await tx`insert into event (kind, contribution_id, payload)
              values ('verification', ${contributionId},
@@ -56,130 +165,72 @@ async function record(id: number, contributionId: string, result: string, detail
   });
 }
 
-/** In-flight checks: verification id -> { contributionId, deadline }. */
-const inflight = new Map<number, { contributionId: string; deadline: number }>();
+/** Turn resolved checks into the editorial judgement a contribution carries. */
+async function judge() {
+  const rows = await sql<{ id: number; contribution_id: string; outcome: string; detail: CheckDetail }[]>`
+    select v.id, v.contribution_id, k.outcome, k.detail
+    from verification v join lean_check k on k.source_hash = v.detail->>'check_hash'
+    where v.method = 'lean-kernel' and v.outcome = 'pending' and k.outcome <> 'pending'`;
 
-async function spool() {
-  const claimed = await sql.begin(async (tx) => {
-    const rows = await tx<{ id: number; contribution_id: string; content: string }[]>`
-      select v.id, v.contribution_id, a.content
-      from verification v
-      join contribution c on c.id = v.contribution_id
-      join artifact a on a.hash = c.artifact_hash
-      where v.method = 'lean-kernel' and v.outcome = 'pending'
-        and (v.detail->>'claimed_at') is null
-      order by v.id
-      for update of v skip locked
-      limit 4`;
-    for (const row of rows) {
-      await tx`update verification set detail = jsonb_set(detail, '{claimed_at}', to_jsonb(now())),
-               updated_at = now() where id = ${row.id}`;
-    }
-    return rows;
-  });
-
-  for (const row of claimed) {
-    const source = extractLean(row.content);
-    const forbidden = source.match(FORBIDDEN);
-    if (forbidden) {
-      await record(row.id, row.contribution_id, "failed", {
-        reason: `contains \`${forbidden[0]}\`, which can bypass or smuggle past the kernel`,
-      });
-      continue;
-    }
-    writeFileSync(join(SPOOL_IN, `${row.id}.lean.tmp`), source);
-    // Atomic same-directory rename so the runner never sees a half-written file.
-    renameSync(join(SPOOL_IN, `${row.id}.lean.tmp`), join(SPOOL_IN, `${row.id}.lean`));
-    inflight.set(row.id, { contributionId: row.contribution_id, deadline: Date.now() + TIMEOUT_MS + GRACE_MS });
-  }
-}
-
-async function collect() {
-  for (const [id, meta] of inflight) {
-    const resultPath = join(SPOOL_OUT, `${id}.json`);
-    if (existsSync(resultPath)) {
-      let result: RunnerResult;
-      try {
-        result = JSON.parse(readFileSync(resultPath, "utf8"));
-      } catch (error) {
-        await record(id, meta.contributionId, "inconclusive", { reason: `unreadable runner result: ${error}` });
-        rmSync(resultPath, { force: true });
-        inflight.delete(id);
-        continue;
-      }
-      rmSync(resultPath, { force: true });
-      inflight.delete(id);
-
-      if (result.timed_out) {
-        await record(id, meta.contributionId, "inconclusive", {
-          reason: `compilation timed out after ${TIMEOUT_MS / 1000}s`,
-          output: result.output,
-        });
-      } else if (!result.ok) {
-        if (result.exit_code === undefined) {
-          // The runner never got as far as compiling — infrastructure, not math.
-          await record(id, meta.contributionId, "inconclusive", {
-            reason: "runner error before compilation",
-            error: result.audit_error,
-          });
-        } else {
-          await record(id, meta.contributionId, "failed", { exit_code: result.exit_code, output: result.output });
-        }
-      } else if (!result.audit_ok || !result.decls) {
-        await record(id, meta.contributionId, "inconclusive", {
-          reason: "compiled, but the axiom/statement audit did not complete",
-          audit_error: result.audit_error,
-          output: result.output,
+  for (const row of rows) {
+    if (row.outcome === "passed") {
+      const foreign = foreignAxioms(row.detail.decls ?? []);
+      if (foreign.length > 0) {
+        await record(row.id, row.contribution_id, "failed", {
+          reason: `depends on axioms outside {propext, Classical.choice, Quot.sound}: ${foreign.join(", ")}`,
+          decls: row.detail.decls,
         });
       } else {
-        const badAxioms = result.decls.flatMap((d) => d.axioms.filter((a) => !ALLOWED_AXIOMS.has(a)));
-        if (badAxioms.length > 0) {
-          await record(id, meta.contributionId, "failed", {
-            reason: `depends on axioms outside {propext, Classical.choice, Quot.sound}: ${[...new Set(badAxioms)].join(", ")}`,
-            decls: result.decls,
-          });
-        } else {
-          await record(id, meta.contributionId, "passed", {
-            decls: result.decls,
-            note: "kernel-checked; the statements listed in decls are exactly what was proven",
-          });
-        }
+        await record(row.id, row.contribution_id, "passed", {
+          decls: row.detail.decls,
+          note: "kernel-checked; the statements listed in decls are exactly what was proven",
+        });
       }
-      continue;
-    }
-    if (Date.now() > meta.deadline) {
-      rmSync(join(SPOOL_IN, `${id}.lean`), { force: true });
-      inflight.delete(id);
-      await record(id, meta.contributionId, "inconclusive", {
-        reason: "no runner result within the deadline (runner down or overloaded?)",
+    } else {
+      await record(row.id, row.contribution_id, row.outcome, {
+        reason: row.detail.reason,
+        exit_code: row.detail.exit_code,
+        output: row.detail.output,
       });
     }
   }
 }
 
-/** On startup, re-adopt claims that were spooled but never resolved. */
+/** Anything claimed but unresolved when this process died goes back on the queue. */
 async function recover() {
-  const rows = await sql<{ id: number; contribution_id: string }[]>`
-    select v.id, v.contribution_id from verification v
-    where v.method = 'lean-kernel' and v.outcome = 'pending'
-      and (v.detail->>'claimed_at') is not null`;
-  for (const row of rows) {
-    // Re-spool from scratch: clear the claim so the next tick picks it up.
-    rmSync(join(SPOOL_IN, `${row.id}.lean`), { force: true });
-    rmSync(join(SPOOL_OUT, `${row.id}.json`), { force: true });
-    await sql`update verification set detail = detail - 'claimed_at' where id = ${row.id}`;
+  const claimed = await sql<{ source_hash: string }[]>`
+    select source_hash from lean_check where outcome = 'pending' and claimed_at is not null`;
+  for (const row of claimed) {
+    rmSync(join(SPOOL_IN, `${row.source_hash}.lean`), { force: true });
+    rmSync(join(SPOOL_OUT, `${row.source_hash}.json`), { force: true });
   }
-  if (rows.length > 0) console.log(`re-queued ${rows.length} orphaned pending check(s)`);
+  await sql`update lean_check set claimed_at = null where outcome = 'pending' and claimed_at is not null`;
+  if (claimed.length > 0) console.log(`re-queued ${claimed.length} orphaned pending check(s)`);
+}
+
+let ticking = false;
+async function tick() {
+  if (ticking) return;
+  ticking = true;
+  try {
+    await adopt();
+    await spool();
+    await collect();
+    await judge();
+  } catch (error) {
+    console.error("tick failed:", error);
+  } finally {
+    ticking = false;
+  }
 }
 
 mkdirSync(SPOOL_IN, { recursive: true });
 mkdirSync(SPOOL_OUT, { recursive: true });
 await recover();
+// A new check and a finished check both wake the loop immediately; the
+// interval is the reconciler that makes the work happen anyway.
+await sql.listen("lean_check", () => void tick());
+watch(SPOOL_OUT, () => void tick());
 console.log(`lean verifier (orchestrator): spool=${SPOOL} timeout=${TIMEOUT_MS}ms`);
-setInterval(
-  () =>
-    spool()
-      .then(collect)
-      .catch((error) => console.error("tick failed:", error)),
-  POLL_MS,
-);
+setInterval(() => void tick(), RECONCILE_MS);
+void tick();

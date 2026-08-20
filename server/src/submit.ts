@@ -2,6 +2,7 @@ import { sql } from "./db.ts";
 import { sha256hex } from "./identity.ts";
 import { issueReceipt } from "./receipts.ts";
 import { createEdge, refreshNotability } from "./graph.ts";
+import { classifyTopics } from "./topics.ts";
 
 const MAX_CONTENT_BYTES = 1 << 20; // 1 MiB
 
@@ -50,12 +51,13 @@ export async function submit(identityId: string, input: SubmitInput): Promise<Su
              values (${hash}, ${mediaType}, ${content}, ${Buffer.byteLength(content)})
              on conflict do nothing`;
 
+    const tags = classifyTopics(`${input.title}\n${input.summary}\n${content}`);
     const [contribution] = await tx<
       { id: string; created_at: Date; artifact_hash: string; identity_id: string }[]
     >`
-      insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id)
+      insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id, tags)
       values (${input.kind}, ${input.title}, ${input.summary}, ${hash},
-              ${sql.json((input.metadata ?? {}) as never)}, ${identityId})
+              ${sql.json((input.metadata ?? {}) as never)}, ${identityId}, ${tags}::text[])
       returning id, created_at, artifact_hash, identity_id`;
 
     await tx`insert into event (kind, contribution_id, identity_id, payload)

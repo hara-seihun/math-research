@@ -124,4 +124,15 @@ EID=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where dst='
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"id\":\"$EID\",\"tier\":2,\"note\":\"confirmed link\"}" | field '["ok"]' > /dev/null
 [[ $(psql -h "$WORK" -d math -tAc "select tier from contribution where id='$EID'") == 2 ]] || fail "edge did not promote"
 
+# Contract: submissions are auto-tagged with subject topics (submit wiring to
+# the shared classifier) and topic is a browse facet.
+DBN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"Riemann zeta zero de Bruijn Newman\",\"summary\":\"analytic bound\",\"content\":\"On the critical line.\"}" | field '["id"]')
+[[ $(psql -h "$WORK" -d math -tAc "select 'analytic-number-theory' = any(tags) from contribution where id='$DBN'") == t ]] || fail "submission was not topic-tagged"
+call browse '{"topic":"analytic-number-theory"}' | python3 -c 'import sys,json;assert len(json.load(sys.stdin)["results"])>=1' || fail "topic browse facet empty"
+
+# Contract: a front groups work and its members surface (fronts read tool).
+FR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"front\",\"title\":\"test front\",\"summary\":\"s\",\"content\":\"grouping.\"}" | field '["id"]')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$A\",\"dst\":\"$FR\",\"rel\":\"in-front\"}" | field '["ok"]' > /dev/null
+call fronts "{\"id\":\"$FR\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(m["id"] for m in d["members"])' || fail "front member not surfaced"
+
 echo "all contracts hold"

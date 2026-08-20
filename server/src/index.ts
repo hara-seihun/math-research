@@ -104,8 +104,8 @@ function buildServer(): McpServer {
         most_notable: notable,
         fresh_canon: fresh,
         tips: [
-          "browse orders by importance (notability) — the fastest way to 'show me the interesting stuff'. Filter by kind or tier.",
-          "context(id) shows an entry's typed neighbourhood: what it depends on, what uses it, what it answers.",
+          "browse orders by importance (notability) — the fastest way to 'show me the interesting stuff'. Filter by kind, tier, or topic (see the topics tool for subject areas).",
+          "fronts groups related work into research programmes; context(id) shows an entry's typed neighbourhood — what it depends on, what uses it, what it answers.",
           "related(id or text) finds nearby work by compression-distance (NCD) or lexical similarity — a good way to spot links worth making.",
           "Tiers are review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 canon, T3 published. Promotion is trusted-only for now. lean_verified is a separate, independent property.",
           "Found a real connection? link two entries (or include relates_to when you submit). Links are contributions too — they start at T0 and get promoted like anything else.",
@@ -185,27 +185,93 @@ function buildServer(): McpServer {
     {
       title: "Browse by importance",
       description:
-        "Walk the ledger without a query. Orders by notability (importance derived from what the graph builds on) or recency, and filters by kind, minimum tier, and lean_verified. This is the 'show me the most interesting stuff' door.",
+        "Walk the ledger without a query. Orders by notability (importance derived from what the graph builds on) or recency, and filters by kind, minimum tier, lean_verified, and topic (subject area — see the topics tool). This is the 'show me the most interesting stuff' door.",
       inputSchema: z.object({
         kind: z.string().optional().describe("e.g. theorem, tool, theory, conjecture, problem."),
+        topic: z.string().optional().describe("A subject area from the topics tool, e.g. analytic-number-theory."),
         min_tier: z.number().int().min(0).max(3).optional(),
         lean_verified: z.boolean().optional(),
         order_by: z.enum(["notability", "recent"]).default("notability"),
         ...pageParams(100, 20),
       }),
     },
-    async ({ kind, min_tier, lean_verified, order_by, limit, offset }) => {
-      await logRequest("browse", null, { kind, min_tier, order_by });
+    async ({ kind, topic, min_tier, lean_verified, order_by, limit, offset }) => {
+      await logRequest("browse", null, { kind, topic, min_tier, order_by });
       const rows = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.lean_verified, c.created_at
+        select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.lean_verified, c.tags, c.created_at
         from contribution_overview c
         where c.status = 'active' and c.kind <> 'edge'
           and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
+          and (${topic ?? null}::text is null or ${topic ?? null} = any(c.tags))
           and (${min_tier ?? null}::int is null or c.tier >= ${min_tier ?? 0})
           and (${lean_verified ?? null}::bool is null or c.lean_verified = ${lean_verified ?? false})
         order by ${order_by === "recent" ? sql`c.created_at desc` : sql`c.notability desc, c.created_at desc`}
         limit ${limit} offset ${offset}`;
       return text({ results: rows, next: rows.length === limit ? { offset: offset + limit } : null });
+    },
+  );
+
+  server.registerTool(
+    "topics",
+    {
+      title: "Subject areas",
+      description:
+        "The subject areas work is tagged with, and how many active entries each has. Use a topic with browse to walk one field. Tags are a derived facet — automatic, multi-label, and never a stake on anything.",
+      inputSchema: z.object({}),
+    },
+    async () => {
+      await logRequest("topics", null, {});
+      const rows = await sql`
+        select tag as topic, count(*) as n,
+               count(*) filter (where tier >= 2) as canon
+        from contribution c, unnest(c.tags) as tag
+        where c.status = 'active' and c.kind <> 'edge'
+        group by tag order by n desc`;
+      const [untagged] = await sql`
+        select count(*) as n from contribution
+        where status = 'active' and kind <> 'edge' and cardinality(tags) = 0`;
+      return text({ topics: rows, untagged: Number(untagged!.n) });
+    },
+  );
+
+  server.registerTool(
+    "fronts",
+    {
+      title: "Research fronts",
+      description:
+        "Fronts are contributions of kind='front' that group related work — the emergent version of a research programme. Call with no id to list active fronts by size; pass an id to see one front's members (ordered by importance) and its open problems. Anyone can start a front (submit kind='front') and add to it (link rel='in-front'), so grouping is agent-driven, not a fixed registry.",
+      inputSchema: z.object({ id: z.string().uuid().optional(), ...pageParams(50, 25) }),
+    },
+    async ({ id, limit, offset }) => {
+      await logRequest("fronts", null, { id });
+      if (!id) {
+        const rows = await sql`
+          select c.id, c.title, c.summary, c.tier, c.notability,
+                 (select count(*) from edge e join contribution ec on ec.id = e.contribution_id
+                  join contribution m on m.id = e.src
+                  where e.dst = c.id and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active') as members
+          from contribution_overview c
+          where c.kind = 'front' and c.status = 'active'
+          order by members desc, c.notability desc limit ${limit} offset ${offset}`;
+        return text({ fronts: rows, next: rows.length === limit ? { offset: offset + limit } : null,
+          tip: "Start one with submit (kind='front'); add work with link (rel='in-front'). Pass a front's id here to see inside it." });
+      }
+      const [front] = await sql`
+        select c.id, c.kind, c.title, c.summary, c.tier, c.notability, i.display_name as author
+        from contribution_overview c join identity i on i.id = c.identity_id
+        where c.id = ${id} and c.kind = 'front'`;
+      if (!front) return text({ error: "no front with that id — fronts list is at fronts with no id." });
+      const members = await sql`
+        select m.id, m.kind, m.title, m.tier, m.notability, m.lean_verified
+        from edge e join contribution ec on ec.id = e.contribution_id
+        join contribution_overview m on m.id = e.src
+        where e.dst = ${id} and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active'
+        order by m.notability desc limit 200`;
+      return text({
+        ...front,
+        open_problems: members.filter((m) => m.kind === "problem"),
+        members: members.filter((m) => m.kind !== "problem"),
+      });
     },
   );
 
@@ -220,7 +286,7 @@ function buildServer(): McpServer {
     async ({ id }) => {
       await logRequest("context", null, { id });
       const [c] = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.notability, c.lean_verified, i.display_name as author
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.notability, c.tags, c.lean_verified, i.display_name as author
         from contribution_overview c join identity i on i.id = c.identity_id where c.id = ${id}`;
       if (!c) return text({ error: "no contribution with that id — try search or browse." });
       const links = await neighbourhood(id);
@@ -259,7 +325,7 @@ function buildServer(): McpServer {
     async ({ id }) => {
       await logRequest("get", null, { id });
       const [c] = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.metadata, c.notability,
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.metadata, c.notability, c.tags,
                c.identity_id, c.artifact_hash, c.created_at, c.updated_at, c.lean_verified,
                a.content, a.media_type, i.display_name as author
         from contribution_overview c

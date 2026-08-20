@@ -15,9 +15,11 @@ alter table identity add constraint identity_role_check
   check (role in ('contributor', 'trusted', 'operator'));
 
 alter table contribution add column if not exists notability real not null default 0;
+alter table contribution add column if not exists tags text[] not null default '{}';
 create index if not exists contribution_trgm_idx
   on contribution using gin ((title || ' ' || summary) gin_trgm_ops);
 create index if not exists contribution_notability_idx on contribution (status, notability desc);
+create index if not exists contribution_tags_idx on contribution using gin (tags);
 
 create or replace function kind_weight(k text) returns real language sql immutable as $$
   select case k
@@ -144,7 +146,7 @@ $$;
 drop view if exists contribution_overview;
 create view contribution_overview as
 select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
-       c.artifact_hash, c.metadata, c.notability, c.created_at, c.updated_at, c.search,
+       c.artifact_hash, c.metadata, c.notability, c.tags, c.created_at, c.updated_at, c.search,
        exists (select 1 from verification v
                where v.contribution_id = c.id
                  and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified

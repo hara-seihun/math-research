@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>edit · math-research</title>
+<style>
+:root { --line: #d9d5cc; --ink: #1a1a19; --dim: #6b675f; --bg: #faf8f4; --accent: #2f5d50; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: progress; }
+
+#login { display: grid; place-content: center; gap: 12px; height: 100%; text-align: center; }
+#login input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; min-width: 260px; }
+#login .err { color: #a1342a; min-height: 1.4em; }
+
+#app { display: none; grid-template-rows: auto 1fr; height: 100%; }
+#app.on { display: grid; }
+header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header .grow { flex: 1; }
+header input[name=message] { flex: 0 1 320px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.head { color: var(--dim); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
+
+main { display: grid; grid-template-columns: 210px minmax(320px, 1fr) minmax(320px, 1.1fr); min-height: 0; }
+nav { border-right: 1px solid var(--line); overflow: auto; padding: 8px; }
+nav h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin: 12px 6px 6px; }
+nav a { display: block; padding: 5px 8px; border-radius: 6px; cursor: pointer; text-decoration: none; color: inherit; }
+nav a:hover { background: #efece5; }
+nav a.on { background: var(--accent); color: #fff; }
+nav a .dot { color: #c07a12; }
+nav a.on .dot { color: #ffd48a; }
+
+section.edit { display: grid; grid-template-rows: 1fr auto; border-right: 1px solid var(--line); min-height: 0; }
+textarea { width: 100%; height: 100%; border: 0; padding: 14px 16px; resize: none; outline: none; background: #fff;
+  font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
+pre.log { margin: 0; max-height: 30vh; overflow: auto; padding: 10px 14px; border-top: 1px solid var(--line);
+  background: #fff; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+pre.log.bad { background: #fdf1ef; color: #7d221a; }
+pre.log:empty { display: none; }
+
+section.view { min-height: 0; display: grid; grid-template-rows: auto 1fr; }
+.viewbar { display: flex; gap: 10px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 13px; }
+.viewbar a { color: var(--accent); }
+iframe { border: 0; width: 100%; height: 100%; background: #fff; }
+
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  nav { border-right: 0; border-bottom: 1px solid var(--line); max-height: 22vh; }
+  section.edit { border-right: 0; }
+  body.viewing section.edit { display: none; }
+  body:not(.viewing) section.view { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>math-research</h1>
+  <form>
+    <input type="password" name="password" placeholder="admin password" autofocus autocomplete="current-password">
+    <button class="primary">enter</button>
+  </form>
+  <p class="err"></p>
+</div>
+
+<div id="app">
+  <header>
+    <button id="save">Save &amp; preview</button>
+    <input name="message" placeholder="what changed (commit message)">
+    <button id="publish" class="primary">Publish live</button>
+    <button id="revert">Revert file</button>
+    <span class="grow"></span>
+    <span class="head"></span>
+    <button id="toggle" hidden>Preview</button>
+    <button id="logout">Log out</button>
+  </header>
+  <main>
+    <nav></nav>
+    <section class="edit">
+      <textarea spellcheck="false"></textarea>
+      <pre class="log"></pre>
+    </section>
+    <section class="view">
+      <div class="viewbar">
+        <span>preview</span>
+        <a class="live" target="_blank" rel="noreferrer">open live page ↗</a>
+        <span class="grow"></span>
+        <span class="dirty"></span>
+      </div>
+      <iframe title="preview"></iframe>
+    </section>
+  </main>
+</div>
+
+<script type="module">
+const $ = (selector) => document.querySelector(selector);
+const login = $("#login"), app = $("#app"), nav = $("nav"), area = $("textarea"), log = $("pre.log"), frame = $("iframe");
+
+let docs = [], current = null;
+const buffers = new Map();
+
+const api = async (route, body) => {
+  const response = await fetch(`/admin/api/${route}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (response.status === 401) { show("login"); return null; }
+  return response.json();
+};
+
+function show(which) {
+  login.style.display = which === "login" ? "grid" : "none";
+  app.classList.toggle("on", which === "app");
+}
+
+const edited = () => docs.filter((doc) => buffers.get(doc.path) !== doc.content);
+
+function render(state) {
+  if (state.docs) {
+    docs = state.docs;
+    for (const doc of docs) if (!buffers.has(doc.path)) buffers.set(doc.path, doc.content);
+    if (!current || !docs.some((doc) => doc.path === current)) current = docs[0].path;
+    $(".head").textContent = state.head ?? "";
+    drawList(state.changed ?? []);
+    area.value = buffers.get(current);
+    const doc = docs.find((d) => d.path === current);
+    $("a.live").href = `/${doc.slug}`;
+  }
+  if (state.output !== undefined) {
+    log.textContent = state.output;
+    log.classList.toggle("bad", state.ok === false);
+  }
+  $(".dirty").textContent = edited().length ? `${edited().length} unsaved` : "saved";
+}
+
+function drawList(changed) {
+  const group = (label, kind) => {
+    const members = docs.filter((doc) => doc.path.startsWith(kind));
+    if (!members.length) return "";
+    return `<h2>${label}</h2>` + members.map((doc) => {
+      const mark = buffers.get(doc.path) !== doc.content ? "●" : changed.includes(doc.path) ? "◆" : "";
+      return `<a data-path="${doc.path}" class="${doc.path === current ? "on" : ""}">${doc.title} <span class="dot">${mark}</span></a>`;
+    }).join("");
+  };
+  nav.innerHTML = group("Pages", "site/content") + group("Guides", "guides");
+  for (const link of nav.querySelectorAll("a")) {
+    link.onclick = () => { buffers.set(current, area.value); current = link.dataset.path; render({ docs }); showPreview(); };
+  }
+}
+
+function showPreview(bust = false) {
+  const doc = docs.find((d) => d.path === current);
+  const url = `/admin/preview/${doc.slug}${bust ? `?t=${Date.now()}` : ""}`;
+  if (frame.dataset.url !== url || bust) { frame.dataset.url = url; frame.src = url; }
+}
+
+async function act(route, extra = {}) {
+  buffers.set(current, area.value);
+  const files = edited().map((doc) => ({ path: doc.path, content: buffers.get(doc.path) }));
+  for (const button of document.querySelectorAll("header button")) button.disabled = true;
+  const result = await api(route, { files, ...extra });
+  for (const button of document.querySelectorAll("header button")) button.disabled = false;
+  if (!result) return;
+  buffers.clear();
+  render(result);
+  if (result.ok !== false) showPreview(true);
+}
+
+$("#save").onclick = () => act("preview");
+$("#publish").onclick = () => act("publish", { message: $("input[name=message]").value });
+$("#revert").onclick = async () => {
+  buffers.delete(current);
+  const result = await api("revert", { path: current });
+  if (result) { buffers.clear(); render(result); showPreview(true); }
+};
+$("#logout").onclick = async () => { await api("logout"); location.reload(); };
+$("#toggle").onclick = () => {
+  document.body.classList.toggle("viewing");
+  $("#toggle").textContent = document.body.classList.contains("viewing") ? "Edit" : "Preview";
+};
+
+area.addEventListener("input", () => { buffers.set(current, area.value); drawList([]); $(".dirty").textContent = `${edited().length} unsaved`; });
+addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key === "s") { event.preventDefault(); act("preview"); }
+});
+
+login.querySelector("form").onsubmit = async (event) => {
+  event.preventDefault();
+  const response = await fetch("/admin/api/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password: login.querySelector("input").value }),
+  });
+  const body = await response.json();
+  if (body.error) { login.querySelector(".err").textContent = body.error; return; }
+  start();
+};
+
+async function start() {
+  const state = await api("state");
+  if (!state) return;
+  show("app");
+  const wide = matchMedia("(min-width: 901px)");
+  const fitToggle = () => { $("#toggle").hidden = wide.matches; };
+  wide.addEventListener("change", fitToggle);
+  fitToggle();
+  render(state);
+  showPreview();
+}
+
+start();
+</script>
+</body>
+</html>

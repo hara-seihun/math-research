@@ -3,7 +3,10 @@ import { join, dirname } from "node:path";
 import { marked } from "marked";
 
 const HERE = import.meta.dir;
-const OUT = join(HERE, "public");
+const OUT = process.env.SITE_OUT ?? join(HERE, "public");
+// A preview build is served under a path prefix, so every internal link the
+// pages emit is written relative to it; the live build leaves it empty.
+const BASE = (process.env.SITE_BASE ?? "").replace(/\/$/, "");
 const ORIGIN = process.env.SITE_ORIGIN ?? "https://math.seihun.com";
 // Where the build reads the live tool list and corpus snapshot from (the guest
 // builds against its own instance); the endpoint the pages publish is always
@@ -222,6 +225,10 @@ function guidesIndex(guides: Page[]): Page {
 
 const href = (slug: string) => (slug === "." ? "/" : `/${slug}`);
 const plainHref = (slug: string) => (slug === "." ? "/index.md" : `/${slug}.md`);
+// A preview build is served under a path prefix. Markdown authors write
+// root-absolute links, so the prefix is applied to the finished HTML rather
+// than threaded through every place that emits a URL.
+const rebase = (html: string) => (BASE ? html.replace(/(href|src)="\//g, `$1="${BASE}/`) : html);
 
 function layout(page: Page, nav: Page[], html: string): string {
   const links = nav
@@ -289,7 +296,7 @@ cpSync(join(HERE, "assets"), OUT, { recursive: true });
 
 for (const page of pages) {
   const path = page.slug === "." ? "index.html" : `${page.slug}/index.html`;
-  write(join(OUT, path), layout(page, nav, await marked.parse(page.markdown)));
+  write(join(OUT, path), rebase(layout(page, nav, await marked.parse(page.markdown))));
   write(join(OUT, page.slug === "." ? "index.md" : `${page.slug}.md`), page.markdown);
 }
 
@@ -388,7 +395,8 @@ const broken: string[] = [];
 for (const page of pages) {
   const html = readFileSync(join(OUT, page.slug === "." ? "index.html" : `${page.slug}/index.html`), "utf8");
   for (const [, link] of html.matchAll(/(?:href|src)="(\/[^"#]*)/g)) {
-    const target = link.endsWith("/") ? `${link}index.html` : link;
+    const local = BASE && link.startsWith(BASE) ? link.slice(BASE.length) : link;
+    const target = local.endsWith("/") ? `${local}index.html` : local;
     if (!files.has(target) && !files.has(`${target}/index.html`)) broken.push(`${href(page.slug)} → ${link}`);
   }
 }

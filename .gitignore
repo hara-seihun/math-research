@@ -3,3 +3,5 @@ lean/.lake/
 lean/checks/
 lean/.ready
 site/public/
+site/.publish-tmp/
+site/public.retired/

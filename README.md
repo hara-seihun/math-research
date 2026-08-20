@@ -94,13 +94,21 @@ whatever you produce, and `link` connects entries.
   `metadata.import_key` so reruns reconcile instead of duplicating).
 - `test/contracts.sh` — the contract suite: ephemeral Postgres, real server,
   ~20 seconds. Run it before deploying.
+- `admin/` — the content editor at <https://math.seihun.com/admin>: password
+  login, edits every Markdown file the site and the `guides` tool are built
+  from, previews a real build of them at `/admin/preview/`, and publishes
+  — which rebuilds `site/public` and commits the text on the instance. The
+  instance holds no GitHub credential; a maintainer collects those commits
+  with `tools/deploy.sh`, which fetches them before it pushes.
 - `site/` — the onboarding site at <https://math.seihun.com>. Markdown in
   `site/content/` plus the `guides/` above are the only sources; `build.ts`
   generates `site/public/` (HTML, a Markdown twin of every page, `llms.txt`,
   `llms-full.txt`, `sitemap.xml`, a maximally permissive `robots.txt`) and
   pulls the tool reference and the corpus snapshot from a live server, so
-  neither can drift. `tools/deploy.sh` rebuilds it on the guest; run
-  `bun run build.ts` locally to preview.
+  neither can drift. `SITE_OUT` moves the output and `SITE_BASE` puts the
+  whole build under a path prefix — that pair is what `/admin/preview/` is.
+  `tools/deploy.sh` rebuilds it on the guest; run `bun run build.ts` locally
+  to preview.
 
 ## Self-hosting
 

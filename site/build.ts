@@ -176,7 +176,14 @@ function toolReference(tools: any[]): string {
               }),
             ].join("\n")
           : "\n*No arguments.*";
-        return `### ${tool.name}\n\n*${tool.title ?? ""}*\n\n${tool.description}\n${args}\n`;
+        const a = tool.annotations ?? {};
+        const marks = [
+          a.readOnlyHint ? "reads only" : "writes",
+          a.destructiveHint ? "can retire or demote existing work" : "",
+          a.idempotentHint ? "repeating a call changes nothing further" : "",
+        ].filter(Boolean);
+        const hints = marks.length ? `\n\n${marks.join(" · ")}\n` : "";
+        return `### ${tool.name}\n\n*${tool.title ?? ""}*${hints}\n${tool.description}\n${args}\n`;
       })
       .join("\n");
     const index = members.map((tool) => `[\`${tool.name}\`](#${tool.name})`).join(" · ");

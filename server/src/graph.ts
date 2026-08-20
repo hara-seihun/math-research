@@ -84,7 +84,7 @@ export async function searchContributions(args: SearchArgs) {
       select id, kind, title, summary, tier, status, state, tags, names, created_at,
              lean_verified, notability,
              case when complete then 'every term' when text_rank > 0 then 'some terms' else 'fuzzy' end as matched,
-             round((text_rank * 3 + fuzzy * 2)::numeric, 4) as score
+             round((text_rank * 3 + fuzzy * 2)::numeric, 4)::float8 as score
       from hit
       order by complete desc,
                (text_rank * 3 + fuzzy * 2) * (1 + 0.2 * ln(1 + greatest(notability, 0))) desc,
@@ -246,7 +246,7 @@ export async function related(args: RelatedArgs) {
     if (!v) return { error: "semantic search is warming up, so use method 'ncd' or 'lexical' for now." };
     const rows = await sql`
       select co.id, co.kind, co.title, co.summary, co.tier, co.state, co.notability, co.lean_verified, co.created_at,
-             round((1 - (c.embedding <=> ${asVector(v)}::vector))::numeric, 4) as similarity
+             round((1 - (c.embedding <=> ${asVector(v)}::vector))::numeric, 4)::float8 as similarity
       from contribution c join contribution_overview co on co.id = c.id
       where c.kind <> 'edge' and co.status = 'active' and c.embedding is not null
         and (${selfId}::uuid is null or c.id <> ${selfId})

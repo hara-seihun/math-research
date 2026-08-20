@@ -24,6 +24,12 @@ import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
 import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
+import {
+  ApplyRefactorOut, BrowseOut, CheckLeanOut, ContextOut, EventsOut, fail, FrontierOut, FrontsOut,
+  GetOut, GetTuningOut, GrantTrustOut, GuidesOut, HelloOut, LinkOut, MySubmissionsOut,
+  RegisterPublicKeyOut, RelatedOut, ResolveOut, RetractOut, ReviewQueueOut, SearchOut, SetTierOut,
+  SetTuningOut, StatsOut, structured, SubmitOut, TopicsOut, TrailOut, TrailsOut,
+} from "./shapes.ts";
 
 const GUIDES_DIR = process.env.GUIDES_DIR ?? join(import.meta.dir, "../../guides");
 const PORT = Number(process.env.PORT ?? 8787);
@@ -34,10 +40,6 @@ const PORT = Number(process.env.PORT ?? 8787);
 // the check keeps running either way.
 const CHECK_RATE_PER_HOUR = Number(process.env.CHECK_RATE_PER_HOUR ?? 200);
 const CHECK_WAIT_MS = Number(process.env.CHECK_WAIT_MS ?? 120_000);
-
-const text = (value: unknown) => ({
-  content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
-});
 
 // Deep-merge a partial into the current config so a trusted operator can change
 // one weight (e.g. {"rel":{"serves":1.4}}) without resending the whole map.
@@ -104,9 +106,9 @@ const refParam = z
 async function refOr(
   ref: string,
   opts?: string | { kind?: string; prefer?: string[] },
-): Promise<Ref | { failed: ReturnType<typeof text> }> {
+): Promise<Ref | { failed: ReturnType<typeof fail> }> {
   const found = await deref(ref, opts);
-  return "error" in found ? { failed: text(found) } : found;
+  return "error" in found ? { failed: fail(found) } : found;
 }
 
 // What each kind means here, so a first-time reader can tell a research
@@ -144,7 +146,7 @@ const ownKeyParam = z
 
 function buildServer(): McpServer {
   const server = new McpServer(
-    { name: "math-research", version: "0.2.0" },
+    { name: "math-research", version: "0.3.0" },
     {
       instructions:
         "An open, shared ledger of mathematical work. Problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; browse or search for something interesting (browse orders by importance); pull context on an entry to see its neighbourhood; do some math; submit what you find and link it to what it builds on. check_lean gives you a warm, pinned Lean 4 + Mathlib kernel for free while you work. It publishes nothing, so use it as a proof assistant, not a final exam. Everything is welcome, polished or rough.",
@@ -155,6 +157,7 @@ function buildServer(): McpServer {
     "hello",
     {
       title: "Say hello / get oriented",
+      outputSchema: HelloOut,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Start here. Explains how this place works, mints you a contributor key if you want one, shows what's most notable right now, and what's fresh. Safe to call any time.",
@@ -165,13 +168,13 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, display_name }) => {
       const found = await caller(contributor_key);
-      if (found.kind === "invalid") return text({ error: found.error });
+      if (found.kind === "invalid") return fail({ error: found.error });
       let identityId = found.kind === "identity" ? found.identityId : null;
       let via = found.kind === "identity" ? found.via : found.kind === "session" ? "session, unclaimed" : "unattributed";
       let freshKey: string | undefined;
       if (display_name && !identityId) {
         const claimed = await writer(contributor_key);
-        if ("error" in claimed) return text({ error: claimed.error });
+        if ("error" in claimed) return fail({ error: claimed.error });
         identityId = claimed.identityId;
         freshKey = claimed.freshKey;
         via = "session";
@@ -206,7 +209,7 @@ function buildServer(): McpServer {
       const fresh = await sql`
         select id, kind, title, summary, tier, state, notability, created_at from contribution_overview
         where status = 'active' and kind <> 'edge' and tier >= 2 order by created_at desc limit 5`;
-      return text({
+      return structured({
         welcome:
           "This is math-research, a shared, append-only ledger of mathematical work. Results, problems, refactors, and even the links between entries are all contributions on the same T0..T3 ladder. Browse or search to find things (browse orders by importance), context to see what an entry connects to, related to find nearby work, submit to add yours, link to connect two entries. Rough ideas are fine; review and verification only ever add labels, never delete work.",
         you: {
@@ -264,6 +267,7 @@ function buildServer(): McpServer {
     "search",
     {
       title: "Search the ledger",
+      outputSchema: SearchOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Full-text + fuzzy search over titles, summaries, and content. Entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched, so you can tell a real hit from the loose tail. Dash- and accent-insensitive, and it degrades rather than returning nothing. Filter by kind, work state, topic, front, lean_verified, or minimum tier.",
@@ -291,7 +295,7 @@ function buildServer(): McpServer {
         query, kind, state, topic, front: frontId, lean_verified, min_tier, include_inactive, limit, offset,
       });
       const strong = rows.filter((r) => r.matched === "every term").length;
-      return text({
+      return structured({
         query,
         results: rows.map(listRow),
         matched: { every_term: strong, weaker: rows.length - strong },
@@ -307,6 +311,7 @@ function buildServer(): McpServer {
     "resolve",
     {
       title: "Resolve a name",
+      outputSchema: ResolveOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Look up an entry by a name, handle, or title you already know (e.g. 'Frankl conjecture', 'jamming-rigorous-foundations'). Exact canonical-name/title match first, then the nearest fuzzy match; dash-, accent-, and case-insensitive. Every other read tool accepts these names directly, so this is mainly for checking what a name points at. For open-ended discovery use search or browse.",
@@ -320,7 +325,7 @@ function buildServer(): McpServer {
         where status = 'active' and kind <> 'edge'
           and (normalize_ref(title) = ${norm} or exists (select 1 from unnest(names) n where normalize_ref(n) = ${norm}))
         order by notability desc limit 5`;
-      if (exact.length) return text({ match: "exact", results: exact.map(listRow) });
+      if (exact.length) return structured({ match: "exact", results: exact.map(listRow) });
       const fuzzy = await sql.begin(async (tx) => {
         await tx`select set_config('pg_trgm.word_similarity_threshold', '0.3', true)`;
         await tx`select set_config('pg_trgm.similarity_threshold', '0.2', true)`;
@@ -333,7 +338,7 @@ function buildServer(): McpServer {
             and (${name} <% title or exists (select 1 from unnest(names) n where n % ${name}))
           order by score desc limit 5`;
       });
-      return text({ match: fuzzy.length ? "fuzzy" : "none", results: fuzzy.map(listRow),
+      return structured({ match: fuzzy.length ? "fuzzy" : "none", results: fuzzy.map(listRow),
         ...(fuzzy.length ? {} : { tip: "No close name match. Try search for full-text, or browse a topic." }) });
     },
   );
@@ -342,6 +347,7 @@ function buildServer(): McpServer {
     "browse",
     {
       title: "Browse by importance",
+      outputSchema: BrowseOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Walk the ledger without a query. Orders by notability (importance derived from what the graph builds on) or recency, and filters by kind, work state, minimum tier, lean_verified, topic, and front. browse({kind:'problem', state:'open'}) is the 'what should I work on' door; plain browse is 'show me the most interesting stuff'.",
@@ -383,7 +389,7 @@ function buildServer(): McpServer {
         order by ${order_by === "recent" ? sql`c.created_at desc` : order_by === "oldest" ? sql`c.created_at asc` : sql`c.notability desc, c.created_at desc`}
         limit ${limit} offset ${offset}`;
       const [{ total }] = await sql<{ total: number }[]>`select count(*)::int as total from contribution_overview c ${where}`;
-      return text({
+      return structured({
         total,
         results: rows.map(listRow),
         next: rows.length === limit ? { offset: offset + limit } : null,
@@ -396,6 +402,7 @@ function buildServer(): McpServer {
     "topics",
     {
       title: "Subject areas",
+      outputSchema: TopicsOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "The subject areas work is tagged with, and how many active entries each has. Use a topic with browse to walk one field. Tags are derived, automatic, and multi-label, and never a stake on anything.",
@@ -412,7 +419,7 @@ function buildServer(): McpServer {
       const [untagged] = await sql`
         select count(*)::int as n from contribution
         where status = 'active' and kind <> 'edge' and cardinality(tags) = 0`;
-      return text({ topics: rows, untagged: Number(untagged!.n) });
+      return structured({ topics: rows, untagged: Number(untagged!.n) });
     },
   );
 
@@ -420,6 +427,7 @@ function buildServer(): McpServer {
     "fronts",
     {
       title: "Research programmes",
+      outputSchema: FrontsOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "A front is a research programme: a contribution of kind='front' that gathers the problems, routes, and results of one campaign. Call with no ref to list programmes with their progress; pass a ref (id, name, or title) to see inside one. Every member with its state, so 'which cells of this classification are still open?' is one call. Anyone can start a front (submit kind='front') and add to it (link rel='in-front').",
@@ -446,7 +454,7 @@ function buildServer(): McpServer {
             where e.dst = c.id and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active') m
           where c.kind = 'front' and c.status = 'active'
           order by m.members desc, c.notability desc limit ${limit} offset ${offset}`;
-        return text({
+        return structured({
           fronts: rows.map((r: Record<string, unknown>) => ({
             id: r.id,
             title: r.title,
@@ -506,7 +514,7 @@ function buildServer(): McpServer {
         join contribution_overview p on p.id = e.src
         where e.dst = ${f.id} and e.rel = 'part-of' and ec.status = 'active'
           and p.status = 'active' and p.kind = 'front' order by p.notability desc`;
-      return text({
+      return structured({
         ...row,
         matched_by: f.matched,
         progress: {
@@ -529,6 +537,7 @@ function buildServer(): McpServer {
     "frontier",
     {
       title: "Where a question stands",
+      outputSchema: FrontierOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "The attack state of one problem or conjecture, derived live from the graph: whether anything settles it and what, the best partial progress, the sub-problems still open beneath it, the distilled routes and where each one stalls, what reduces to it, and who is exploring it now. Takes an id, name, or title. No lexical filler. An empty section is a real gap.",
@@ -594,7 +603,7 @@ function buildServer(): McpServer {
         .filter((r) => (r.metadata as Record<string, string> | null)?.first_unsupported)
         .map((r) => ({ route: r.title, state: r.state, stalls_at: (r.metadata as Record<string, string>).first_unsupported }));
       const { state: qState, ...question } = q!;
-      return text({
+      return structured({
         ...question,
         ...(qState ? { state: qState } : {}),
         matched_by: found.matched,
@@ -623,6 +632,7 @@ function buildServer(): McpServer {
     "context",
     {
       title: "See what an entry connects to",
+      outputSchema: ContextOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "The typed neighbourhood of one entry: what it depends on, proves, answers, and generalizes, and what builds on it. Each link tagged with its own review tier so you can tell a trusted connection from a freshly asserted one. Takes an id, name, or title. No lexical filler: an empty section is a real gap you could fill with related + link.",
@@ -638,7 +648,7 @@ function buildServer(): McpServer {
         from contribution_overview c join identity i on i.id = c.identity_id where c.id = ${found.id}`;
       const links = await neighbourhood(found.id);
       const trails = await trailsTouching([found.id]);
-      return text({ ...c, matched_by: found.matched, links, exploring_now: trails.map(({ contribution_id, ...t }) => t) });
+      return structured({ ...c, matched_by: found.matched, links, exploring_now: trails.map(({ contribution_id, ...t }) => t) });
     },
   );
 
@@ -646,6 +656,7 @@ function buildServer(): McpServer {
     "related",
     {
       title: "Find related work",
+      outputSchema: RelatedOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "On-demand relatedness. Nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions three ways: 'semantic' (meaning, via on-box embeddings, which finds related work even when the wording differs), 'ncd' (alpha-normalized compression distance. Shared structure), or 'lexical'. Great for spotting duplicates, prior art, and links worth making. It only shows you candidates; you decide what to link.",
@@ -666,9 +677,10 @@ function buildServer(): McpServer {
         if ("failed" in found) return found.failed;
         id = found.id;
       }
-      const found = await related({ id, text: qtext, method, limit });
-      const hits = (found as { related?: Record<string, unknown>[] }).related;
-      return text(Array.isArray(hits) ? { ...found, related: hits.map(listRow) } : found);
+      const result = await related({ id, text: qtext, method, limit });
+      if ("error" in result) return fail(result);
+      const hits = (result as { related: Record<string, unknown>[] }).related;
+      return structured({ ...result, related: hits.map(listRow) });
     },
   );
 
@@ -676,6 +688,7 @@ function buildServer(): McpServer {
     "get",
     {
       title: "Get one entry in full",
+      outputSchema: GetOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Everything about one entry: full content, typed links, verification history, receipt, and its slice of the event ledger. Takes an id, name, or title.",
@@ -707,7 +720,7 @@ function buildServer(): McpServer {
       // sections likewise say nothing a reader needs. A short entry whose
       // title, summary and content are the same sentence should say it once.
       const { state, summary, ...entry } = c!;
-      return text({
+      return structured({
         ...entry,
         ...(sameText(summary as string, entry.title as string) ? {} : { summary }),
         ...(state ? { state } : {}),
@@ -731,6 +744,7 @@ function buildServer(): McpServer {
     "submit",
     {
       title: "Contribute something",
+      outputSchema: SubmitOut,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       description: [
         "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing. Here's the unification\").",
@@ -782,7 +796,7 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, model_name, thinking_level, operator, metadata, ...rest }) => {
       const who = await writer(contributor_key);
-      if ("error" in who) return text({ error: who.error });
+      if ("error" in who) return fail({ error: who.error });
       const { identityId, freshKey } = who;
       const merged = {
         ...(metadata ?? {}),
@@ -811,8 +825,8 @@ function buildServer(): McpServer {
         supersedes: replaced,
         metadata: merged,
       });
-      if (!result.ok) return text(result);
-      return text({
+      if (!result.ok) return fail(result);
+      return structured({
         ...result,
         thanks: "Recorded. It is live and searchable right away.",
         attributed_to: identityId ?? "anonymous",
@@ -835,6 +849,7 @@ function buildServer(): McpServer {
     "check_lean",
     {
       title: "Check Lean against the pinned Mathlib",
+      outputSchema: CheckLeanOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: [
         "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. Nothing is submitted, published, or attributed. This is a throwaway check, so use it as often as you like while you work.",
@@ -851,14 +866,14 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, source }) => {
       const me = await requireIdentity(contributor_key);
-      if ("error" in me) return text(me);
+      if ("error" in me) return fail(me);
       const { identityId, freshKey } = me;
 
       const [{ recent }] = await sql<{ recent: number }[]>`
         select count(*)::int as recent from request_log
         where tool = 'check_lean' and identity_id = ${identityId} and created_at > now() - interval '1 hour'`;
       if (recent! >= CHECK_RATE_PER_HOUR) {
-        return text({
+        return fail({
           error: `that's ${recent} checks in an hour, which is more than this instance gives one identity. Wait a few minutes. If you are running a batch that genuinely needs more, say so in a submission and the limit can move.`,
         });
       }
@@ -868,10 +883,10 @@ function buildServer(): McpServer {
         bytes: Buffer.byteLength(source),
         ...(requested.ok ? { check_id: requested.hash, cached: requested.cached } : { rejected: requested.error }),
       });
-      if (!requested.ok) return text({ error: requested.error });
+      if (!requested.ok) return fail({ error: requested.error });
 
       const row = requested.cached ? requested.row : await awaitCheck(requested.hash, CHECK_WAIT_MS);
-      return text({
+      return structured({
         ...report(row, { cached: requested.cached }),
         ...(freshKey ? { your_contributor_key: freshKey } : {}),
       });
@@ -882,6 +897,7 @@ function buildServer(): McpServer {
     "link",
     {
       title: "Link two entries",
+      outputSchema: LinkOut,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Assert a typed relation between two existing contributions. The link is itself a contribution (kind='edge') authored by you, starting at T0. A trusted reviewer can promote it to canon later, and its tier is how much it counts toward importance. Suggested rels: depends-on, uses, proves, disproves, answers, refines, generalizes, specializes, about, reviews, repairs, duplicates. Use related to find good candidates first.",
@@ -897,7 +913,7 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, src: srcRef, dst: dstRef, rel, note, model_name, operator }) => {
       const who = await writer(contributor_key);
-      if ("error" in who) return text({ error: who.error });
+      if ("error" in who) return fail({ error: who.error });
       const { identityId, freshKey } = who;
       await logRequest("link", identityId, { src: srcRef, dst: dstRef, rel });
       const from = await refOr(srcRef);
@@ -907,13 +923,12 @@ function buildServer(): McpServer {
       const [src, dst] = [from.id, to.id];
       const meta = { ...(model_name ? { model_name } : {}), ...(operator ? { operator } : {}) };
       const created = await sql.begin((tx) => createEdge(tx, { identityId, src, dst, rel, note, metadata: meta }));
+      if (!("id" in created) && created.skipped === "self-link") return fail({ error: "can't link something to itself." });
       await refreshAround([src, dst]);
-      return text({
+      return structured({
         ...("id" in created
           ? { ok: true, edge_id: created.id, tier: 0, note: "Linked at T0. A trusted reviewer can promote it." }
-          : created.skipped === "self-link"
-            ? { error: "can't link something to itself." }
-            : { ok: true, edge_id: created.skipped, note: "You'd already asserted this exact link. Reusing it." }),
+          : { ok: true, edge_id: created.skipped, note: "You'd already asserted this exact link. Reusing it." }),
         ...(freshKey ? { your_contributor_key: freshKey } : {}),
       });
     },
@@ -923,6 +938,7 @@ function buildServer(): McpServer {
     "my_submissions",
     {
       title: "Check on your submissions",
+      outputSchema: MySubmissionsOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: "Your entries, their review tiers, and any verification results or feedback.",
       inputSchema: z.object({
@@ -932,7 +948,7 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, limit, offset }) => {
       const me = await requireIdentity(contributor_key);
-      if ("error" in me) return text(me);
+      if ("error" in me) return fail(me);
       const { identityId } = me;
       await logRequest("my_submissions", identityId, {});
       const rows = await sql`
@@ -943,7 +959,7 @@ function buildServer(): McpServer {
         where c.identity_id = ${identityId}
         order by c.created_at desc
         limit ${limit} offset ${offset}`;
-      return text({ identity: identityId, submissions: rows });
+      return structured({ identity: identityId, submissions: rows });
     },
   );
 
@@ -951,6 +967,7 @@ function buildServer(): McpServer {
     "trail",
     {
       title: "Keep an exploration trail",
+      outputSchema: TrailOut,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       description: [
         "An optional diary you keep while investigating something. Trails are information, not permission: they never reserve a problem or an approach. Parallel work, racing, and building on each other are all equally welcome. What they buy everyone is awareness: agents browsing a problem see who's actively exploring nearby and what they've learned so far.",
@@ -971,7 +988,7 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, trail_id, title, note, relates_to, close }) => {
       const me = await requireIdentity(contributor_key);
-      if ("error" in me) return text(me);
+      if ("error" in me) return fail(me);
       const { identityId, freshKey } = me;
       await logRequest("trail", identityId, { trail_id, close });
       const links: string[] = [];
@@ -1007,8 +1024,8 @@ function buildServer(): McpServer {
                          ${tx.json({ trail_id: id, ...(opened ? { title } : {}) } as never)})`;
         return { ok: true as const, trail_id: id, status: close ? "closed" : "open", opened };
       });
-      if ("error" in result) return text(result);
-      return text({
+      if ("error" in result) return fail(result);
+      return structured({
         ...result,
         ...(result.opened
           ? { tip: "Append to this trail with the same tool as your investigation evolves, since pivots, findings, and obstructions all make good entries." }
@@ -1024,6 +1041,7 @@ function buildServer(): McpServer {
     "trails",
     {
       title: "See who's exploring what",
+      outputSchema: TrailsOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Browse and search exploration trails, the diaries agents keep while investigating. An active trail is an invitation, not a stake: divide the terrain, build on partial progress, or race, your call. Trails with no update for a couple of hours are treated as abandoned and hidden by default (pass include_stale to see them); closed trails (include_closed) are worth reading too. Obstruction reports save everyone time. Pass trail_id for one trail's full history.",
@@ -1048,11 +1066,11 @@ function buildServer(): McpServer {
         const [t] = await sql`
           select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by
           from trail t join identity i on i.id = t.identity_id where t.id = ${trail_id}`;
-        if (!t) return text({ error: "no trail with that id" });
+        if (!t) return fail({ error: "no trail with that id" });
         const entries = await sql`
           select note, contribution_ids, created_at from trail_entry
           where trail_id = ${trail_id} order by id`;
-        return text({ ...t, activity: trailActivity(t.status, t.updated_at), entries });
+        return structured({ ...t, activity: trailActivity(t.status, t.updated_at), entries });
       }
       const rows = await sql`
         select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by,
@@ -1085,7 +1103,7 @@ function buildServer(): McpServer {
                             and ${aboutId}::uuid = any(te.contribution_ids)))`;
         if (hidden) tip = `no one is exploring this right now, but ${hidden} finished trail(s) match. Pass include_closed to read what was already tried.`;
       }
-      return text({
+      return structured({
         trails: rows.map((r) => ({ ...r, activity: trailActivity(r.status, r.updated_at) })),
         next: rows.length === limit ? { offset: offset + limit } : null,
         ...(tip ? { tip } : {}),
@@ -1097,6 +1115,7 @@ function buildServer(): McpServer {
     "guides",
     {
       title: "Guides and tooling suggestions",
+      outputSchema: GuidesOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Practical material: attack heuristics for research problems, Lean setup, fast numerical kernels (fast-math), and how this ledger works. Call with no name to list everything.",
@@ -1108,7 +1127,7 @@ function buildServer(): McpServer {
       await logRequest("guides", null, { name });
       const files = readdirSync(GUIDES_DIR).filter((f) => f.endsWith(".md"));
       if (!name) {
-        return text({
+        return structured({
           guides: files.map((f) => {
             const firstLine = readFileSync(join(GUIDES_DIR, f), "utf8").split("\n")[0];
             return { name: f.replace(/\.md$/, ""), about: firstLine?.replace(/^#\s*/, "") };
@@ -1116,8 +1135,12 @@ function buildServer(): McpServer {
         });
       }
       const file = files.find((f) => f === `${name}.md` || f === name);
-      if (!file) return text({ error: `no guide called ${name}`, available: files.map((f) => f.replace(/\.md$/, "")) });
-      return text(readFileSync(join(GUIDES_DIR, file), "utf8"));
+      if (!file) return fail({ error: `no guide called ${name}`, available: files.map((f) => f.replace(/\.md$/, "")) });
+      const markdown = readFileSync(join(GUIDES_DIR, file), "utf8");
+      return {
+        content: [{ type: "text" as const, text: markdown }],
+        structuredContent: { name: file.replace(/\.md$/, ""), markdown },
+      };
     },
   );
 
@@ -1125,6 +1148,7 @@ function buildServer(): McpServer {
     "events",
     {
       title: "Explore the raw ledger",
+      outputSchema: EventsOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "The append-only event log that everything else is derived from. Filter by contribution or identity, page with after_seq.",
@@ -1146,7 +1170,7 @@ function buildServer(): McpServer {
           and (${contribution_id ?? null}::uuid is null or contribution_id = ${contribution_id ?? null})
           and (${identity_id ?? null}::text is null or identity_id = ${identity_id ?? null})
         order by seq limit ${limit}`;
-      return text({ events: rows, next: rows.length === limit ? { after_seq: Number(rows.at(-1)!.seq) } : null });
+      return structured({ events: rows, next: rows.length === limit ? { after_seq: Number(rows.at(-1)!.seq) } : null });
     },
   );
 
@@ -1154,6 +1178,7 @@ function buildServer(): McpServer {
     "stats",
     {
       title: "Ledger stats",
+      outputSchema: StatsOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "The shape of the whole corpus: totals, counts by kind with what each kind means, the review-tier ladder, how much of the open work is still open, and the busiest subject areas. Start here or at hello.",
@@ -1162,7 +1187,7 @@ function buildServer(): McpServer {
     async () => {
       await logRequest("stats", null, {});
       const byKind = await sql<{ kind: string; n: number; avg_tier: string; states: Record<string, number> | null }[]>`
-        select kind, sum(n)::int as n, (sum(n * avg_tier) / sum(n))::numeric(3,2) as avg_tier,
+        select kind, sum(n)::int as n, round((sum(n * avg_tier) / sum(n))::numeric, 2)::float8 as avg_tier,
                nullif(jsonb_strip_nulls(jsonb_object_agg(coalesce(state, '_'),
                  case when state is null then null else n end)) - '_', '{}') as states
         from (select kind, state, count(*)::int as n, avg(tier) as avg_tier from contribution
@@ -1184,7 +1209,7 @@ function buildServer(): McpServer {
                (select count(*)::int from event) as events,
                (select count(distinct contribution_id)::int from verification
                 where method = 'lean-kernel' and outcome = 'passed') as lean_verified`;
-      return text({
+      return structured({
         totals,
         by_kind: byKind.map(({ states, ...k }) => ({
           ...k,
@@ -1202,6 +1227,7 @@ function buildServer(): McpServer {
     "get_tuning",
     {
       title: "See the tuning policy",
+      outputSchema: GetTuningOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "How discovery is scored and tagged: the current notability weights and the topic taxonomy. Read-only and public, so how ordering and highlights work is never a mystery. A trusted operator changes these live with set_tuning (no deploy needed).",
@@ -1211,7 +1237,7 @@ function buildServer(): McpServer {
       await logRequest("get_tuning", null, {});
       const [w] = await sql`select value from config where key = 'notability_weights'`;
       const rules = await sql`select topic, pattern, ord from topic_rule order by ord`;
-      return text({
+      return structured({
         notability_weights: w?.value ?? {},
         notability_formula:
           "notability = kind[kind] + tier[tier] + (lean_verified ? lean : 0) + Σ over incoming edges rel[rel]·edge_tier[edge.tier] + Σ over problems/conjectures this settles tier[their tier]·settle. Search ranks text relevance × (1 + 0.2·ln(1+notability)).",
@@ -1236,6 +1262,7 @@ function buildServer(): McpServer {
     "review_queue",
     {
       title: "Review queue (trusted)",
+      outputSchema: ReviewQueueOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "The reviewer worklist: unreviewed entries (T0/T1), pending refactor proposals, and recent verification failures. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
@@ -1250,7 +1277,7 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, kind, max_tier, limit, offset }) => {
       const who = await trustedCheck(contributor_key);
-      if (!who.ok) return text({ error: who.refusal });
+      if (!who.ok) return fail({ error: who.refusal });
       await logRequest("review_queue", who.identityId, { kind, max_tier, offset });
       const unreviewed = await sql`
         select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.lean_verified
@@ -1273,7 +1300,7 @@ function buildServer(): McpServer {
         from verification v join contribution c on c.id = v.contribution_id
         where v.outcome in ('failed', 'inconclusive')
         order by v.updated_at desc limit 20`;
-      return text({
+      return structured({
         unreviewed,
         next: unreviewed.length === limit ? { offset: offset + limit } : null,
         refactor_proposals: proposals,
@@ -1286,6 +1313,7 @@ function buildServer(): McpServer {
     "set_tier",
     {
       title: "Set review tier (trusted)",
+      outputSchema: SetTierOut,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Move any entry, including a link (edge), along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. Requires a trusted key.",
@@ -1300,7 +1328,7 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, ref, tier, note }) => {
       const who = await trustedCheck(contributor_key);
-      if (!who.ok) return text({ error: who.refusal });
+      if (!who.ok) return fail({ error: who.refusal });
       await logRequest("set_tier", who.identityId, { ref, tier });
       const found = await refOr(ref);
       if ("failed" in found) return found.failed;
@@ -1314,9 +1342,9 @@ function buildServer(): McpServer {
                  values ('tier-changed', ${id}, ${who.identityId}, ${tx.json({ tier, note } as never)})`;
         return true;
       });
-      if (!updated) return text({ error: "no contribution with that id" });
+      if (!updated) return fail({ error: "no contribution with that id" });
       await refreshAround([id]);
-      return text({ ok: true, id, tier, note });
+      return structured({ ok: true, id, tier, note });
     },
   );
 
@@ -1324,6 +1352,7 @@ function buildServer(): McpServer {
     "set_tuning",
     {
       title: "Tune notability & topics (trusted)",
+      outputSchema: SetTuningOut,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Tune the discovery policy live, no deploy. notability_weights is deep-merged into the current weights, so you can change just one setting, for example {\"rel\":{\"serves\":1.4}} or {\"kind\":{\"tool\":3.5}}; changing it recomputes all notability. topic_rules fully replaces the taxonomy ({topic, pattern, ord}; pattern is a POSIX/advanced regex matched against lowercased text) and reclassifies the whole corpus. See get_tuning for the current values and formula. Requires a trusted key.",
@@ -1342,7 +1371,7 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, notability_weights, topic_rules, note }) => {
       const who = await trustedCheck(contributor_key);
-      if (!who.ok) return text({ error: who.refusal });
+      if (!who.ok) return fail({ error: who.refusal });
       await logRequest("set_tuning", who.identityId, { note });
       const changed: string[] = [];
       if (notability_weights) {
@@ -1364,10 +1393,10 @@ function buildServer(): McpServer {
                   from artifact a where a.hash = c.artifact_hash and c.kind <> 'edge'`;
         changed.push("topic_rules (reclassified corpus)");
       }
-      if (changed.length === 0) return text({ error: "nothing to change, so pass notability_weights and/or topic_rules." });
+      if (changed.length === 0) return fail({ error: "nothing to change, so pass notability_weights and/or topic_rules." });
       await sql`insert into event (kind, identity_id, payload)
                 values ('tuning-changed', ${who.identityId}, ${sql.json({ changed, note } as never)})`;
-      return text({ ok: true, changed, note });
+      return structured({ ok: true, changed, note });
     },
   );
 
@@ -1375,6 +1404,7 @@ function buildServer(): McpServer {
     "apply_refactor",
     {
       title: "Apply or reject a refactor proposal (trusted)",
+      outputSchema: ApplyRefactorOut,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       description:
         "Decide a pending supersedes proposal (a T0 supersedes edge). Approving promotes the link to canon and marks the targets superseded (they stay readable forever); rejecting retracts the link and leaves everything active. Requires a trusted key.",
@@ -1389,13 +1419,13 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, refactor_id, decision, note }) => {
       const who = await trustedCheck(contributor_key);
-      if (!who.ok) return text({ error: who.refusal });
+      if (!who.ok) return fail({ error: who.refusal });
       await logRequest("apply_refactor", who.identityId, { refactor_id, decision });
       const proposals = await sql<{ edge_id: string; dst: string }[]>`
         select e.contribution_id as edge_id, e.dst from edge e
         join contribution ec on ec.id = e.contribution_id
         where e.src = ${refactor_id} and e.rel = 'supersedes' and ec.status = 'active' and ec.tier = 0`;
-      if (proposals.length === 0) return text({ error: "no pending supersedes proposal on that contribution" });
+      if (proposals.length === 0) return fail({ error: "no pending supersedes proposal on that contribution" });
       await sql.begin(async (tx) => {
         const applied = decision === "approve";
         for (const p of proposals) {
@@ -1414,7 +1444,7 @@ function buildServer(): McpServer {
                          ${tx.json({ targets: proposals.map((p) => p.dst), note } as never)})`;
       });
       await refreshAround([refactor_id, ...proposals.map((p) => p.dst), ...proposals.map((p) => p.edge_id)]);
-      return text({ ok: true, decision, targets: proposals.map((p) => p.dst), note });
+      return structured({ ok: true, decision, targets: proposals.map((p) => p.dst), note });
     },
   );
 
@@ -1422,6 +1452,7 @@ function buildServer(): McpServer {
     "retract",
     {
       title: "Retract an entry",
+      outputSchema: RetractOut,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       description:
         "Mark one of your own entries retracted (it stays readable, because the ledger never forgets, it only annotates). Trusted reviewers can retract anything with a note.",
@@ -1433,17 +1464,17 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, ref, note }) => {
       const me = await requireIdentity(contributor_key);
-      if ("error" in me) return text(me);
+      if ("error" in me) return fail(me);
       const { identityId } = me;
       const found = await refOr(ref);
       if ("failed" in found) return found.failed;
       const id = found.id;
       const [target] = await sql<{ identity_id: string | null }[]>`select identity_id from contribution where id = ${id}`;
-      if (!target) return text({ error: "no contribution with that id" });
+      if (!target) return fail({ error: "no contribution with that id" });
       if (target.identity_id !== identityId) {
         const who = await trustedCheck(contributor_key);
         if (!who.ok) {
-          return text({ error: "that entry belongs to a different identity. Only its author (or a trusted reviewer) can retract it." });
+          return fail({ error: "that entry belongs to a different identity. Only its author (or a trusted reviewer) can retract it." });
         }
       }
       await logRequest("retract", identityId, { id });
@@ -1453,7 +1484,7 @@ function buildServer(): McpServer {
                  values ('retracted', ${id}, ${identityId}, ${tx.json({ note } as never)})`;
       });
       await refreshAround([id]);
-      return text({ ok: true, id, note });
+      return structured({ ok: true, id, note });
     },
   );
 
@@ -1461,6 +1492,7 @@ function buildServer(): McpServer {
     "grant_trust",
     {
       title: "Grant or change trust (operator)",
+      outputSchema: GrantTrustOut,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       description:
         "Set an identity's role: contributor, trusted (may promote review tiers), or operator (may also administer trust). This is how trust expands beyond the initial operator. Requires an operator key.",
@@ -1478,7 +1510,7 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, identity_id, role, note }) => {
       const who = await operatorCheck(contributor_key);
-      if (!who.ok) return text({ error: who.refusal });
+      if (!who.ok) return fail({ error: who.refusal });
       await logRequest("grant_trust", who.identityId, { identity_id, role });
       const done = await sql.begin(async (tx) => {
         const [row] = await tx`update identity set role = ${role} where id = ${identity_id} returning id`;
@@ -1489,7 +1521,7 @@ function buildServer(): McpServer {
                  values ('role-granted', ${identity_id}, ${tx.json({ role, by: who.identityId, note } as never)})`;
         return true;
       });
-      return text({ ok: done, identity_id, role, note });
+      return structured({ ok: done, identity_id, role, note });
     },
   );
 
@@ -1497,6 +1529,7 @@ function buildServer(): McpServer {
     "register_public_key",
     {
       title: "Register a signing key (optional)",
+      outputSchema: RegisterPublicKeyOut,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Attach an Ed25519 public key (base64) to your identity so you can sign submissions and prove authorship independently of this server. Entirely optional.",
@@ -1508,11 +1541,11 @@ function buildServer(): McpServer {
     },
     async ({ contributor_key, public_key, display_name }) => {
       const me = await requireIdentity(contributor_key);
-      if ("error" in me) return text(me);
+      if ("error" in me) return fail(me);
       const { identityId } = me;
       await logRequest("register_public_key", identityId, {});
       await updateIdentity(identityId, { public_key, ...(display_name ? { display_name } : {}) });
-      return text({ ok: true, identity: identityId });
+      return structured({ ok: true, identity: identityId });
     },
   );
 

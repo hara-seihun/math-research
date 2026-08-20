@@ -173,12 +173,16 @@ function buildServer(): McpServer {
       }
       if (display_name && identityId) await updateIdentity(identityId, { display_name });
       await logRequest("hello", identityId, { display_name });
-      const shape = await sql<{ kind: string; n: number; open: number; settled: number }[]>`
-        select kind, count(*)::int as n,
-               count(*) filter (where state = 'open')::int as open,
-               count(*) filter (where state = 'settled')::int as settled
-        from contribution where status = 'active' and kind <> 'edge'
-        group by kind order by count(*) desc`;
+      // The state vocabulary differs by kind — a route is partial or refuted,
+      // a problem is open or settled — so report what is actually there rather
+      // than a fixed pair of columns that reads as "0 settled routes".
+      const shape = await sql<{ kind: string; n: number; states: Record<string, number> | null }[]>`
+        select kind, sum(n)::int as n,
+               nullif(jsonb_strip_nulls(jsonb_object_agg(coalesce(state, '_'),
+                 case when state is null then null else n end)) - '_', '{}') as states
+        from (select kind, state, count(*)::int as n from contribution
+              where status = 'active' and kind <> 'edge' group by kind, state) k
+        group by kind order by sum(n) desc`;
       const programmes = await sql`
         select f.id, f.title, f.notability,
                (select count(*) from edge e join contribution ec on ec.id = e.contribution_id
@@ -216,7 +220,7 @@ function buildServer(): McpServer {
           kinds: shape.map((k) => ({
             kind: k.kind,
             n: k.n,
-            ...(k.open || k.settled ? { open: k.open, settled: k.settled } : {}),
+            ...(k.states ? { states: k.states } : {}),
             means: KIND_MEANING[k.kind],
           })),
         },
@@ -1096,12 +1100,13 @@ function buildServer(): McpServer {
     },
     async () => {
       await logRequest("stats", null, {});
-      const byKind = await sql<{ kind: string; n: number; avg_tier: string; open: number; settled: number; retired: number }[]>`
-        select kind, count(*)::int as n, avg(tier)::numeric(3,2) as avg_tier,
-               count(*) filter (where state = 'open')::int as open,
-               count(*) filter (where state = 'settled')::int as settled,
-               count(*) filter (where state = 'retired')::int as retired
-        from contribution where status = 'active' group by kind order by n desc`;
+      const byKind = await sql<{ kind: string; n: number; avg_tier: string; states: Record<string, number> | null }[]>`
+        select kind, sum(n)::int as n, (sum(n * avg_tier) / sum(n))::numeric(3,2) as avg_tier,
+               nullif(jsonb_strip_nulls(jsonb_object_agg(coalesce(state, '_'),
+                 case when state is null then null else n end)) - '_', '{}') as states
+        from (select kind, state, count(*)::int as n, avg(tier) as avg_tier from contribution
+              where status = 'active' group by kind, state) k
+        group by kind order by sum(n) desc`;
       const byTier = await sql`
         select tier, count(*)::int as n from contribution
         where status = 'active' and kind <> 'edge' group by tier order by tier`;
@@ -1120,9 +1125,9 @@ function buildServer(): McpServer {
                 where method = 'lean-kernel' and outcome = 'passed') as lean_verified`;
       return text({
         totals,
-        by_kind: byKind.map(({ open, settled, retired, ...k }) => ({
+        by_kind: byKind.map(({ states, ...k }) => ({
           ...k,
-          ...(open || settled || retired ? { open, settled, retired } : {}),
+          ...(states ? { states } : {}),
           means: KIND_MEANING[k.kind],
         })),
         by_tier: byTier,

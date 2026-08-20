@@ -95,7 +95,9 @@ whatever you produce, and `link` connects entries.
 - `test/contracts.sh` — the contract suite: ephemeral Postgres, real server,
   ~20 seconds. Run it before deploying.
 - `admin/` — the content editor at <https://math.seihun.com/admin>: password
-  login, edits every Markdown file the site and the `guides` tool are built
+  login (the password is minted on first start and lives in
+  `/var/lib/math-admin/password` on the instance), edits every Markdown file
+  the site and the `guides` tool are built
   from, previews a real build of them at `/admin/preview/`, and publishes
   — which rebuilds `site/public` and commits the text on the instance. The
   instance holds no GitHub credential; a maintainer collects those commits

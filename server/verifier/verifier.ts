@@ -38,6 +38,7 @@ type RunnerResult = {
   decls?: Decl[];
   audit_ok?: boolean;
   audit_error?: string;
+  declares_nothing?: boolean;
 };
 
 /** Spooled checks: source hash -> deadline. */
@@ -114,6 +115,20 @@ function interpret(result: RunnerResult, elapsedMs: number): { outcome: string; 
         ...detail,
         sorry: usedSorry,
         reason: usedSorry ? "compiles, but a declaration is still `sorry`" : "does not compile",
+      },
+    };
+  }
+  // Compiles, declares nothing. Exploration (`#check`, `#print axioms`, a bare
+  // import) legitimately lands here, so it is not a verification of anything
+  // — but it is also not a broken audit, and saying so sends agents hunting a
+  // failure that did not happen.
+  if (result.declares_nothing) {
+    return {
+      outcome: "inconclusive",
+      detail: {
+        ...detail,
+        declares_nothing: true,
+        reason: "compiled cleanly, but declares no theorem — there is nothing to audit",
       },
     };
   }

@@ -145,7 +145,11 @@ async function runCheck(id: string) {
         }
         result.audit_ok = decls.length > 0;
         result.decls = decls;
-        if (decls.length === 0) result.audit_error = "audit produced no declarations";
+        // The audit ran and found nothing to report: the file declares no
+        // theorems (`#check` on someone else's, an `example`, a bare import).
+        // That is not an audit failure, and the caller should not be told the
+        // audit broke.
+        if (decls.length === 0) result.declares_nothing = true;
       } else {
         result.audit_ok = false;
         result.audit_error = audit.timedOut ? "audit timed out" : audit.output.slice(-2000);

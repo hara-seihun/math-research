@@ -49,6 +49,7 @@ export type CheckDetail = {
   audit_error?: string;
   sorry?: boolean;
   reason?: string;
+  declares_nothing?: boolean;
   elapsed_ms?: number;
 };
 
@@ -151,6 +152,16 @@ export function report(row: CheckRow, extras: { cached: boolean; queued?: boolea
         : foreign.length > 0
           ? "the kernel accepted it, but it rests on axioms outside {propext, Classical.choice, Quot.sound}, so submitting it would not earn lean_verified."
           : "kernel-checked against the pinned Lean/Mathlib. `proved` is exactly what was proven — read the statements, not the names.",
+    };
+  }
+  // Lean's own output for a file that declares nothing is `#check` and
+  // `#print` results — the answer the caller wanted, not an error log.
+  if (detail.declares_nothing) {
+    return {
+      ...base,
+      reason: detail.reason,
+      output: scrubPaths(detail.output),
+      note: "nothing here is verified — declare a theorem if you want its statement and axioms audited.",
     };
   }
   return {

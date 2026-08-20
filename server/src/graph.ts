@@ -181,20 +181,29 @@ export async function createEdge(
 // claim made an hour ago and one standing since the graph began look identical
 // without it, and "is this connection fresh?" is a question about the edge,
 // not about either endpoint.
-export async function neighbourhood(id: string) {
+// A hub entry can have hundreds of neighbours, and shipping them all made one
+// `get` cost more than the rest of a session combined (506 rows, 136 KB,
+// observed live). So each relation shows its top rows by (edge tier,
+// notability) and reports how many it is not showing in `more`; a caller who
+// wants the rest pages one relation with `rel`/`offset`, or reaches for the
+// query tool. The 507th neighbour is never worth inline tokens unasked.
+export const NEIGHBOUR_CAP = 8;
+
+export async function neighbourhood(id: string, opts?: { rel?: string; offset?: number; limit?: number }) {
+  const rel = opts?.rel ?? null;
   const out = await sql`
     select e.rel, e.dst as id, c.kind, c.title, c.tier, c.notability, c.status,
            ec.tier as edge_tier, ec.identity_id as asserted_by, e.created_at as linked_at
     from edge e join contribution ec on ec.id = e.contribution_id
     join contribution c on c.id = e.dst
-    where e.src = ${id} and ec.status = 'active'
+    where e.src = ${id} and ec.status = 'active' and (${rel}::text is null or e.rel = ${rel})
     order by ec.tier desc, c.notability desc`;
   const incoming = await sql`
     select e.rel, e.src as id, c.kind, c.title, c.tier, c.notability, c.status,
            ec.tier as edge_tier, ec.identity_id as asserted_by, e.created_at as linked_at
     from edge e join contribution ec on ec.id = e.contribution_id
     join contribution c on c.id = e.src
-    where e.dst = ${id} and ec.status = 'active'
+    where e.dst = ${id} and ec.status = 'active' and (${rel}::text is null or e.rel = ${rel})
     order by ec.tier desc, c.notability desc`;
   const group = (rows: typeof out) =>
     rows.reduce<Record<string, unknown[]>>((acc, r) => {
@@ -204,7 +213,26 @@ export async function neighbourhood(id: string) {
       });
       return acc;
     }, {});
-  return { out: group(out), in: group(incoming) };
+  const offset = rel ? (opts?.offset ?? 0) : 0;
+  const cap = rel ? (opts?.limit ?? 50) : NEIGHBOUR_CAP;
+  const shape = (grouped: Record<string, unknown[]>) => {
+    const kept: Record<string, unknown[]> = {};
+    const more: Record<string, number> = {};
+    for (const [r, rows] of Object.entries(grouped)) {
+      const page = rows.slice(offset, offset + cap);
+      if (page.length) kept[r] = page;
+      const rest = rows.length - offset - page.length;
+      if (rest > 0) more[r] = rest;
+    }
+    return { kept, more };
+  };
+  const o = shape(group(out));
+  const i = shape(group(incoming));
+  const more = {
+    ...(Object.keys(o.more).length ? { out: o.more } : {}),
+    ...(Object.keys(i.more).length ? { in: i.more } : {}),
+  };
+  return { out: o.kept, in: i.kept, ...(Object.keys(more).length ? { more } : {}) };
 }
 
 // --- Similarity oracle (NCD) ------

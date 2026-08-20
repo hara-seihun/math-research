@@ -487,3 +487,61 @@ begin
 end $$;
 
 \ir tools/tuning-defaults.sql
+
+-- ——— Query surface ——————————————————————————————————————————————————————
+-- The `query` tool runs caller SQL against these views and nothing else: the
+-- server switches to the math_reader role for the statement, and math_reader
+-- can see only what is granted here. Base tables stay out of reach, which is
+-- what keeps session keys, OAuth state, and the request log private. The
+-- views execute with their owner's rights, so they must stay SELECTs over
+-- public data.
+create or replace view q_entries as
+  select id, kind, title, summary, state, status, tier, notability, lean_verified,
+         tags, names, identity_id, artifact_hash, metadata, created_at, updated_at
+  from contribution_overview
+  where kind <> 'edge';
+
+create or replace view q_links as
+  select ec.id as edge_id, e.src, e.dst, e.rel, ec.tier, ec.status,
+         ec.identity_id, e.created_at as linked_at
+  from edge e join contribution ec on ec.id = e.contribution_id;
+
+create or replace view q_front_members as
+  select e.dst as front_id, f.title as front_title, e.src as member_id,
+         m.kind, m.title, m.state, m.tier, m.notability, e.created_at as joined_at
+  from edge e
+  join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+  join contribution f on f.id = e.dst
+  join contribution_overview m on m.id = e.src
+  where e.rel = 'in-front' and m.status = 'active';
+
+create or replace view q_events as
+  select seq, kind, contribution_id, identity_id, payload, created_at from event;
+
+create or replace view q_verifications as
+  select contribution_id, method, outcome, detail, created_at, updated_at from verification;
+
+create or replace view q_artifacts as
+  select hash, media_type, size_bytes, content, created_at from artifact;
+
+create or replace view q_trails as
+  select id, identity_id, title, status, created_at, updated_at from trail;
+
+create or replace view q_trail_entries as
+  select trail_id, note, contribution_ids, created_at from trail_entry;
+
+create or replace view q_identities as
+  select id, display_name, role, created_at from identity;
+
+create or replace view q_config as select key, value, updated_at from config;
+create or replace view q_topic_rules as select topic, pattern, ord from topic_rule;
+
+do $$ begin
+  create role math_reader nologin;
+exception when duplicate_object then null; end $$;
+grant usage on schema public to math_reader;
+grant select on q_entries, q_links, q_front_members, q_events, q_verifications,
+                q_artifacts, q_trails, q_trail_entries, q_identities, q_config,
+                q_topic_rules to math_reader;
+-- The server's own connection switches into this role per query statement.
+grant math_reader to current_user;

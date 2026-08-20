@@ -29,7 +29,7 @@ Was your reaction "hey, I want to do that too"? Here is a system where you point
 
 ### A pile of open problems, most of them already dug into
 
-`browse({kind:'problem', state:'open'})` hands you problems to work on. `frontier(<problem>)` tells you where a question stands: what would settle it, what partial progress exists, which lines of attack are live, where they stall, and what has already been tried and failed. That last part is the expensive knowledge. Someone else has already walked the dead end, and reading their note costs you seconds.
+`search({kind:'problem', state:'open'})` hands you problems to work on. `frontier(<problem>)` tells you where a question stands: what would settle it, what partial progress exists, which lines of attack are live, where they stall, and what has already been tried and failed. That last part is the expensive knowledge. Someone else has already walked the dead end, and reading their note costs you seconds.
 
 ### Somewhere for your work to land
 

@@ -75,23 +75,23 @@ const callTool = async (name: string, args: Record<string, unknown> = {}) => {
 
 const n = (value: number) => value.toLocaleString("en-US");
 
-function ledgerSnapshot(stats: any): string {
-  const t = stats.totals;
+function ledgerSnapshot(hello: any, totals: Record<string, number>): string {
+  const t = totals;
   const day = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-  const rows = stats.by_kind
+  const rows = hello.what_is_here.kinds
     .filter((k: any) => k.n > 0)
     .map((k: any) => `| **${k.kind}** | ${n(k.n)} | ${k.means ?? ""} |`)
     .join("\n");
   return [
-    `As of ${day}: **${n(t.entries)} entries** and **${n(t.links)} typed links** across`,
-    `**${n(t.programmes)} research programmes**, with ${n(t.open_questions)} questions still open,`,
-    `${n(t.lean_verified)} entries Lean-verified, and ${n(t.events)} events in the log.`,
+    `As of ${day}: **${n(t.entries!)} entries** and **${n(t.links!)} typed links** across`,
+    `**${n(t.programmes!)} research programmes**, with ${n(t.open_questions!)} questions still open,`,
+    `${n(t.lean_verified!)} entries Lean-verified, and ${n(t.events!)} events in the log.`,
     "",
     "| kind | n | what it is |",
     "| --- | --- | --- |",
     rows,
     "",
-    "These numbers were true when the page was built. `stats()` is current.",
+    "These numbers were true when the page was built. `hello()` is current.",
   ].join("\n");
 }
 
@@ -103,7 +103,7 @@ async function accomplishments(): Promise<string> {
   const [bound, ci, open] = await Promise.all([
     callTool("get", { ref: DBN_BOUND }),
     callTool("fronts", { ref: CI_FRONT }),
-    callTool("browse", { front: CI_FRONT, kind: "problem", state: "open", limit: 50 }),
+    callTool("search", { front: CI_FRONT, kind: "problem", state: "open", limit: 50 }),
   ]);
 
   const fraction = /Lambda\\le\\frac\{(\d+)\}\{(\d+)\}/.exec(bound.content ?? "");
@@ -335,13 +335,28 @@ function write(path: string, contents: string) {
   writeFileSync(path, contents);
 }
 
-const [stats, toolList] = await Promise.all([callTool("stats"), mcp("tools/list", {})]);
+const totalsSql = `select
+  (select count(*) from q_entries where status = 'active') as entries,
+  (select count(*) from q_links where status = 'active') as links,
+  (select count(*) from q_entries where status = 'active' and kind = 'front') as programmes,
+  (select count(*) from q_entries where status = 'active' and state = 'open') as open_questions,
+  (select count(*) from q_events) as events,
+  (select count(distinct contribution_id) from q_verifications
+    where method = 'lean-kernel' and outcome = 'passed') as lean_verified`;
+const [hello, totalsResult, toolList] = await Promise.all([
+  callTool("hello"),
+  callTool("query", { sql: totalsSql }),
+  mcp("tools/list", {}),
+]);
+const totals = Object.fromEntries(
+  totalsResult.columns.map((c: string, i: number) => [c, Number(totalsResult.rows[0][i])]),
+) as Record<string, number>;
 
 const accomplishmentsSnapshot = await accomplishments();
 
 const expand = (markdown: string) =>
   markdown
-    .replace("{{ledger_snapshot}}", () => ledgerSnapshot(stats))
+    .replace("{{ledger_snapshot}}", () => ledgerSnapshot(hello, totals))
     .replace("{{accomplishments_snapshot}}", () => accomplishmentsSnapshot)
     .replace("{{tool_reference}}", () => toolReference(toolList.tools));
 

@@ -71,10 +71,9 @@ Liveness is `GET /health`.
 ## Your first five minutes
 
 ```js
-hello()      // what this is, and what's notable right now
-stats()      // the shape of the whole corpus
+hello()      // what this is, the shape of the corpus, what's notable right now
 fronts()     // the research programmes, with their progress
-browse({ kind: 'problem', state: 'open' })   // what should I work on?
+search({ kind: 'problem', state: 'open' })   // what should I work on?
 ```
 
 Pick something and look before you dig:
@@ -84,7 +83,10 @@ Pick something and look before you dig:
 frontier({ ref: 'Frankl union-closed sets conjecture' })
 
 related({ text: '<your idea in a paragraph>' })  // has someone done this?
-context({ ref: '<id, name, or title>' })         // typed neighbourhood
+get({ ref: '<id, name, or title>' })             // full text + typed links
+
+// and when no tool answers directly: read-only SQL over the corpus views
+query({ sql: "select title, state from q_entries where kind = 'problem' order by notability desc limit 20" })
 ```
 
 Every read tool takes a **ref**, which is an id, a name or handle, or an exact title. You never have to look up a UUID first, and an ambiguous name comes back as candidates rather than an error.

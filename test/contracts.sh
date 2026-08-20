@@ -99,7 +99,7 @@ CID=$(echo "$SUB" | field '["id"]')
 [[ $(echo "$SUB" | field '["tier"]') == 0 ]] || fail "submission did not land at T0"
 [[ $(echo "$SUB" | field '["lean_queued"]') == True ]] || fail "lean content not queued"
 echo "$SUB" | field '["receipt"]["server_signature"]' > /dev/null || fail "no signed receipt"
-EV=$(call events "{\"contribution_id\":\"$CID\"}")
+EV=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$EV" | field '["events"][0]["kind"]') == submitted ]] || fail "no submitted event"
 
 # The runner is a separate sandboxed process; these tests stand in for it.
@@ -278,7 +278,7 @@ HITS=$(call search '{"query":"de Bruijn-Newman constant"}' | field '["results"]'
 A=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"lemma A\",\"summary\":\"s\",\"content\":\"A.\"}" | field '["id"]')
 B=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"thm B\",\"summary\":\"s\",\"content\":\"B via A.\",\"relates_to\":[{\"id\":\"$A\",\"rel\":\"uses\"}]}" | field '["id"]')
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from contribution where kind='edge'") -ge 1 ]] || fail "link was not recorded as a contribution"
-call context "{\"ref\":\"$A\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(x for xs in d["links"]["in"].values() for x in xs)' || fail "link not in neighbourhood"
+call get "{\"ref\":\"$A\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(x for xs in d["links"]["in"].values() for x in xs)' || fail "link not in neighbourhood"
 NA=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$A'")
 python3 -c "assert float('$NA')>0" || fail "notability not derived for a contribution built upon"
 
@@ -288,10 +288,10 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$EID\",\"tier\":2,\"not
 [[ $(psql -h "$WORK" -d math -tAc "select tier from contribution where id='$EID'") == 2 ]] || fail "edge did not promote"
 
 # Contract: submissions are auto-tagged with subject topics (submit wiring to
-# the shared classifier) and topic is a browse facet.
+# the shared classifier) and topic is a search facet.
 DBN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"Riemann zeta zero de Bruijn Newman\",\"summary\":\"analytic bound\",\"content\":\"On the critical line.\"}" | field '["id"]')
 [[ $(psql -h "$WORK" -d math -tAc "select 'analytic-number-theory' = any(tags) from contribution where id='$DBN'") == t ]] || fail "submission was not topic-tagged"
-call browse '{"topic":"analytic-number-theory"}' | python3 -c 'import sys,json;assert len(json.load(sys.stdin)["results"])>=1' || fail "topic browse facet empty"
+call search '{"topic":"analytic-number-theory"}' | python3 -c 'import sys,json;assert len(json.load(sys.stdin)["results"])>=1' || fail "topic search facet empty"
 
 # Contract: a front groups work and its members surface (fronts read tool).
 FR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"front\",\"title\":\"test front\",\"summary\":\"s\",\"content\":\"grouping.\"}" | field '["id"]')
@@ -311,12 +311,12 @@ call fronts "{\"ref\":\"$SUBFR\"}" | python3 -c 'import sys,json;d=json.load(sys
 # from the opening of a write-up make the two identical, which is pure noise in
 # a page of results.
 ECHO=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"echoing title zqx\",\"summary\":\"echoing title zqx\",\"content\":\"echoing title zqx\"}" | field '["id"]')
-call browse '{"kind":"problem"}' | python3 -c 'import sys,json;rs=json.load(sys.stdin)["results"];r=[x for x in rs if x["id"]=="'"$ECHO"'"][0];assert "summary" not in r, r' || fail "list row echoed the title as its summary"
+call search '{"kind":"problem"}' | python3 -c 'import sys,json;rs=json.load(sys.stdin)["results"];r=[x for x in rs if x["id"]=="'"$ECHO"'"][0];assert "summary" not in r, r' || fail "list row echoed the title as its summary"
 call get "{\"ref\":\"$ECHO\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert "summary" not in d and d["content"]' || fail "get echoed the title as its summary"
 
-# Contract: resolve finds an entry by an alias, even when the title differs.
+# Contract: an alias resolves anywhere a ref is taken, even when the title differs.
 RN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"obscure internal title zzq\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"Kolmogorov width marker\"]}" | field '["id"]')
-call resolve '{"ref":"Kolmogorov width marker"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["match"]=="exact" and d["results"][0]["id"]=="'"$RN"'"' || fail "resolve did not find entry by alias"
+call get '{"ref":"Kolmogorov width marker"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["matched_by"]=="name" and d["id"]=="'"$RN"'"' || fail "alias ref did not find the entry"
 
 # Contract: frontier distills a question's attack state from the graph.
 Q=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"frontier test question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
@@ -336,12 +336,12 @@ echo "$FRT" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d.get("k
 # anyone editing the question. This is what makes "which cells are still open?"
 # answerable, so it is checked end to end through the read doors.
 [[ $(call frontier "{\"ref\":\"$Q\"}" | field '["state"]') == open ]] || fail "fresh problem was not open"
-call browse '{"kind":"problem","state":"open"}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "open problem missing from the open list"
+call search '{"kind":"problem","state":"open"}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "open problem missing from the open list"
 ANS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"settles the sub-question\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$SQ\",\"rel\":\"answers\"}]}" | field '["id"]')
 SQF=$(call frontier "{\"ref\":\"$SQ\"}")
 [[ $(echo "$SQF" | field '["state"]') == settled ]] || fail "answered problem did not become settled"
 echo "$SQF" | python3 -c 'import sys,json;assert any(a["id"]=="'"$ANS"'" for a in json.load(sys.stdin)["answered_by"])' || fail "frontier did not name what settled the question"
-call browse '{"kind":"problem","state":"open"}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "settled problem still listed as open"
+call search '{"kind":"problem","state":"open"}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "settled problem still listed as open"
 call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"note\":\"withdrawn\"}" | field '["ok"]' > /dev/null
 [[ $(call frontier "{\"ref\":\"$SQ\"}" | field '["state"]') == open ]] || fail "retracting the answer did not reopen the question"
 
@@ -392,7 +392,7 @@ assert d["promotions"]["total"] >= len(d["promoted"])
 # Contract: every read door takes a name, not just a uuid. A reader who has
 # only seen an entry's name in a summary can ask about it directly.
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"named cell\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"cell-q4n-residual\"]}" > /dev/null
-for door in 'get {"ref":"cell-q4n-residual"}' 'context {"ref":"cell-q4n-residual"}' 'frontier {"ref":"cell-q4n-residual"}'; do
+for door in 'get {"ref":"cell-q4n-residual"}' 'frontier {"ref":"cell-q4n-residual"}'; do
   [[ $(call "${door%% *}" "${door#* }" | field '["title"]') == "named cell" ]] || fail "${door%% *} did not accept a name"
 done
 [[ $(call fronts '{"ref":"test front"}' | field '["title"]') == "test front" ]] || fail "fronts did not accept a title"
@@ -444,9 +444,6 @@ GOTQ=$(call get "{\"ref\":\"$Q\"}")
 dated "get" "$GOTQ" '[d]'
 dated "get links" "$GOTQ" '(x for xs in list(d["links"]["in"].values()) + list(d["links"]["out"].values()) for x in xs)'
 dated "get events" "$GOTQ" 'd["events"]'
-CTX=$(call context "{\"ref\":\"$Q\"}")
-dated "context" "$CTX" '[d]'
-dated "context links" "$CTX" '(x for xs in list(d["links"]["in"].values()) + list(d["links"]["out"].values()) for x in xs)'
 FRO=$(call frontier "{\"ref\":\"$Q\"}")
 dated "frontier" "$FRO" '[d]'
 dated "frontier progress" "$FRO" 'd["progress_toward_it"]'
@@ -455,7 +452,7 @@ dated "fronts list" "$(call fronts '{}')" 'd["fronts"]'
 FRD=$(call fronts "{\"ref\":\"$FR\"}")
 dated "front" "$FRD" '[d]'
 dated "front members" "$FRD" '[m for ms in d["members_by_kind"].values() for m in ms]'
-dated "browse" "$(call browse '{"limit":3}')" 'd["results"]'
+dated "browse-mode search" "$(call search '{"limit":3}')" 'd["results"]'
 dated "search" "$(call search '{"query":"frontier test question"}')" 'd["results"]'
 dated "related" "$(call related "{\"ref\":\"$Q\",\"method\":\"lexical\",\"limit\":3}")" 'd["related"]'
 dated "hello most_notable" "$(call hello '{}')" 'd["most_notable"]'
@@ -522,6 +519,31 @@ MID1=$(AUTH=$(machine_token) call hello '{}' | field '["you"]["identity"]')
 
 # A refactor proposal to adjudicate, so apply_refactor below is called with
 # something it can actually decide.
+# Contract: query is read-only SQL over the public views. It answers, refuses
+# writes, cannot see base tables (that is what keeps sessions, OAuth state, and
+# the request log private), reports its row cap, and takes one statement only.
+QR=$(call query '{"sql":"select kind, count(*) as n from q_entries where status = '"'"'active'"'"' group by kind order by n desc"}')
+echo "$QR" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["columns"]==["kind","n"] and d["row_count"]>=1, d' || fail "query did not answer"
+call query '{"sql":"delete from q_entries"}' | grep -qi "reads only" || fail "query accepted a write"
+call query '{"sql":"select count(*) from contribution"}' | grep -qi "permission denied" || fail "query reached a base table"
+call query '{"sql":"select * from generate_series(1,1000)"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["row_count"]==500 and d["truncated"], d.get("row_count")' || fail "query row cap did not hold"
+call query '{"sql":"select 1; select 2"}' | grep -q "one statement" || fail "query accepted two statements"
+
+# Contract: a hub entry's neighbourhood is capped per relation and the cap
+# reports what it hid (this is what stopped 506-row 136 KB get responses).
+# rel-paging reaches the hidden rows.
+HUB=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"hub target\",\"summary\":\"s\",\"content\":\"hub.\"}" | field '["id"]')
+for i in $(seq 1 10); do
+  SPOKE=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"spoke $i\",\"summary\":\"s\",\"content\":\"spoke $i.\"}" | field '["id"]')
+  call link "{\"contributor_key\":\"$KEY\",\"src\":\"$SPOKE\",\"dst\":\"$HUB\",\"rel\":\"uses\",\"note\":\"n\"}" > /dev/null
+done
+call get "{\"ref\":\"$HUB\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["links"]["in"]["uses"])==8 and d["links"]["more"]["in"]["uses"]==2, json.dumps(d["links"].get("more"))' || fail "neighbourhood cap did not hold"
+call get "{\"ref\":\"$HUB\",\"rel\":\"uses\",\"links_offset\":8}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["links"]["in"]["uses"])==2 and "more" not in d["links"], json.dumps(d["links"])' || fail "rel paging did not reach the hidden rows"
+
+# Contract: filter-only search (no query) lists by importance and reports the
+# total beyond the page.
+call search '{"kind":"theorem","limit":1}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["total"]>=2 and len(d["results"])==1 and d.get("next"), d.get("total")' || fail "browse-mode search total/next wrong"
+
 PROPOSAL=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"title\":\"proposal\",\"summary\":\"s\",\"content\":\"c.\",\"supersedes\":[\"$SQ\"]}" | field '["id"]')
 
 # Contract: every door answers. A tool that no contract above calls can still
@@ -531,12 +553,9 @@ PROPOSAL=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"ti
 declare -A DOORS=(
   [hello]='{}'
   [search]='{"query":"frontier test question"}'
-  [resolve]='{"ref":"frontier test question"}'
-  [browse]='{}'
-  [topics]='{}'
   [fronts]='{}'
+  [query]='{"sql":"select kind, count(*) as n from q_entries group by kind order by n desc"}'
   [frontier]="{\"ref\":\"$Q\"}"
-  [context]="{\"ref\":\"$Q\"}"
   [related]="{\"ref\":\"$Q\",\"method\":\"lexical\"}"
   [get]="{\"ref\":\"$Q\"}"
   [submit]='{"kind":"result","title":"every door","summary":"s","content":"c."}'
@@ -546,10 +565,7 @@ declare -A DOORS=(
   [trail]="{\"contributor_key\":\"$KEY\",\"title\":\"every door\",\"note\":\"n\"}"
   [trails]='{}'
   [guides]='{}'
-  [stats]='{}'
-  [events]='{}'
   [news]='{}'
-  [get_tuning]="{\"contributor_key\":\"$OPKEY\"}"
   [set_tuning]="{\"contributor_key\":\"$OPKEY\",\"notability_weights\":{},\"note\":\"no-op\"}"
   [review_queue]="{\"contributor_key\":\"$OPKEY\"}"
   [set_tier]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$Q\",\"tier\":1,\"note\":\"n\"}"

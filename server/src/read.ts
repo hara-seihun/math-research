@@ -23,7 +23,7 @@ export async function deref(
   if (UUID.test(raw)) {
     const [row] = await sql<{ id: string; title: string; kind: string }[]>`
       select id, title, kind from contribution where id = ${raw}`;
-    return row ? { ...row, matched: "id" } : { error: `no entry with id ${raw}. Try resolve or search.` };
+    return row ? { ...row, matched: "id" } : { error: `no entry with id ${raw}. Try search.` };
   }
   const norm = normalizeText(raw);
   const exact = await sql<{ id: string; title: string; kind: string; how: string }[]>`
@@ -56,7 +56,7 @@ export async function deref(
         and (${kind ?? null}::text is null or kind = ${kind ?? null})
       order by score desc, notability desc limit 5`;
   });
-  if (!fuzzy.length) return { error: `nothing here is called "${raw}". Try search, or browse a topic.` };
+  if (!fuzzy.length) return { error: `nothing here is called "${raw}". Try search.` };
   // A tie the door itself can break: "cell N4 residual" asked of frontier is
   // the question, not the write-up attacking it.
   const top = fuzzy[0]!;
@@ -75,7 +75,7 @@ export async function deref(
 // reader is scanning for, so list rows carry a headline-length summary and the
 // full text lives one `get` away.
 
-export const LIST_SUMMARY = 280;
+export const LIST_SUMMARY = 160;
 
 export const trim = (text: string | null, limit = LIST_SUMMARY): string | null => {
   if (!text) return text;
@@ -116,7 +116,7 @@ export function listRow(r: Record<string, unknown>) {
   if (Array.isArray(r.names) && r.names.length) out.names = (r.names as string[]).slice(0, 4);
   if (r.status && r.status !== "active") out.status = r.status;
   if (r.created_at) out.created_at = r.created_at;
-  for (const extra of ["rel", "edge_tier", "linked_at", "joined_at", "matched", "similarity", "score", "answers", "existing_links"]) {
+  for (const extra of ["rel", "edge_tier", "linked_at", "joined_at", "matched", "similarity", "answers", "existing_links"]) {
     if (r[extra] !== undefined && r[extra] !== null) out[extra] = r[extra];
   }
   return out;

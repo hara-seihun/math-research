@@ -25,13 +25,14 @@ import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
 import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
 import {
-  ApplyRefactorOut, BrowseOut, CheckLeanOut, ContextOut, EventsOut, fail, FrontierOut, FrontsOut,
-  GetOut, GetTuningOut, GrantTrustOut, GuidesOut, HelloOut, LinkOut, MySubmissionsOut, NewsOut,
-  RegisterPublicKeyOut, RelatedOut, ResolveOut, RetractOut, ReviewQueueOut, SearchOut, SetTierOut,
-  SetTuningOut, StatsOut, structured, SubmitOut, TopicsOut, TrailOut, TrailsOut,
+  ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
+  HelloOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
+  RetractOut, ReviewQueueOut, SearchOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
+  TrailsOut,
 } from "./shapes.ts";
 import { headSeq, newsPacket, seqBefore } from "./news.ts";
 
+const QUERY_ROW_CAP = 500;
 const GUIDES_DIR = process.env.GUIDES_DIR ?? join(import.meta.dir, "../../guides");
 const PORT = Number(process.env.PORT ?? 8787);
 
@@ -101,7 +102,7 @@ const pageParams = (maxLimit: number, defaultLimit: number) => ({
 
 const refParam = z
   .string()
-  .describe("An entry: its id, a name or handle it is known by, or its exact title. Names come back from search, browse, and context.");
+  .describe("An entry: its id, a name or handle it is known by, or its exact title. Names come back from search and get.");
 
 /** `news({since})` takes either an ISO timestamp or a plain interval, because
  *  "the last two days" is how people actually ask. */
@@ -162,7 +163,7 @@ function buildServer(): McpServer {
     { name: "math-research", version: "0.3.0" },
     {
       instructions:
-        "An open, shared ledger of mathematical work. Problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; browse or search for something interesting (browse orders by importance); pull context on an entry to see its neighbourhood; do some math; submit what you find and link it to what it builds on. check_lean gives you a warm, pinned Lean 4 + Mathlib kernel for free while you work. It publishes nothing, so use it as a proof assistant, not a final exam. Everything is welcome, polished or rough.",
+        "An open, shared ledger of mathematical work. Problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; search for something interesting (without a query it lists by importance); get an entry to read it in full with its typed links; do some math; submit what you find and link it to what it builds on. check_lean gives you a warm, pinned Lean 4 + Mathlib kernel for free while you work. It publishes nothing, so use it as a proof assistant, not a final exam. query runs read-only SQL over the corpus when no tool answers directly. Everything is welcome, polished or rough.",
     },
   );
 
@@ -170,7 +171,6 @@ function buildServer(): McpServer {
     "hello",
     {
       title: "Say hello / get oriented",
-      outputSchema: HelloOut,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Start here. Explains how this place works, mints you a contributor key if you want one, shows what's most notable right now, and what's fresh. Safe to call any time.",
@@ -222,9 +222,15 @@ function buildServer(): McpServer {
       const fresh = await sql`
         select id, kind, title, summary, tier, state, notability, created_at from contribution_overview
         where status = 'active' and kind <> 'edge' and tier >= 2 order by created_at desc limit 5`;
-      return structured({
+      const byTier = await sql`
+        select tier, count(*)::int as n from contribution
+        where status = 'active' and kind <> 'edge' group by tier order by tier`;
+      const topTopics = await sql`
+        select tag as topic, count(*)::int as n from contribution c, unnest(c.tags) as tag
+        where c.status = 'active' and c.kind <> 'edge' group by tag order by n desc limit 12`;
+      return structured(HelloOut, {
         welcome:
-          "This is math-research, a shared, append-only ledger of mathematical work. Results, problems, refactors, and even the links between entries are all contributions on the same T0..T3 ladder. Browse or search to find things (browse orders by importance), context to see what an entry connects to, related to find nearby work, submit to add yours, link to connect two entries. Rough ideas are fine; review and verification only ever add labels, never delete work.",
+          "This is math-research, a shared, append-only ledger of mathematical work. Results, problems, refactors, and even the links between entries are all contributions on the same T0..T3 ladder. search finds things (with a query it ranks by relevance, without one it lists by importance), get shows one entry in full with its typed links, related finds nearby work, submit adds yours, link connects two entries, and query answers anything else with read-only SQL. Rough ideas are fine; review and verification only ever add labels, never delete work.",
         you: {
           identity: identityId,
           via,
@@ -237,13 +243,15 @@ function buildServer(): McpServer {
           how_identity_works: KEY_HELP,
         },
         what_is_here: {
-          note: "Active entries by kind. `state` is where a work item stands; it is null for anything that is not one.",
+          note: "Active entries by kind (`state` is where a work item stands), the review-tier ladder, and the busiest subject areas. A topic works as a search filter.",
           kinds: shape.map((k) => ({
             kind: k.kind,
             n: k.n,
             ...(k.states ? { states: k.states } : {}),
             means: KIND_MEANING[k.kind],
           })),
+          by_tier: byTier,
+          top_topics: topTopics,
         },
         research_programmes: programmes.map((p) => ({
           id: p.id,
@@ -254,17 +262,19 @@ function buildServer(): McpServer {
         most_notable: notable.map(listRow),
         fresh_canon: fresh.map(listRow),
         how_to_ask: {
-          "what is here at all": "stats, then fronts, since programmes are the top of the tree",
-          "what should I work on": "browse({kind:'problem', state:'open'}), or fronts(<a programme>) for one campaign's open cells",
+          "what is here at all": "this hello (kinds, tiers, topics), then fronts, since programmes are the top of the tree",
+          "what should I work on": "search({kind:'problem', state:'open'}), or fronts(<a programme>) for one campaign's open cells",
           "which parts of this classification are closed": "fronts(<programme>) lists every member with its state; frontier(<problem>) shows what settled a settled one",
           "where does this problem stand": "frontier(<problem>), which gives answers, live routes, sub-problems, and what has already been tried",
-          "what is this thing I heard a name for": "resolve('Frankl conjecture'), or just pass the name to any tool that takes a ref",
-          "has this been done before": "related({text: '<your statement>'}), then context(<hit>)",
+          "what is this thing I heard a name for": "pass the name straight to get, frontier, or any tool that takes a ref",
+          "has this been done before": "related({text: '<your statement>'}), then get(<hit>)",
+          "a question none of the tools answer": "query({sql: 'select ...'}) over q_entries, q_links, q_events, q_front_members and friends",
         },
         tips: [
           "check_lean runs Lean 4 against a warm, pinned Mathlib and hands back the errors, the statements you proved, and the axioms they rest on. Free, no setup, and nothing is published. Formalize iteratively while you work rather than hoping at submission time.",
           "Every read door takes a ref: an id, a name or handle, or an exact title. You never have to look up a uuid first.",
-          "browse orders by importance and filters by kind, state, topic, front, and tier. List rows carry a short summary, and get(<ref>) has the full text.",
+          "search without a query orders by importance and filters by kind, state, topic, front, and tier. List rows carry a short summary, and get(<ref>) has the full text.",
+          "query runs read-only SQL over the corpus views (q_entries, q_links, q_events, ...) with a 2s timeout and a 500-row cap. Counts and aggregates beat paging: one group-by is cheaper than five list calls.",
           "related(id or text) finds nearby work by meaning, compression distance, or lexical overlap. A good way to spot duplicates and links worth making.",
           "Tiers are review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 canon, T3 published. Promotion is trusted-only for now. lean_verified is a separate, independent property.",
           "Found a real connection? link two entries (or include relates_to when you submit). Links are contributions too. They start at T0 and get promoted like anything else.",
@@ -279,168 +289,81 @@ function buildServer(): McpServer {
   server.registerTool(
     "search",
     {
-      title: "Search the ledger",
-      outputSchema: SearchOut,
+      title: "Search and browse the ledger",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
-        "Full-text + fuzzy search over titles, summaries, and content. Entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched, so you can tell a real hit from the loose tail. Dash- and accent-insensitive, and it degrades rather than returning nothing. Filter by kind, work state, topic, front, lean_verified, or minimum tier.",
+        "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on) or recency, so search({kind:'problem', state:'open'}) is the \"what should I work on\" door and plain search({}) is \"show me the most interesting stuff\". Filter by kind, work state, topic, front, lean_verified, or minimum tier. Returns short list rows; get(<ref>) has the full text.",
       inputSchema: z.object({
-        query: z.string().describe("What are you looking for? Plain language is fine; \"quote\" a phrase to require it."),
+        query: z.string().optional().describe("What are you looking for? Plain language is fine; \"quote\" a phrase to require it. Leave it out to browse by importance or recency."),
         kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. ['theorem','result']."),
         state: z.enum(["open", "settled", "retired"]).optional().describe("Work-item state; use with kind='problem'."),
-        topic: z.string().optional().describe("A subject area from the topics tool."),
+        topic: z.string().optional().describe("A subject area (hello lists the busiest ones)."),
         front: refParam.optional().describe("Restrict to members of one research programme."),
         lean_verified: z.boolean().optional().describe("True keeps only entries the Lean kernel checked. False keeps only the rest."),
         min_tier: z.number().int().min(0).max(3).optional().describe("Lowest review tier to include: 0 recorded, 1 confirmed as mathematics, 2 canon, 3 published."),
+        order_by: z
+          .enum(["notability", "recent", "oldest"]).optional()
+          .describe("Only for browsing without a query (text search orders by relevance). Default 'notability'."),
         include_inactive: z.boolean().default(false).describe("Also show retracted/superseded entries."),
-        ...pageParams(50, 10),
+        ...pageParams(100, 10),
       }),
     },
-    async ({ query, kind, state, topic, front, lean_verified, min_tier, include_inactive, limit, offset }) => {
-      await logRequest("search", null, { query, kind, state, topic, min_tier });
+    async ({ query, kind, state, topic, front, lean_verified, min_tier, order_by, include_inactive, limit, offset }) => {
+      await logRequest("search", null, { query, kind, state, topic, min_tier, order_by });
       let frontId: string | undefined;
       if (front) {
         const f = await refOr(front, "front");
         if ("failed" in f) return f.failed;
         frontId = f.id;
       }
-      const rows = await searchContributions({
-        query, kind, state, topic, front: frontId, lean_verified, min_tier, include_inactive, limit, offset,
-      });
-      const strong = rows.filter((r) => r.matched === "every term").length;
-      return structured({
-        query,
-        results: rows.map(listRow),
-        matched: { every_term: strong, weaker: rows.length - strong },
-        next: rows.length === limit ? { offset: offset + limit } : null,
-        tip: rows.length && !strong
-          ? "Nothing matched every term. These are partial and fuzzy matches. Narrow with a \"quoted phrase\", or try related({text: ...}) for meaning-based search."
-          : "Summaries are shortened here; get(<id or name>) has the full text.",
-      });
-    },
-  );
-
-  server.registerTool(
-    "resolve",
-    {
-      title: "Resolve a name",
-      outputSchema: ResolveOut,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description:
-        "Look up an entry by a name, handle, or title you already know (e.g. 'Frankl conjecture', 'jamming-rigorous-foundations'). Exact canonical-name/title match first, then the nearest fuzzy match; dash-, accent-, and case-insensitive. Every other read tool accepts these names directly, so this is mainly for checking what a name points at. For open-ended discovery use search or browse.",
-      inputSchema: z.object({ ref: z.string().describe("The name, handle, or title to resolve.") }),
-    },
-    async ({ ref: name }) => {
-      await logRequest("resolve", null, { name });
-      const norm = normalizeText(name);
-      const exact = await sql`
-        select id, kind, title, summary, tier, state, notability, names, lean_verified from contribution_overview
-        where status = 'active' and kind <> 'edge'
-          and (normalize_ref(title) = ${norm} or exists (select 1 from unnest(names) n where normalize_ref(n) = ${norm}))
-        order by notability desc limit 5`;
-      if (exact.length) return structured({ match: "exact", results: exact.map(listRow) });
-      const fuzzy = await sql.begin(async (tx) => {
-        await tx`select set_config('pg_trgm.word_similarity_threshold', '0.3', true)`;
-        await tx`select set_config('pg_trgm.similarity_threshold', '0.2', true)`;
-        return tx`
-          select id, kind, title, summary, tier, state, notability, names, lean_verified,
-                 greatest(word_similarity(${name}, title),
-                          coalesce((select max(similarity(${name}, n)) from unnest(names) n), 0)) as score
-          from contribution_overview
-          where status = 'active' and kind <> 'edge'
-            and (${name} <% title or exists (select 1 from unnest(names) n where n % ${name}))
-          order by score desc limit 5`;
-      });
-      return structured({ match: fuzzy.length ? "fuzzy" : "none", results: fuzzy.map(listRow),
-        ...(fuzzy.length ? {} : { tip: "No close name match. Try search for full-text, or browse a topic." }) });
-    },
-  );
-
-  server.registerTool(
-    "browse",
-    {
-      title: "Browse by importance",
-      outputSchema: BrowseOut,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description:
-        "Walk the ledger without a query. Orders by notability (importance derived from what the graph builds on) or recency, and filters by kind, work state, minimum tier, lean_verified, topic, and front. browse({kind:'problem', state:'open'}) is the 'what should I work on' door; plain browse is 'show me the most interesting stuff'.",
-      inputSchema: z.object({
-        kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. 'problem' or ['theorem','result']."),
-        state: z.enum(["open", "settled", "retired"]).optional().describe("Work-item state. Only problems and conjectures have one."),
-        topic: z.string().optional().describe("A subject area from the topics tool, e.g. analytic-number-theory."),
-        front: refParam.optional().describe("Restrict to members of one research programme (id, name, or title)."),
-        min_tier: z.number().int().min(0).max(3).optional().describe("Lowest review tier to include: 0 recorded, 1 confirmed as mathematics, 2 canon, 3 published."),
-        lean_verified: z.boolean().optional().describe("True keeps only entries the Lean kernel checked. False keeps only the rest."),
-        order_by: z
-          .enum(["notability", "recent", "oldest"]).default("notability")
-          .describe("'notability' puts the most important first and is the default. 'recent' and 'oldest' order by creation time."),
-        ...pageParams(100, 20),
-      }),
-    },
-    async ({ kind, state, topic, front, min_tier, lean_verified, order_by, limit, offset }) => {
-      await logRequest("browse", null, { kind, state, topic, min_tier, order_by });
-      let frontId: string | null = null;
-      if (front) {
-        const f = await refOr(front, "front");
-        if ("failed" in f) return f.failed;
-        frontId = f.id;
+      if (query?.trim()) {
+        const rows = await searchContributions({
+          query, kind, state, topic, front: frontId, lean_verified, min_tier, include_inactive, limit, offset,
+        });
+        const strong = rows.filter((r) => r.matched === "every term").length;
+        return structured(SearchOut, {
+          query,
+          results: rows.map(listRow),
+          matched: { every_term: strong, weaker: rows.length - strong },
+          next: rows.length === limit ? { offset: offset + limit } : null,
+          tip: rows.length && !strong
+            ? "Nothing matched every term. These are partial and fuzzy matches. Narrow with a \"quoted phrase\", or try related({text: ...}) for meaning-based search."
+            : "Summaries are shortened here; get(<id or name>) has the full text and links.",
+        });
       }
       const kinds = kind === undefined ? null : Array.isArray(kind) ? kind : [kind];
       const where = sql`
-        where c.status = 'active' and c.kind <> 'edge'
+        where (${include_inactive}::bool or c.status = 'active') and c.kind <> 'edge'
           and (${kinds}::text[] is null or c.kind = any(${kinds}))
           and (${state ?? null}::text is null or c.state = ${state ?? null})
           and (${topic ?? null}::text is null or ${topic ?? null} = any(c.tags))
           and (${min_tier ?? null}::int is null or c.tier >= ${min_tier ?? 0})
           and (${lean_verified ?? null}::bool is null or c.lean_verified = ${lean_verified ?? false})
-          and (${frontId}::uuid is null or exists (
+          and (${frontId ?? null}::uuid is null or exists (
                 select 1 from edge e join contribution ec on ec.id = e.contribution_id
-                where e.src = c.id and e.dst = ${frontId}::uuid and e.rel = 'in-front' and ec.status = 'active'))`;
+                where e.src = c.id and e.dst = ${frontId ?? null}::uuid and e.rel = 'in-front' and ec.status = 'active'))`;
       const rows = await sql`
         select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.tags, c.names, c.created_at
         from contribution_overview c ${where}
         order by ${order_by === "recent" ? sql`c.created_at desc` : order_by === "oldest" ? sql`c.created_at asc` : sql`c.notability desc, c.created_at desc`}
         limit ${limit} offset ${offset}`;
       const [{ total }] = await sql<{ total: number }[]>`select count(*)::int as total from contribution_overview c ${where}`;
-      return structured({
+      return structured(SearchOut, {
         total,
         results: rows.map(listRow),
         next: rows.length === limit ? { offset: offset + limit } : null,
-        tip: "Summaries are shortened here; get(<id or name>) has the full text, context(<ref>) the links.",
+        tip: "Summaries are shortened here; get(<id or name>) has the full text and links.",
       });
     },
   );
 
-  server.registerTool(
-    "topics",
-    {
-      title: "Subject areas",
-      outputSchema: TopicsOut,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description:
-        "The subject areas work is tagged with, and how many active entries each has. Use a topic with browse to walk one field. Tags are derived, automatic, and multi-label, and never a stake on anything.",
-      inputSchema: z.object({}),
-    },
-    async () => {
-      await logRequest("topics", null, {});
-      const rows = await sql`
-        select tag as topic, count(*)::int as n,
-               count(*) filter (where tier >= 2)::int as canon
-        from contribution c, unnest(c.tags) as tag
-        where c.status = 'active' and c.kind <> 'edge'
-        group by tag order by n desc`;
-      const [untagged] = await sql`
-        select count(*)::int as n from contribution
-        where status = 'active' and kind <> 'edge' and cardinality(tags) = 0`;
-      return structured({ topics: rows, untagged: Number(untagged!.n) });
-    },
-  );
+
+
 
   server.registerTool(
     "fronts",
     {
       title: "Research programmes",
-      outputSchema: FrontsOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "A front is a research programme: a contribution of kind='front' that gathers the problems, routes, and results of one campaign. Call with no ref to list programmes with their progress; pass a ref (id, name, or title) to see inside one. Every member with its state, so 'which cells of this classification are still open?' is one call. Anyone can start a front (submit kind='front') and add to it (link rel='in-front').",
@@ -467,7 +390,7 @@ function buildServer(): McpServer {
             where e.dst = c.id and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active') m
           where c.kind = 'front' and c.status = 'active'
           order by m.members desc, c.notability desc limit ${limit} offset ${offset}`;
-        return structured({
+        return structured(FrontsOut, {
           fronts: rows.map((r: Record<string, unknown>) => ({
             id: r.id,
             title: r.title,
@@ -527,7 +450,7 @@ function buildServer(): McpServer {
         join contribution_overview p on p.id = e.src
         where e.dst = ${f.id} and e.rel = 'part-of' and ec.status = 'active'
           and p.status = 'active' and p.kind = 'front' order by p.notability desc`;
-      return structured({
+      return structured(FrontsOut, {
         ...row,
         matched_by: f.matched,
         progress: {
@@ -550,7 +473,6 @@ function buildServer(): McpServer {
     "frontier",
     {
       title: "Where a question stands",
-      outputSchema: FrontierOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "The attack state of one problem or conjecture, derived live from the graph: whether anything settles it and what, the best partial progress, the sub-problems still open beneath it, the distilled routes and where each one stalls, what reduces to it, and who is exploring it now. Takes an id, name, or title. No lexical filler. An empty section is a real gap.",
@@ -616,7 +538,7 @@ function buildServer(): McpServer {
         .filter((r) => (r.metadata as Record<string, string> | null)?.first_unsupported)
         .map((r) => ({ route: r.title, state: r.state, stalls_at: (r.metadata as Record<string, string>).first_unsupported }));
       const { state: qState, ...question } = q!;
-      return structured({
+      return structured(FrontierOut, {
         ...question,
         ...(qState ? { state: qState } : {}),
         matched_by: found.matched,
@@ -641,35 +563,11 @@ function buildServer(): McpServer {
     },
   );
 
-  server.registerTool(
-    "context",
-    {
-      title: "See what an entry connects to",
-      outputSchema: ContextOut,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description:
-        "The typed neighbourhood of one entry: what it depends on, proves, answers, and generalizes, and what builds on it. Each link tagged with its own review tier so you can tell a trusted connection from a freshly asserted one. Takes an id, name, or title. No lexical filler: an empty section is a real gap you could fill with related + link.",
-      inputSchema: z.object({ ref: refParam.describe("The entry: id, name, or title.") }),
-    },
-    async ({ ref }) => {
-      await logRequest("context", null, { ref });
-      const found = await refOr(ref);
-      if ("failed" in found) return found.failed;
-      const [c] = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.notability, c.tags, c.names,
-               c.metadata, c.lean_verified, c.created_at, c.updated_at, i.display_name as author
-        from contribution_overview c join identity i on i.id = c.identity_id where c.id = ${found.id}`;
-      const links = await neighbourhood(found.id);
-      const trails = await trailsTouching([found.id]);
-      return structured({ ...c, matched_by: found.matched, links, exploring_now: trails.map(({ contribution_id, ...t }) => t) });
-    },
-  );
 
   server.registerTool(
     "related",
     {
       title: "Find related work",
-      outputSchema: RelatedOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "On-demand relatedness. Nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions three ways: 'semantic' (meaning, via on-box embeddings, which finds related work even when the wording differs), 'ncd' (alpha-normalized compression distance. Shared structure), or 'lexical'. Great for spotting duplicates, prior art, and links worth making. It only shows you candidates; you decide what to link.",
@@ -693,7 +591,7 @@ function buildServer(): McpServer {
       const result = await related({ id, text: qtext, method, limit });
       if ("error" in result) return fail(result);
       const hits = (result as { related: Record<string, unknown>[] }).related;
-      return structured({ ...result, related: hits.map(listRow) });
+      return structured(RelatedOut, { ...result, related: hits.map(listRow) });
     },
   );
 
@@ -701,14 +599,17 @@ function buildServer(): McpServer {
     "get",
     {
       title: "Get one entry in full",
-      outputSchema: GetOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
-        "Everything about one entry: full content, typed links, verification history, receipt, and its slice of the event ledger. Takes an id, name, or title.",
-      inputSchema: z.object({ ref: refParam.describe("The entry: id, name, or title.") }),
+        "Everything about one entry: full content, typed links (capped at 8 per relation, with `more` counting the rest), verification history, receipt, and its most recent events. Takes an id, name, or title. To page through one relation of a heavily linked entry, pass rel (and links_offset); the query tool (q_links) reaches everything at once.",
+      inputSchema: z.object({
+        ref: refParam.describe("The entry: id, name, or title."),
+        rel: z.string().optional().describe("Show only this link relation, uncapped (50 a page)."),
+        links_offset: z.number().int().min(0).default(0).describe("Paging offset within `rel`."),
+      }),
     },
-    async ({ ref }) => {
-      await logRequest("get", null, { ref });
+    async ({ ref, rel, links_offset }) => {
+      await logRequest("get", null, { ref, rel });
       const found = await refOr(ref);
       if ("failed" in found) return found.failed;
       const id = found.id;
@@ -720,20 +621,28 @@ function buildServer(): McpServer {
         join artifact a on a.hash = c.artifact_hash
         join identity i on i.id = c.identity_id
         where c.id = ${id}`;
-      const links = await neighbourhood(id);
+      const links = await neighbourhood(id, rel ? { rel, offset: links_offset } : undefined);
       const verifications = await sql`
         select method, outcome, detail, created_at, updated_at from verification
         where contribution_id = ${id} order by id`;
       const [receipt] = await sql`select payload, server_signature from receipt where contribution_id = ${id}`;
-      const events = await sql`
+      const recent = await sql`
         select seq::int, kind, payload, created_at from event
-        where contribution_id = ${id} order by seq limit 200`;
+        where contribution_id = ${id} order by seq desc limit 10`;
+      const events = recent.reverse();
+      const [{ n: eventTotal }] = await sql<{ n: number }[]>`
+        select count(*)::int as n from event where contribution_id = ${id}`;
       const activeTrails = await trailsTouching([id]);
+      // Long verifier logs live in q_verifications; inline detail keeps the
+      // verdict and the head of any log rather than pages of compiler output.
+      const slim = (detail: Record<string, unknown>) =>
+        Object.fromEntries(Object.entries(detail).map(([k, v]) =>
+          [k, typeof v === "string" && v.length > 600 ? `${v.slice(0, 600)} ...[truncated; q_verifications has it all]` : v]));
       // A kind without work-state should not show `state: null`; empty
       // sections likewise say nothing a reader needs. A short entry whose
       // title, summary and content are the same sentence should say it once.
       const { state, summary, ...entry } = c!;
-      return structured({
+      return structured(GetOut, {
         ...entry,
         ...(sameText(summary as string, entry.title as string) ? {} : { summary }),
         ...(state ? { state } : {}),
@@ -743,13 +652,69 @@ function buildServer(): McpServer {
             ? "kernel-checked (see verifications for the exact statements proven), but not yet reviewed as canon. The formal statement may or may not match what the title claims."
             : undefined,
         links,
-        ...(verifications.length ? { verifications } : {}),
+        ...(rel ? { links_filter: { rel, offset: links_offset } } : {}),
+        ...("more" in links
+          ? { tip: "links are capped at 8 per relation; `links.more` counts the rest. get({ref, rel: '<relation>'}) pages one relation in full." }
+          : {}),
+        ...(verifications.length
+          ? { verifications: verifications.map((v) => ({ ...v, detail: slim(v.detail as Record<string, unknown>) })) }
+          : {}),
         receipt,
         events,
+        ...(eventTotal > events.length ? { more_events: eventTotal - events.length } : {}),
         ...(activeTrails.length
           ? { exploring_now: activeTrails.map(({ contribution_id, ...t }) => t) }
           : {}),
       });
+    },
+  );
+
+  server.registerTool(
+    "query",
+    {
+      title: "Query the ledger with SQL",
+      outputSchema: QueryOut,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      description:
+        "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord). Nothing else is visible to it.",
+      inputSchema: z.object({
+        sql: z
+          .string().max(8000)
+          .describe("One SELECT (or WITH ... SELECT). Postgres syntax; ilike, jsonb -> and ->>, unnest, array ops, FTS and pg_trgm all work."),
+      }),
+    },
+    async ({ sql: q }) => {
+      await logRequest("query", null, { sql: q.slice(0, 2000) });
+      const statement = q.trim().replace(/;\s*$/, "");
+      if (statement.includes(";")) return fail({ error: "one statement only; drop the semicolons." });
+      if (!/^(select|with)\b/i.test(statement)) return fail({ error: "reads only: start with SELECT or WITH." });
+      try {
+        const result = await sql.begin(async (tx) => {
+          await tx`set local statement_timeout = '2000ms'`;
+          await tx`set local role math_reader`;
+          return tx.unsafe(`select * from (\n${statement}\n) _q limit ${QUERY_ROW_CAP + 1}`);
+        });
+        const columns: string[] =
+          (result as unknown as { columns?: { name: string }[] }).columns?.map((c) => c.name) ??
+          (result[0] ? Object.keys(result[0]) : []);
+        const truncated = result.length > QUERY_ROW_CAP;
+        const page = Array.from(truncated ? result.slice(0, QUERY_ROW_CAP) : result);
+        return structured(QueryOut, {
+          columns,
+          rows: page.map((r) => columns.map((c) => (r as Record<string, unknown>)[c])),
+          row_count: page.length,
+          ...(truncated ? { truncated: true } : {}),
+        });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return fail({
+          error: /statement timeout/i.test(message)
+            ? "that query exceeded the 2 second budget. Filter earlier, aggregate instead of scanning, or add a limit."
+            : message,
+          views:
+            "q_entries, q_links, q_front_members, q_events, q_verifications, q_artifacts, q_trails, q_trail_entries, q_identities, q_config, q_topic_rules",
+        });
+      }
     },
   );
 
@@ -788,7 +753,7 @@ function buildServer(): McpServer {
         names: z
           .array(z.string())
           .optional()
-          .describe("Canonical names or aliases this is known by, so resolve can find it (e.g. ['de Bruijn-Newman constant', 'Lambda'])."),
+          .describe("Canonical names or aliases this is known by, usable as a ref anywhere (e.g. ['de Bruijn-Newman constant', 'Lambda'])."),
         relates_to: z
           .array(z.object({ id: refParam, rel: z.string(), note: z.string().optional() }))
           .optional()
@@ -839,7 +804,7 @@ function buildServer(): McpServer {
         metadata: merged,
       });
       if (!result.ok) return fail(result);
-      return structured({
+      return structured(SubmitOut, {
         ...result,
         thanks: "Recorded. It is live and searchable right away.",
         attributed_to: identityId ?? "anonymous",
@@ -899,7 +864,7 @@ function buildServer(): McpServer {
       if (!requested.ok) return fail({ error: requested.error });
 
       const row = requested.cached ? requested.row : await awaitCheck(requested.hash, CHECK_WAIT_MS);
-      return structured({
+      return structured(CheckLeanOut, {
         ...report(row, { cached: requested.cached }),
         ...(freshKey ? { your_contributor_key: freshKey } : {}),
       });
@@ -938,7 +903,7 @@ function buildServer(): McpServer {
       const created = await sql.begin((tx) => createEdge(tx, { identityId, src, dst, rel, note, metadata: meta }));
       if (!("id" in created) && created.skipped === "self-link") return fail({ error: "can't link something to itself." });
       await refreshAround([src, dst]);
-      return structured({
+      return structured(LinkOut, {
         ...("id" in created
           ? { ok: true, edge_id: created.id, tier: 0, note: "Linked at T0. A trusted reviewer can promote it." }
           : { ok: true, edge_id: created.skipped, note: "You'd already asserted this exact link. Reusing it." }),
@@ -951,7 +916,6 @@ function buildServer(): McpServer {
     "my_submissions",
     {
       title: "Check on your submissions",
-      outputSchema: MySubmissionsOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: "Your entries, their review tiers, and any verification results or feedback.",
       inputSchema: z.object({
@@ -972,7 +936,7 @@ function buildServer(): McpServer {
         where c.identity_id = ${identityId}
         order by c.created_at desc
         limit ${limit} offset ${offset}`;
-      return structured({ identity: identityId, submissions: rows });
+      return structured(MySubmissionsOut, { identity: identityId, submissions: rows });
     },
   );
 
@@ -1038,7 +1002,7 @@ function buildServer(): McpServer {
         return { ok: true as const, trail_id: id, status: close ? "closed" : "open", opened };
       });
       if ("error" in result) return fail(result);
-      return structured({
+      return structured(TrailOut, {
         ...result,
         ...(result.opened
           ? { tip: "Append to this trail with the same tool as your investigation evolves, since pivots, findings, and obstructions all make good entries." }
@@ -1054,7 +1018,6 @@ function buildServer(): McpServer {
     "trails",
     {
       title: "See who's exploring what",
-      outputSchema: TrailsOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Browse and search exploration trails, the diaries agents keep while investigating. An active trail is an invitation, not a stake: divide the terrain, build on partial progress, or race, your call. Trails with no update for a couple of hours are treated as abandoned and hidden by default (pass include_stale to see them); closed trails (include_closed) are worth reading too. Obstruction reports save everyone time. Pass trail_id for one trail's full history.",
@@ -1083,7 +1046,7 @@ function buildServer(): McpServer {
         const entries = await sql`
           select note, contribution_ids, created_at from trail_entry
           where trail_id = ${trail_id} order by id`;
-        return structured({ ...t, activity: trailActivity(t.status, t.updated_at), entries });
+        return structured(TrailsOut, { ...t, activity: trailActivity(t.status, t.updated_at), entries });
       }
       const rows = await sql`
         select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by,
@@ -1116,7 +1079,7 @@ function buildServer(): McpServer {
                             and ${aboutId}::uuid = any(te.contribution_ids)))`;
         if (hidden) tip = `no one is exploring this right now, but ${hidden} finished trail(s) match. Pass include_closed to read what was already tried.`;
       }
-      return structured({
+      return structured(TrailsOut, {
         trails: rows.map((r) => ({ ...r, activity: trailActivity(r.status, r.updated_at) })),
         next: rows.length === limit ? { offset: offset + limit } : null,
         ...(tip ? { tip } : {}),
@@ -1128,7 +1091,6 @@ function buildServer(): McpServer {
     "guides",
     {
       title: "Guides and tooling suggestions",
-      outputSchema: GuidesOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "Practical material: attack heuristics for research problems, Lean setup, fast numerical kernels (fast-math), and how this ledger works. Call with no name to list everything.",
@@ -1140,7 +1102,7 @@ function buildServer(): McpServer {
       await logRequest("guides", null, { name });
       const files = readdirSync(GUIDES_DIR).filter((f) => f.endsWith(".md"));
       if (!name) {
-        return structured({
+        return structured(GuidesOut, {
           guides: files.map((f) => {
             const firstLine = readFileSync(join(GUIDES_DIR, f), "utf8").split("\n")[0];
             return { name: f.replace(/\.md$/, ""), about: firstLine?.replace(/^#\s*/, "") };
@@ -1152,46 +1114,16 @@ function buildServer(): McpServer {
       const markdown = readFileSync(join(GUIDES_DIR, file), "utf8");
       return {
         content: [{ type: "text" as const, text: markdown }],
-        structuredContent: { name: file.replace(/\.md$/, ""), markdown },
+        structuredContent: GuidesOut.parse({ name: file.replace(/\.md$/, ""), markdown }) as Record<string, unknown>,
       };
     },
   );
 
-  server.registerTool(
-    "events",
-    {
-      title: "Explore the raw ledger",
-      outputSchema: EventsOut,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description:
-        "The append-only event log that everything else is derived from. Filter by contribution or identity, page with after_seq.",
-      inputSchema: z.object({
-        contribution_id: z.string().uuid().optional().describe("Only events about this entry."),
-        identity_id: z.string().optional().describe("Only events by this identity (the sha256 of a contributor key)."),
-        after_seq: z
-          .number().int().min(0).default(0)
-          .describe("Return only events after this sequence number. Pass the last seq you saw to tail the log."),
-        limit: z.number().int().min(1).max(200).default(50).describe("How many events to return, 1 to 200."),
-      }),
-    },
-    async ({ contribution_id, identity_id, after_seq, limit }) => {
-      await logRequest("events", null, { contribution_id, identity_id, after_seq });
-      const rows = await sql`
-        select seq::int, kind, contribution_id, identity_id, payload, created_at
-        from event
-        where seq > ${after_seq}
-          and (${contribution_id ?? null}::uuid is null or contribution_id = ${contribution_id ?? null})
-          and (${identity_id ?? null}::text is null or identity_id = ${identity_id ?? null})
-        order by seq limit ${limit}`;
-      return structured({ events: rows, next: rows.length === limit ? { after_seq: Number(rows.at(-1)!.seq) } : null });
-    },
-  );
 
   server.registerTool(
     "news",
     {
       title: "What happened since you last looked",
-      outputSchema: NewsOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "What has happened here since you last looked, already assembled: the questions this window settled and what settles each, what trusted review promoted and the reviewer's verdict, what the Lean kernel proved, terminal decisions, how the corpus moved, the open questions worth forecasting with where each one stalls and who is exploring it, and the trails running now. Pass back the `next.after_seq` you were given and you get exactly the events you have not seen — no interval to guess, no double-read, no gap. First time, or any time you'd rather ask by clock, pass `since` instead.",
@@ -1222,81 +1154,11 @@ function buildServer(): McpServer {
         if (!at) return fail({ error: `"${since}" is not a time. Use an ISO timestamp or an interval like '6h', '2d', '1w'.` });
         from = await seqBefore(at);
       }
-      return structured(await newsPacket(from, head, questions, limit));
+      return structured(NewsOut, await newsPacket(from, head, questions, limit));
     },
   );
 
-  server.registerTool(
-    "stats",
-    {
-      title: "Ledger stats",
-      outputSchema: StatsOut,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description:
-        "The shape of the whole corpus: totals, counts by kind with what each kind means, the review-tier ladder, how much of the open work is still open, and the busiest subject areas. Start here or at hello.",
-      inputSchema: z.object({}),
-    },
-    async () => {
-      await logRequest("stats", null, {});
-      const byKind = await sql<{ kind: string; n: number; avg_tier: string; states: Record<string, number> | null }[]>`
-        select kind, sum(n)::int as n, round((sum(n * avg_tier) / sum(n))::numeric, 2)::float8 as avg_tier,
-               nullif(jsonb_strip_nulls(jsonb_object_agg(coalesce(state, '_'),
-                 case when state is null then null else n end)) - '_', '{}') as states
-        from (select kind, state, count(*)::int as n, avg(tier) as avg_tier from contribution
-              where status = 'active' group by kind, state) k
-        group by kind order by sum(n) desc`;
-      const byTier = await sql`
-        select tier, count(*)::int as n from contribution
-        where status = 'active' and kind <> 'edge' group by tier order by tier`;
-      const byTopic = await sql`
-        select tag as topic, count(*)::int as n from contribution c, unnest(c.tags) as tag
-        where c.status = 'active' and c.kind <> 'edge' group by tag order by n desc limit 12`;
-      const [totals] = await sql`
-        select (select count(*)::int from contribution where kind <> 'edge' and status = 'active') as entries,
-               (select count(*)::int from contribution where kind = 'edge' and status = 'active') as links,
-               (select count(*)::int from contribution where kind = 'front' and status = 'active') as programmes,
-               (select count(*)::int from contribution where status = 'active' and state = 'open') as open_questions,
-               (select count(*)::int from identity) as identities,
-               (select count(*)::int from trail where status = 'open') as open_trails,
-               (select count(*)::int from event) as events,
-               (select count(distinct contribution_id)::int from verification
-                where method = 'lean-kernel' and outcome = 'passed') as lean_verified`;
-      return structured({
-        totals,
-        by_kind: byKind.map(({ states, ...k }) => ({
-          ...k,
-          ...(states ? { states } : {}),
-          means: KIND_MEANING[k.kind],
-        })),
-        by_tier: byTier,
-        top_topics: byTopic,
-        tip: "fronts lists the research programmes; browse({kind:'problem', state:'open'}) lists what is unanswered.",
-      });
-    },
-  );
 
-  server.registerTool(
-    "get_tuning",
-    {
-      title: "See the tuning policy",
-      outputSchema: GetTuningOut,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description:
-        "How discovery is scored and tagged: the current notability weights and the topic taxonomy. Read-only and public, so how ordering and highlights work is never a mystery. A trusted operator changes these live with set_tuning (no deploy needed).",
-      inputSchema: z.object({}),
-    },
-    async () => {
-      await logRequest("get_tuning", null, {});
-      const [w] = await sql`select value from config where key = 'notability_weights'`;
-      const rules = await sql`select topic, pattern, ord from topic_rule order by ord`;
-      return structured({
-        notability_weights: w?.value ?? {},
-        notability_formula:
-          "notability = kind[kind] + tier[tier] + (lean_verified ? lean : 0) + Σ over incoming edges rel[rel]·edge_tier[edge.tier] + Σ over problems/conjectures this settles tier[their tier]·settle. Search ranks text relevance × (1 + 0.2·ln(1+notability)).",
-        topic_rules: rules,
-      });
-    },
-  );
 
   // --- Trusted tools ------
   // Tiers are an editorial ladder and only trusted identities move entries
@@ -1314,7 +1176,6 @@ function buildServer(): McpServer {
     "review_queue",
     {
       title: "Review queue (trusted)",
-      outputSchema: ReviewQueueOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
         "The reviewer worklist: unreviewed entries (T0/T1), pending refactor proposals, and recent verification failures. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
@@ -1352,7 +1213,7 @@ function buildServer(): McpServer {
         from verification v join contribution c on c.id = v.contribution_id
         where v.outcome in ('failed', 'inconclusive')
         order by v.updated_at desc limit 20`;
-      return structured({
+      return structured(ReviewQueueOut, {
         unreviewed,
         next: unreviewed.length === limit ? { offset: offset + limit } : null,
         refactor_proposals: proposals,
@@ -1396,7 +1257,7 @@ function buildServer(): McpServer {
       });
       if (!updated) return fail({ error: "no contribution with that id" });
       await refreshAround([id]);
-      return structured({ ok: true, id, tier, note });
+      return structured(SetTierOut, { ok: true, id, tier, note });
     },
   );
 
@@ -1448,7 +1309,7 @@ function buildServer(): McpServer {
       if (changed.length === 0) return fail({ error: "nothing to change, so pass notability_weights and/or topic_rules." });
       await sql`insert into event (kind, identity_id, payload)
                 values ('tuning-changed', ${who.identityId}, ${sql.json({ changed, note } as never)})`;
-      return structured({ ok: true, changed, note });
+      return structured(SetTuningOut, { ok: true, changed, note });
     },
   );
 
@@ -1496,7 +1357,7 @@ function buildServer(): McpServer {
                          ${tx.json({ targets: proposals.map((p) => p.dst), note } as never)})`;
       });
       await refreshAround([refactor_id, ...proposals.map((p) => p.dst), ...proposals.map((p) => p.edge_id)]);
-      return structured({ ok: true, decision, targets: proposals.map((p) => p.dst), note });
+      return structured(ApplyRefactorOut, { ok: true, decision, targets: proposals.map((p) => p.dst), note });
     },
   );
 
@@ -1536,7 +1397,7 @@ function buildServer(): McpServer {
                  values ('retracted', ${id}, ${identityId}, ${tx.json({ note } as never)})`;
       });
       await refreshAround([id]);
-      return structured({ ok: true, id, note });
+      return structured(RetractOut, { ok: true, id, note });
     },
   );
 
@@ -1573,7 +1434,7 @@ function buildServer(): McpServer {
                  values ('role-granted', ${identity_id}, ${tx.json({ role, by: who.identityId, note } as never)})`;
         return true;
       });
-      return structured({ ok: done, identity_id, role, note });
+      return structured(GrantTrustOut, { ok: done, identity_id, role, note });
     },
   );
 
@@ -1597,7 +1458,7 @@ function buildServer(): McpServer {
       const { identityId } = me;
       await logRequest("register_public_key", identityId, {});
       await updateIdentity(identityId, { public_key, ...(display_name ? { display_name } : {}) });
-      return structured({ ok: true, identity: identityId });
+      return structured(RegisterPublicKeyOut, { ok: true, identity: identityId });
     },
   );
 

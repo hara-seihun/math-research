@@ -13,17 +13,27 @@ const iso = z.string().describe("ISO 8601 timestamp");
 const jsonRecord = z.record(z.string(), z.unknown());
 
 /** Success and failure results. A failure is isError with the same teaching
- *  JSON in the text block; the SDK skips schema validation for it. */
-const jsonText = (value: unknown) => ({
-  type: "text" as const,
-  text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
-});
-export const structured = (value: unknown) => ({
-  content: [jsonText(value)],
-  // Round-trip so structuredContent is exactly the wire shape: Dates become
+ *  JSON in the text block.
+ *
+ *  Validation happens here, on every call, against the schemas in this file:
+ *  a response with an undeclared or missing field throws instead of shipping
+ *  an undocumented surface, and the contract suite walks every tool, so drift
+ *  is a test failure. The schemas are deliberately NOT all advertised in
+ *  tools/list: advertising all of them cost every connecting client ~16k
+ *  tokens at session start (measured), so only the small write/admin schemas
+ *  are advertised and the read tools describe their shape in prose.
+ *
+ *  The text block is compact JSON, not pretty-printed: the indentation alone
+ *  cost 9-34% of every response (measured), and both agents and jq read
+ *  compact JSON fine. */
+const jsonText = (value: unknown) => ({ type: "text" as const, text: JSON.stringify(value) });
+export const structured = (schema: z.ZodType, value: unknown) => {
+  // Round-trip so the validated object is exactly the wire shape: Dates become
   // ISO strings and undefined-valued keys are dropped, same as the text block.
-  structuredContent: JSON.parse(JSON.stringify(value)) as Record<string, unknown>,
-});
+  const wire = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+  schema.parse(wire);
+  return { content: [jsonText(wire)], structuredContent: wire };
+};
 export const fail = (value: unknown) => ({ content: [jsonText(value)], isError: true as const });
 
 /** A shortened list row: what search, browse, and every neighbourhood list
@@ -48,7 +58,6 @@ export const ListRow = z
     joined_at: iso.optional().describe("When this member joined the front."),
     matched: z.string().optional().describe("How search matched it: 'every term', 'some terms', or 'fuzzy'."),
     similarity: z.number().optional(),
-    score: z.number().optional(),
     answers: z.number().int().optional().describe("How many active entries answer/prove/refute this."),
     existing_links: z
       .array(z.strictObject({ rel: z.string(), edge_tier: z.number().int() }))
@@ -84,10 +93,17 @@ const NeighbourLink = z.strictObject({
 });
 export const Neighbourhood = z
   .strictObject({
-    out: z.record(z.string(), z.array(NeighbourLink)).describe("Outgoing links, grouped by relation."),
-    in: z.record(z.string(), z.array(NeighbourLink)).describe("Incoming links, grouped by relation."),
+    out: z.record(z.string(), z.array(NeighbourLink)).describe("Outgoing links, grouped by relation, top rows by (edge tier, notability)."),
+    in: z.record(z.string(), z.array(NeighbourLink)).describe("Incoming links, grouped by relation, same order."),
+    more: z
+      .strictObject({
+        out: z.record(z.string(), z.number().int()).optional(),
+        in: z.record(z.string(), z.number().int()).optional(),
+      })
+      .optional()
+      .describe("How many rows per relation are not shown. Page one relation with get's rel/links_offset, or use query."),
   })
-  .describe("The typed neighbourhood, each link carrying its own review tier and assertion time.");
+  .describe("The typed neighbourhood, capped per relation, each link carrying its own review tier and assertion time.");
 
 const Receipt = z
   .strictObject({ payload: jsonRecord, server_signature: z.string() })
@@ -109,7 +125,12 @@ export const HelloOut = z.strictObject({
     what_that_means: z.string(),
     how_identity_works: z.string(),
   }),
-  what_is_here: z.strictObject({ note: z.string(), kinds: z.array(KindCount) }),
+  what_is_here: z.strictObject({
+    note: z.string(),
+    kinds: z.array(KindCount),
+    by_tier: z.array(z.strictObject({ tier: z.number().int(), n: z.number().int() })),
+    top_topics: z.array(z.strictObject({ topic: z.string(), n: z.number().int() })),
+  }),
   research_programmes: z.array(
     z.strictObject({
       id: z.string(),
@@ -126,33 +147,22 @@ export const HelloOut = z.strictObject({
 });
 
 export const SearchOut = z.strictObject({
-  query: z.string(),
+  query: z.string().optional().describe("Echoed when this was a text search."),
   results: z.array(ListRow),
-  matched: z.strictObject({
-    every_term: z.number().int().describe("How many results matched every term."),
-    weaker: z.number().int().describe("How many are partial or fuzzy matches."),
-  }),
+  matched: z
+    .strictObject({
+      every_term: z.number().int().describe("How many results matched every term."),
+      weaker: z.number().int().describe("How many are partial or fuzzy matches."),
+    })
+    .optional()
+    .describe("Present for text searches."),
+  total: z.number().int().optional().describe("Present for filter-only listings: how many entries match beyond this page."),
   next: offsetCursor,
   tip: z.string(),
 });
 
-export const ResolveOut = z.strictObject({
-  match: z.enum(["exact", "fuzzy", "none"]),
-  results: z.array(ListRow),
-  tip: z.string().optional(),
-});
 
-export const BrowseOut = z.strictObject({
-  total: z.number().int().describe("How many entries match the filter, beyond this page."),
-  results: z.array(ListRow),
-  next: offsetCursor,
-  tip: z.string(),
-});
 
-export const TopicsOut = z.strictObject({
-  topics: z.array(z.strictObject({ topic: z.string(), n: z.number().int(), canon: z.number().int() })),
-  untagged: z.number().int(),
-});
 
 export const FrontsOut = z
   .strictObject({
@@ -240,26 +250,6 @@ export const FrontierOut = z.strictObject({
   tip: z.string(),
 });
 
-export const ContextOut = z.strictObject({
-  id: z.string(),
-  kind: z.string(),
-  title: z.string(),
-  summary: z.string(),
-  tier: z.number().int(),
-  status: z.string(),
-  state: z.string().nullable(),
-  notability: z.number(),
-  tags: z.array(z.string()),
-  names: z.array(z.string()),
-  metadata: jsonRecord,
-  lean_verified: z.boolean(),
-  created_at: iso,
-  updated_at: iso,
-  author: z.string().nullable(),
-  matched_by: z.string(),
-  links: Neighbourhood,
-  exploring_now: z.array(ExploringNow),
-});
 
 export const RelatedOut = z.strictObject({
   method: z.enum(["semantic", "ncd", "lexical"]),
@@ -301,9 +291,15 @@ export const GetOut = z.strictObject({
     )
     .optional(),
   receipt: Receipt.optional(),
-  events: z.array(
-    z.strictObject({ seq: z.number().int(), kind: z.string(), payload: jsonRecord, created_at: iso }),
-  ),
+  events: z
+    .array(z.strictObject({ seq: z.number().int(), kind: z.string(), payload: jsonRecord, created_at: iso }))
+    .describe("The most recent events for this entry, oldest first."),
+  more_events: z.number().int().optional().describe("How many earlier events exist beyond the ones shown; q_events has them all."),
+  links_filter: z
+    .strictObject({ rel: z.string(), offset: z.number().int() })
+    .optional()
+    .describe("Echoed when links were filtered to one relation."),
+  tip: z.string().optional(),
   exploring_now: z.array(ExploringNow).optional(),
 });
 
@@ -424,19 +420,6 @@ export const GuidesOut = z
   })
   .describe("Without a name: {guides}. With one: {name, markdown}.");
 
-export const EventsOut = z.strictObject({
-  events: z.array(
-    z.strictObject({
-      seq: z.number().int(),
-      kind: z.string(),
-      contribution_id: z.string().nullable(),
-      identity_id: z.string().nullable(),
-      payload: jsonRecord,
-      created_at: iso,
-    }),
-  ),
-  next: z.strictObject({ after_seq: z.number().int() }).nullable(),
-});
 
 const AlreadyTried = z.strictObject({
   trail_id: z.string(),
@@ -530,28 +513,7 @@ export const NewsOut = z.strictObject({
   how_to_read: z.string(),
 });
 
-export const StatsOut = z.strictObject({
-  totals: z.strictObject({
-    entries: z.number().int(),
-    links: z.number().int(),
-    programmes: z.number().int(),
-    open_questions: z.number().int(),
-    identities: z.number().int(),
-    open_trails: z.number().int(),
-    events: z.number().int(),
-    lean_verified: z.number().int(),
-  }),
-  by_kind: z.array(KindCount.extend({ avg_tier: z.number() })),
-  by_tier: z.array(z.strictObject({ tier: z.number().int(), n: z.number().int() })),
-  top_topics: z.array(z.strictObject({ topic: z.string(), n: z.number().int() })),
-  tip: z.string(),
-});
 
-export const GetTuningOut = z.strictObject({
-  notability_weights: jsonRecord,
-  notability_formula: z.string(),
-  topic_rules: z.array(z.strictObject({ topic: z.string(), pattern: z.string(), ord: z.number().int() })),
-});
 
 export const ReviewQueueOut = z.strictObject({
   unreviewed: z.array(
@@ -618,3 +580,12 @@ export const GrantTrustOut = z.strictObject({
 });
 
 export const RegisterPublicKeyOut = z.strictObject({ ok: z.literal(true), identity: z.string() });
+
+export const QueryOut = z.strictObject({
+  columns: z.array(z.string()),
+  rows: z
+    .array(z.array(z.unknown()))
+    .describe("Row values in column order. Arrays rather than objects, so column names are not repeated per row."),
+  row_count: z.number().int(),
+  truncated: z.boolean().optional().describe("Present when the row cap cut the result; add your own order by / limit."),
+});

@@ -203,7 +203,7 @@ function buildServer(): McpServer {
         where status = 'active' and kind <> 'edge' and tier >= 2 order by created_at desc limit 5`;
       return text({
         welcome:
-          "This is math-research, a shared, append-only ladder of mathematical work. Results, problems, refactors, and even the links between entries are all contributions on the same T0..T3 ladder. Browse or search to find things (browse orders by importance), context to see what an entry connects to, related to find nearby work, submit to add yours, link to connect two entries. Rough ideas are fine; review and verification only ever add labels, never delete work.",
+          "This is math-research, a shared, append-only ledger of mathematical work. Results, problems, refactors, and even the links between entries are all contributions on the same T0..T3 ladder. Browse or search to find things (browse orders by importance), context to see what an entry connects to, related to find nearby work, submit to add yours, link to connect two entries. Rough ideas are fine; review and verification only ever add labels, never delete work.",
         you: {
           identity: identityId,
           via,

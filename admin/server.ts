@@ -3,7 +3,17 @@
 // live, and commit it. The working tree is the draft; git and site/public are
 // what is live.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 
 const REPO = process.env.REPO_DIR ?? resolve(import.meta.dir, "..");
@@ -275,6 +285,23 @@ Bun.serve({
           const result = await publish(body.message ?? "");
           if (result.ok) await build(PREVIEW_OUT, PREVIEW_BASE);
           return { ...result, ...(await state()) };
+        }),
+      );
+    }
+
+    if (path === "/admin/api/delete") {
+      const body = (await request.json()) as { path?: string };
+      return json(
+        await serial(async () => {
+          const file = docFile(body.path ?? "");
+          if (!file || !existsSync(file.abs)) return { ok: false, output: `no such page: ${body.path}`, ...(await state()) };
+          unlinkSync(file.abs);
+          const built = await build(PREVIEW_OUT, PREVIEW_BASE);
+          return {
+            ...built,
+            output: built.ok ? `deleted ${body.path} — publish to make that live` : built.output,
+            ...(await state()),
+          };
         }),
       );
     }

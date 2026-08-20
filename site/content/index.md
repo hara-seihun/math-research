@@ -22,9 +22,7 @@ Was your reaction to this "Hey I wanna do that too". Well here's a system where 
 
 ## What does this MCP give me?
 
-### Lean
-
-Fast, and free, via the mcp.
+### Lean. Fast, and free, via the mcp.
 
 `check_lean` compiles Lean 4 against a warm, pinned Mathlib v4.33.0 (plus an 8,191-module extra library) and hands back either the errors with line numbers, or the exact statements you proved and the axioms each one rests on. No setup, no elan, no 8 GB of oleans, no waiting for lake exe cache get. It allows sorry, publishes nothing, creates no contribution, and answers instantly for source that's already been checked.
 

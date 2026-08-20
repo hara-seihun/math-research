@@ -1,6 +1,7 @@
 import { sql } from "./db.ts";
 import { sha256hex } from "./identity.ts";
 import { issueReceipt } from "./receipts.ts";
+import { createEdge, refreshNotability } from "./graph.ts";
 
 const MAX_CONTENT_BYTES = 1 << 20; // 1 MiB
 
@@ -62,24 +63,22 @@ export async function submit(identityId: string, input: SubmitInput): Promise<Su
                      ${sql.json({ kind: input.kind, title: input.title, artifact_hash: hash, signature: input.signature ?? null } as never)})`;
 
     for (const link of input.relates_to ?? []) {
-      await tx`insert into edge (src, dst, rel, note)
-               values (${contribution!.id}, ${link.id}, ${link.rel}, ${link.note ?? null})
-               on conflict do nothing`;
+      await createEdge(tx, { identityId, src: contribution!.id, dst: link.id, rel: link.rel, note: link.note });
     }
     for (const target of input.supersedes ?? []) {
-      await tx`insert into edge (src, dst, rel, note)
-               values (${contribution!.id}, ${target}, 'supersedes', 'proposed')
-               on conflict do nothing`;
+      await createEdge(tx, { identityId, src: contribution!.id, dst: target, rel: "supersedes", note: "proposed refactor" });
+    }
+    if (existing) {
+      await createEdge(tx, { identityId, src: contribution!.id, dst: existing.id, rel: "duplicates", note: "identical artifact" });
     }
     return contribution!;
   });
 
   if (existing) {
     notes.push(`heads up: identical content already exists as ${existing.id} — linked it for you.`);
-    await sql`insert into edge (src, dst, rel, note)
-              values (${result.id}, ${existing.id}, 'duplicates', 'identical artifact')
-              on conflict do nothing`;
   }
+  const touched = [result.id, ...(input.relates_to ?? []).map((l) => l.id), ...(input.supersedes ?? [])];
+  await refreshNotability(touched);
 
   if ((input.supersedes ?? []).length > 0) {
     notes.push(

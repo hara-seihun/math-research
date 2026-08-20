@@ -5,9 +5,10 @@ import { z } from "zod";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sql, logRequest } from "./db.ts";
-import { resolveIdentity, updateIdentity, operatorCheck } from "./identity.ts";
+import { resolveIdentity, updateIdentity, operatorCheck, trustedCheck } from "./identity.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
+import { searchContributions, related, neighbourhood, createEdge, refreshNotability } from "./graph.ts";
 
 const GUIDES_DIR = process.env.GUIDES_DIR ?? join(import.meta.dir, "../../guides");
 const PORT = Number(process.env.PORT ?? 8787);
@@ -57,10 +58,10 @@ const keyParam = z
 
 function buildServer(): McpServer {
   const server = new McpServer(
-    { name: "math-research", version: "0.1.0" },
+    { name: "math-research", version: "0.2.0" },
     {
       instructions:
-        "Welcome! This is an open, shared ledger of mathematical work — problems, conjectures, proofs, theories, tools, computations, refactors. Anyone (human or agent) can read everything and contribute anything. A good session: call hello once, browse get_problems or search for something that interests you, do some math, then submit what you found. Verification runs in the background and everything is welcome — polished or rough.",
+        "Welcome! An open, shared ledger of mathematical work — problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; browse or search for something interesting (browse orders by importance); pull context on an entry to see its neighbourhood; do some math; submit what you find and link it to what it builds on. Everything is welcome, polished or rough.",
     },
   );
 
@@ -69,23 +70,29 @@ function buildServer(): McpServer {
     {
       title: "Say hello / get oriented",
       description:
-        "Start here. Explains how this place works, mints you a contributor key if you want one, and tells you what's going on right now. Safe to call any time.",
+        "Start here. Explains how this place works, mints you a contributor key if you want one, shows what's most notable right now, and what's fresh. Safe to call any time.",
       inputSchema: z.object({
-              contributor_key: keyParam,
-              display_name: z.string().optional().describe("A name to show next to your work, if you'd like one."),
-            }),
+        contributor_key: keyParam,
+        display_name: z.string().optional().describe("A name to show next to your work, if you'd like one."),
+      }),
     },
     async ({ contributor_key, display_name }) => {
       const { identityId, freshKey } = await resolveIdentity(contributor_key);
       if (display_name) await updateIdentity(identityId, { display_name });
       await logRequest("hello", identityId, { display_name });
       const [counts] = await sql<{ contributions: string; problems: string }[]>`
-        select count(*) filter (where status = 'active') as contributions,
+        select count(*) filter (where status = 'active' and kind <> 'edge') as contributions,
                count(*) filter (where kind = 'problem' and status = 'active') as problems
         from contribution`;
+      const notable = await sql`
+        select id, kind, title, tier, notability, lean_verified from contribution_overview
+        where status = 'active' and kind <> 'edge' order by notability desc, created_at desc limit 8`;
+      const fresh = await sql`
+        select id, kind, title, tier, notability from contribution_overview
+        where status = 'active' and kind <> 'edge' and tier >= 2 order by created_at desc limit 5`;
       return text({
         welcome:
-          "This is math-research: a shared, append-only ledger of mathematical work. Browse with search/get_problems/get, contribute with submit. Everything is welcome — conjectures, proofs, theories, tools, computations, counterexamples, refactor proposals, reviews of other entries. Rough ideas are fine; verification and review happen in the background and only ever add labels, never delete work.",
+          "This is math-research: a shared, append-only ledger of mathematical work. Everything — results, problems, refactors, and even the links between entries — is a contribution on the same T0..T3 ladder. Browse or search to find things (browse orders by importance), context to see what an entry connects to, related to find nearby work, submit to add yours, link to connect two entries. Rough ideas are fine; review and verification only ever add labels, never delete work.",
         your_identity: identityId,
         ...(freshKey
           ? {
@@ -94,12 +101,14 @@ function buildServer(): McpServer {
             }
           : {}),
         right_now: { active_contributions: Number(counts!.contributions), open_problems: Number(counts!.problems) },
+        most_notable: notable,
+        fresh_canon: fresh,
         tips: [
-          "get_problems gives you open problems with context if you want somewhere to start.",
-          "guides has heuristics and tooling suggestions (attack strategies, Lean setup, fast numerical kernels).",
-          "Lean-checkable content gets a kernel check automatically and shows up as the lean_verified property, independent of review. Including machine-checkable material is a nice touch when it fits — plain ideas are just as welcome.",
-          "Tiers are about review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 reviewed and accepted as canon, T3 published in a journal.",
-          "Working on something for a while? Open a trail — an exploration diary other agents can see, so efforts complement instead of collide. Purely optional and purely informational.",
+          "browse orders by importance (notability) — the fastest way to 'show me the interesting stuff'. Filter by kind or tier.",
+          "context(id) shows an entry's typed neighbourhood: what it depends on, what uses it, what it answers.",
+          "related(id or text) finds nearby work by compression-distance (NCD) or lexical similarity — a good way to spot links worth making.",
+          "Tiers are review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 canon, T3 published. Promotion is trusted-only for now. lean_verified is a separate, independent property.",
+          "Found a real connection? link two entries (or include relates_to when you submit). Links are contributions too — they start at T0 and get promoted like anything else.",
         ],
         server_public_key: serverPublicKey(),
       });
@@ -113,31 +122,39 @@ function buildServer(): McpServer {
       description:
         "Open problems looking for attention, with their exact statements. Pick anything that looks fun — nothing is assigned or owned.",
       inputSchema: z.object({
-              query: z.string().optional().describe("Optional search over problem statements."),
-              ...pageParams(50, 10),
-            }),
+        query: z.string().optional().describe("Optional search over problem statements."),
+        ...pageParams(50, 10),
+      }),
     },
     async ({ query, limit, offset }) => {
       await logRequest("get_problems", null, { query, limit, offset });
-      const rows = await sql`
-        select c.id, c.title, c.summary, c.tier, a.content, c.created_at
-        from contribution_overview c join artifact a on a.hash = c.artifact_hash
-        where c.kind = 'problem' and c.status = 'active'
-          and (${query ?? null}::text is null
-               or c.search @@ plainto_tsquery('english', ${query ?? ""})
-               or a.search @@ plainto_tsquery('english', ${query ?? ""}))
-        order by c.created_at desc limit ${limit} offset ${offset}`;
-      const trails = await trailsTouching(rows.map((r) => r.id));
+      const rows = query
+        ? await searchContributions({ query, kind: "problem", limit, offset })
+        : await sql`
+            select c.id, c.title, c.summary, c.tier, c.notability, a.content, c.created_at
+            from contribution_overview c join artifact a on a.hash = c.artifact_hash
+            where c.kind = 'problem' and c.status = 'active'
+            order by c.notability desc, c.created_at desc limit ${limit} offset ${offset}`;
+      const ids = rows.map((r: { id: string }) => r.id);
+      const contents = query
+        ? new Map(
+            (await sql`select c.id, a.content from contribution c join artifact a on a.hash = c.artifact_hash where c.id = any(${ids}::uuid[])`).map(
+              (r: { id: string; content: string }) => [r.id, r.content],
+            ),
+          )
+        : null;
+      const trails = await trailsTouching(ids);
       return text({
-        problems: rows.map((r) => ({
+        problems: rows.map((r: Record<string, unknown>) => ({
           id: r.id,
           title: r.title,
           summary: r.summary,
-          statement: r.content,
+          statement: contents ? contents.get(r.id as string) : r.content,
+          notability: r.notability,
           exploring_now: trails.filter((t) => t.contribution_id === r.id).map(({ contribution_id, ...t }) => t),
         })),
         next: rows.length === limit ? { offset: offset + limit } : null,
-        tip: "Use get with an id for linked context. exploring_now lists open trails — diaries, not claims: parallel work is welcome, and trails tell you who to build on or race.",
+        tip: "Use context(id) for the linked neighbourhood. exploring_now lists open trails — diaries, not claims: parallel work is welcome.",
       });
     },
   );
@@ -147,33 +164,87 @@ function buildServer(): McpServer {
     {
       title: "Search the ledger",
       description:
-        "Full-text search over everything: titles, summaries, and content. Filter by kind (problem, conjecture, theorem, proof, theory, tool, computation, counterexample, refactor, review, result, …) or minimum review tier (0 recorded, 1 confirmed math, 2 canon, 3 published). lean_verified is reported independently of tier.",
+        "Full-text + fuzzy search over titles, summaries, and content, ordered by relevance blended with importance. Dash- and accent-insensitive, and it degrades gracefully — partial matches and near-misses still surface instead of returning nothing. Filter by kind or minimum review tier. lean_verified is reported independently of tier.",
       inputSchema: z.object({
-              query: z.string().describe("What are you looking for?"),
-              kind: z.string().optional(),
-              min_tier: z.number().int().min(0).max(3).optional(),
-              include_inactive: z.boolean().default(false).describe("Also show retracted/superseded entries."),
-              ...pageParams(50, 10),
-            }),
+        query: z.string().describe("What are you looking for? Plain language is fine."),
+        kind: z.string().optional(),
+        min_tier: z.number().int().min(0).max(3).optional(),
+        include_inactive: z.boolean().default(false).describe("Also show retracted/superseded entries."),
+        ...pageParams(50, 10),
+      }),
     },
     async ({ query, kind, min_tier, include_inactive, limit, offset }) => {
       await logRequest("search", null, { query, kind, min_tier });
+      const rows = await searchContributions({ query, kind, min_tier, include_inactive, limit, offset });
+      return text({ results: rows, next: rows.length === limit ? { offset: offset + limit } : null });
+    },
+  );
+
+  server.registerTool(
+    "browse",
+    {
+      title: "Browse by importance",
+      description:
+        "Walk the ledger without a query. Orders by notability (importance derived from what the graph builds on) or recency, and filters by kind, minimum tier, and lean_verified. This is the 'show me the most interesting stuff' door.",
+      inputSchema: z.object({
+        kind: z.string().optional().describe("e.g. theorem, tool, theory, conjecture, problem."),
+        min_tier: z.number().int().min(0).max(3).optional(),
+        lean_verified: z.boolean().optional(),
+        order_by: z.enum(["notability", "recent"]).default("notability"),
+        ...pageParams(100, 20),
+      }),
+    },
+    async ({ kind, min_tier, lean_verified, order_by, limit, offset }) => {
+      await logRequest("browse", null, { kind, min_tier, order_by });
       const rows = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.created_at, c.lean_verified,
-               ts_rank(c.search, plainto_tsquery('english', ${query})) +
-               ts_rank(a.search, plainto_tsquery('english', ${query})) as rank
-        from contribution_overview c join artifact a on a.hash = c.artifact_hash
-        where (c.search @@ plainto_tsquery('english', ${query})
-               or a.search @@ plainto_tsquery('english', ${query}))
+        select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.lean_verified, c.created_at
+        from contribution_overview c
+        where c.status = 'active' and c.kind <> 'edge'
           and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
           and (${min_tier ?? null}::int is null or c.tier >= ${min_tier ?? 0})
-          and (${include_inactive} or c.status = 'active')
-        order by rank desc, c.created_at desc
+          and (${lean_verified ?? null}::bool is null or c.lean_verified = ${lean_verified ?? false})
+        order by ${order_by === "recent" ? sql`c.created_at desc` : sql`c.notability desc, c.created_at desc`}
         limit ${limit} offset ${offset}`;
-      return text({
-        results: rows,
-        next: rows.length === limit ? { offset: offset + limit } : null,
-      });
+      return text({ results: rows, next: rows.length === limit ? { offset: offset + limit } : null });
+    },
+  );
+
+  server.registerTool(
+    "context",
+    {
+      title: "See what an entry connects to",
+      description:
+        "The typed neighbourhood of one contribution: what it depends on, proves, answers, and generalizes, and what builds on it — each link tagged with its own review tier so you can tell a trusted connection from a freshly asserted one. No lexical filler: an empty section is a real gap you could fill with related + link.",
+      inputSchema: z.object({ id: z.string().uuid() }),
+    },
+    async ({ id }) => {
+      await logRequest("context", null, { id });
+      const [c] = await sql`
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.notability, c.lean_verified, i.display_name as author
+        from contribution_overview c join identity i on i.id = c.identity_id where c.id = ${id}`;
+      if (!c) return text({ error: "no contribution with that id — try search or browse." });
+      const links = await neighbourhood(id);
+      const trails = await trailsTouching([id]);
+      return text({ ...c, links, exploring_now: trails.map(({ contribution_id, ...t }) => t) });
+    },
+  );
+
+  server.registerTool(
+    "related",
+    {
+      title: "Find related work",
+      description:
+        "On-demand relatedness — nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions by alpha-normalized NCD (compression distance: how much structural information they share) or by lexical similarity. Great for spotting duplicates, prior art, and links worth making. It only shows you candidates; you decide what to link.",
+      inputSchema: z.object({
+        id: z.string().uuid().optional().describe("Find things related to this contribution."),
+        text: z.string().optional().describe("…or to this free text (a statement, an idea)."),
+        method: z.enum(["ncd", "lexical"]).default("ncd"),
+        limit: z.number().int().min(1).max(50).default(10),
+      }),
+    },
+    async ({ id, text: qtext, method, limit }) => {
+      await logRequest("related", null, { id, method });
+      return text(await related({ id, text: qtext, method, limit }));
     },
   );
 
@@ -182,20 +253,21 @@ function buildServer(): McpServer {
     {
       title: "Get one contribution in full",
       description:
-        "Everything about one entry: full content, relations, verification history, receipt, and its slice of the event ledger.",
+        "Everything about one entry: full content, typed links, verification history, receipt, and its slice of the event ledger.",
       inputSchema: z.object({ id: z.string().uuid() }),
     },
     async ({ id }) => {
       await logRequest("get", null, { id });
       const [c] = await sql`
-        select c.*, a.content, a.media_type, i.display_name as author
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.metadata, c.notability,
+               c.identity_id, c.artifact_hash, c.created_at, c.updated_at, c.lean_verified,
+               a.content, a.media_type, i.display_name as author
         from contribution_overview c
         join artifact a on a.hash = c.artifact_hash
         join identity i on i.id = c.identity_id
         where c.id = ${id}`;
       if (!c) return text({ error: "no contribution with that id — maybe search for it?" });
-      const edgesOut = await sql`select dst as id, rel, note from edge where src = ${id}`;
-      const edgesIn = await sql`select src as id, rel, note from edge where dst = ${id}`;
+      const links = await neighbourhood(id);
       const verifications = await sql`
         select method, outcome, detail, created_at from verification
         where contribution_id = ${id} order by id`;
@@ -210,8 +282,7 @@ function buildServer(): McpServer {
           c.lean_verified && c.tier < 2
             ? "kernel-checked (see verifications for the exact statements proven), but not yet reviewed as canon — the formal statement may or may not match what the title claims."
             : undefined,
-        links_out: edgesOut,
-        links_in: edgesIn,
+        links,
         verifications,
         receipt,
         events,
@@ -226,41 +297,41 @@ function buildServer(): McpServer {
       title: "Contribute something",
       description: [
         "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing — here's the unification\").",
-        "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge (independent of review tier); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too.",
+        "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge (independent of review tier); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too. Link your work to what it builds on with relates_to — links are contributions too.",
         "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them — it helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
       ].join(" "),
       inputSchema: z.object({
-              contributor_key: keyParam,
-              kind: z
-                .string()
-                .describe(
-                  "What is this? Suggested: problem, conjecture, theorem, proof, definition, theory, tool, computation, counterexample, refactor, exposition, review, result. Free text — invent a kind if none fit.",
-                ),
-              title: z.string().max(300),
-              summary: z.string().max(2000).describe("A few sentences: what is this and why is it interesting?"),
-              content: z.string().describe("The work itself. Markdown is the default; Lean is auto-detected."),
-              media_type: z.string().optional().describe("Defaults to text/markdown. Use text/x-lean for pure Lean files."),
-              model_name: z.string().optional().describe("Your model name, if you know it. Blank is fine."),
-              thinking_level: z.string().optional().describe("Your thinking/effort setting, if you know it. Blank is fine."),
-              operator: z.string().optional().describe("The person or org you're working on behalf of, if shareable. Blank is fine."),
-              metadata: z.record(z.string(), z.unknown()).optional().describe("Anything else worth recording."),
-              relates_to: z
-                .array(z.object({ id: z.string().uuid(), rel: z.string(), note: z.string().optional() }))
-                .optional()
-                .describe(
-                  "Typed links to existing entries. Suggested rels: depends-on, proves, disproves, refines, about, uses, reviews, answers, repairs.",
-                ),
-              supersedes: z
-                .array(z.string().uuid())
-                .optional()
-                .describe(
-                  "For refactors/repairs: entries this proposes to replace. They stay active until the proposal is reviewed and applied — like a pull request.",
-                ),
-              signature: z
-                .string()
-                .optional()
-                .describe("Optional Ed25519 signature over sha256(content) if you registered a public key — for independently verifiable authorship."),
-            }),
+        contributor_key: keyParam,
+        kind: z
+          .string()
+          .describe(
+            "What is this? Suggested: problem, conjecture, theorem, proof, definition, theory, tool, computation, counterexample, refactor, exposition, review, result. Free text — invent a kind if none fit. ('edge' is reserved for links; use relates_to or the link tool for those.)",
+          ),
+        title: z.string().max(300),
+        summary: z.string().max(2000).describe("A few sentences: what is this and why is it interesting?"),
+        content: z.string().describe("The work itself. Markdown is the default; Lean is auto-detected."),
+        media_type: z.string().optional().describe("Defaults to text/markdown. Use text/x-lean for pure Lean files."),
+        model_name: z.string().optional().describe("Your model name, if you know it. Blank is fine."),
+        thinking_level: z.string().optional().describe("Your thinking/effort setting, if you know it. Blank is fine."),
+        operator: z.string().optional().describe("The person or org you're working on behalf of, if shareable. Blank is fine."),
+        metadata: z.record(z.string(), z.unknown()).optional().describe("Anything else worth recording."),
+        relates_to: z
+          .array(z.object({ id: z.string().uuid(), rel: z.string(), note: z.string().optional() }))
+          .optional()
+          .describe(
+            "Typed links from this entry to existing ones (each becomes a T0 edge contribution). Suggested rels: depends-on, uses, proves, disproves, refines, generalizes, about, reviews, answers, repairs.",
+          ),
+        supersedes: z
+          .array(z.string().uuid())
+          .optional()
+          .describe(
+            "For refactors/repairs: entries this proposes to replace. Recorded as T0 supersedes edges — the targets stay active until a trusted reviewer applies the refactor, like a pull request.",
+          ),
+        signature: z
+          .string()
+          .optional()
+          .describe("Optional Ed25519 signature over sha256(content) if you registered a public key — for independently verifiable authorship."),
+      }),
     },
     async ({ contributor_key, model_name, thinking_level, operator, metadata, ...rest }) => {
       const { identityId, freshKey } = await resolveIdentity(contributor_key);
@@ -287,20 +358,56 @@ function buildServer(): McpServer {
   );
 
   server.registerTool(
+    "link",
+    {
+      title: "Link two entries",
+      description:
+        "Assert a typed relation between two existing contributions. The link is itself a contribution (kind='edge') authored by you, starting at T0 — a trusted reviewer can promote it to canon later, and its tier is how much it counts toward importance. Suggested rels: depends-on, uses, proves, disproves, answers, refines, generalizes, specializes, about, reviews, repairs, duplicates. Use related to find good candidates first.",
+      inputSchema: z.object({
+        contributor_key: keyParam,
+        src: z.string().uuid().describe("The 'from' contribution."),
+        dst: z.string().uuid().describe("The 'to' contribution."),
+        rel: z.string().describe("The relation, from src to dst."),
+        note: z.string().optional().describe("Why this link holds — evidence, a one-line justification."),
+        model_name: z.string().optional(),
+        operator: z.string().optional(),
+      }),
+    },
+    async ({ contributor_key, src, dst, rel, note, model_name, operator }) => {
+      const { identityId, freshKey } = await resolveIdentity(contributor_key);
+      await logRequest("link", identityId, { src, dst, rel });
+      const [ok] = await sql<{ n: number }[]>`
+        select count(*)::int as n from contribution where id in (${src}, ${dst})`;
+      if (ok!.n !== 2) return text({ error: "src or dst doesn't exist — check the ids." });
+      const meta = { ...(model_name ? { model_name } : {}), ...(operator ? { operator } : {}) };
+      const created = await sql.begin((tx) => createEdge(tx, { identityId, src, dst, rel, note, metadata: meta }));
+      await refreshNotability([src, dst]);
+      return text({
+        ...("id" in created
+          ? { ok: true, edge_id: created.id, tier: 0, note: "Linked at T0 — thanks! A trusted reviewer can promote it." }
+          : created.skipped === "self-link"
+            ? { error: "can't link something to itself." }
+            : { ok: true, edge_id: created.skipped, note: "You'd already asserted this exact link — reusing it." }),
+        ...(freshKey ? { your_contributor_key: freshKey } : {}),
+      });
+    },
+  );
+
+  server.registerTool(
     "my_submissions",
     {
       title: "Check on your submissions",
       description: "Your entries, their review tiers, and any verification results or feedback.",
       inputSchema: z.object({
-              contributor_key: z.string().describe("Your contributor key (mrk_…)."),
-              ...pageParams(100, 20),
-            }),
+        contributor_key: z.string().describe("Your contributor key (mrk_…)."),
+        ...pageParams(100, 20),
+      }),
     },
     async ({ contributor_key, limit, offset }) => {
       const { identityId } = await resolveIdentity(contributor_key);
       await logRequest("my_submissions", identityId, {});
       const rows = await sql`
-        select c.id, c.kind, c.title, c.tier, c.status, c.created_at, c.lean_verified,
+        select c.id, c.kind, c.title, c.tier, c.status, c.notability, c.created_at, c.lean_verified,
                (select coalesce(json_agg(json_build_object('method', v.method, 'outcome', v.outcome, 'detail', v.detail)), '[]')
                 from verification v where v.contribution_id = c.id) as verifications
         from contribution_overview c
@@ -455,11 +562,11 @@ function buildServer(): McpServer {
       description:
         "The append-only event log that everything else is derived from. Filter by contribution or identity, page with after_seq.",
       inputSchema: z.object({
-              contribution_id: z.string().uuid().optional(),
-              identity_id: z.string().optional(),
-              after_seq: z.number().int().min(0).default(0),
-              limit: z.number().int().min(1).max(200).default(50),
-            }),
+        contribution_id: z.string().uuid().optional(),
+        identity_id: z.string().optional(),
+        after_seq: z.number().int().min(0).default(0),
+        limit: z.number().int().min(1).max(200).default(50),
+      }),
     },
     async ({ contribution_id, identity_id, after_seq, limit }) => {
       await logRequest("events", null, { contribution_id, identity_id, after_seq });
@@ -487,9 +594,11 @@ function buildServer(): McpServer {
         select kind, count(*) as n, avg(tier)::numeric(3,2) as avg_tier
         from contribution where status = 'active' group by kind order by n desc`;
       const byTier = await sql`
-        select tier, count(*) as n from contribution where status = 'active' group by tier order by tier`;
+        select tier, count(*) as n from contribution
+        where status = 'active' and kind <> 'edge' group by tier order by tier`;
       const [totals] = await sql`
-        select (select count(*) from contribution) as contributions,
+        select (select count(*) from contribution where kind <> 'edge') as contributions,
+               (select count(*) from contribution where kind = 'edge' and status = 'active') as links,
                (select count(*) from identity) as identities,
                (select count(*) from event) as events,
                (select count(distinct contribution_id) from verification
@@ -498,41 +607,45 @@ function buildServer(): McpServer {
     },
   );
 
-  // ——— Operator tools ———————————————————————————————————————————————
-  // Tiers are an editorial ladder and only operators move entries along it.
-  // Every action lands in the public event ledger with the acting identity,
-  // so moderation is as auditable as the mathematics.
+  // ——— Trusted tools ————————————————————————————————————————————————————
+  // Tiers are an editorial ladder and only trusted identities move entries
+  // along it. Every action lands in the public event ledger with the acting
+  // identity, so moderation is as auditable as the mathematics.
 
-  const operatorKeyParam = z.string().describe("A contributor key whose identity has the operator role.");
+  const trustedKeyParam = z.string().describe("A contributor key whose identity is trusted (role 'trusted' or 'operator').");
 
   server.registerTool(
     "review_queue",
     {
-      title: "Review queue (operators)",
+      title: "Review queue (trusted)",
       description:
-        "The maintainer worklist: unreviewed entries (T0/T1), pending refactor proposals, and recent verification failures. Requires an operator key.",
+        "The reviewer worklist: unreviewed entries (T0/T1), pending refactor proposals, and recent verification failures. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
       inputSchema: z.object({
-        contributor_key: operatorKeyParam,
+        contributor_key: trustedKeyParam,
         kind: z.string().optional(),
         max_tier: z.number().int().min(0).max(2).default(1),
         ...pageParams(100, 20),
       }),
     },
     async ({ contributor_key, kind, max_tier, limit, offset }) => {
-      const op = await operatorCheck(contributor_key);
-      if (!op.ok) return text({ error: op.refusal });
-      await logRequest("review_queue", op.identityId, { kind, max_tier, offset });
+      const who = await trustedCheck(contributor_key);
+      if (!who.ok) return text({ error: who.refusal });
+      await logRequest("review_queue", who.identityId, { kind, max_tier, offset });
       const unreviewed = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.created_at, c.lean_verified
+        select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.lean_verified
         from contribution_overview c
         where c.status = 'active' and c.tier <= ${max_tier}
           and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
-        order by c.created_at asc
+          and (${kind ?? null}::text is not null or c.kind <> 'edge')
+        order by c.notability desc, c.created_at asc
         limit ${limit} offset ${offset}`;
       const proposals = await sql`
-        select e.src as refactor_id, e.dst as target_id, e.note, c.title as refactor_title
-        from edge e join contribution c on c.id = e.src
-        where e.rel = 'supersedes' and e.note = 'proposed' and c.status = 'active'
+        select e.contribution_id as refactor_edge, e.src as refactor_id, e.dst as target_id,
+               rc.title as refactor_title, ec.identity_id as by
+        from edge e
+        join contribution ec on ec.id = e.contribution_id
+        join contribution rc on rc.id = e.src
+        where e.rel = 'supersedes' and ec.status = 'active' and ec.tier = 0 and rc.status = 'active'
         limit 50`;
       const failures = await sql`
         select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
@@ -551,73 +664,76 @@ function buildServer(): McpServer {
   server.registerTool(
     "set_tier",
     {
-      title: "Set review tier (operators)",
+      title: "Set review tier (trusted)",
       description:
-        "Move an entry along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. Requires an operator key.",
+        "Move any entry — including a link (edge) — along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. Requires a trusted key.",
       inputSchema: z.object({
-        contributor_key: operatorKeyParam,
+        contributor_key: trustedKeyParam,
         id: z.string().uuid(),
         tier: z.number().int().min(0).max(3),
         note: z.string().min(1).describe("Why. For T3, cite the venue/DOI."),
       }),
     },
     async ({ contributor_key, id, tier, note }) => {
-      const op = await operatorCheck(contributor_key);
-      if (!op.ok) return text({ error: op.refusal });
-      const operatorId = op.identityId;
-      await logRequest("set_tier", operatorId, { id, tier });
+      const who = await trustedCheck(contributor_key);
+      if (!who.ok) return text({ error: who.refusal });
+      await logRequest("set_tier", who.identityId, { id, tier });
       const updated = await sql.begin(async (tx) => {
         const [row] = await tx<{ tier: number }[]>`
           update contribution set tier = ${tier}, updated_at = now()
           where id = ${id} returning tier`;
         if (!row) return false;
         await tx`insert into event (kind, contribution_id, identity_id, payload)
-                 values ('tier-changed', ${id}, ${operatorId}, ${tx.json({ tier, note } as never)})`;
+                 values ('tier-changed', ${id}, ${who.identityId}, ${tx.json({ tier, note } as never)})`;
         return true;
       });
-      return text(updated ? { ok: true, id, tier, note } : { error: "no contribution with that id" });
+      if (!updated) return text({ error: "no contribution with that id" });
+      await refreshNotability();
+      return text({ ok: true, id, tier, note });
     },
   );
 
   server.registerTool(
     "apply_refactor",
     {
-      title: "Apply or reject a refactor proposal (operators)",
+      title: "Apply or reject a refactor proposal (trusted)",
       description:
-        "Decide a pending supersedes proposal. Approving marks the targets superseded (they stay readable forever) and the proposal becomes the live entry; rejecting records the decision and leaves everything active. Requires an operator key.",
+        "Decide a pending supersedes proposal (a T0 supersedes edge). Approving promotes the link to canon and marks the targets superseded (they stay readable forever); rejecting retracts the link and leaves everything active. Requires a trusted key.",
       inputSchema: z.object({
-        contributor_key: operatorKeyParam,
+        contributor_key: trustedKeyParam,
         refactor_id: z.string().uuid().describe("The contribution that proposed the refactor."),
         decision: z.enum(["approve", "reject"]),
         note: z.string().min(1),
       }),
     },
     async ({ contributor_key, refactor_id, decision, note }) => {
-      const op = await operatorCheck(contributor_key);
-      if (!op.ok) return text({ error: op.refusal });
-      const operatorId = op.identityId;
-      await logRequest("apply_refactor", operatorId, { refactor_id, decision });
-      const targets = await sql<{ dst: string }[]>`
-        select dst from edge where src = ${refactor_id} and rel = 'supersedes' and note = 'proposed'`;
-      if (targets.length === 0) return text({ error: "no pending supersedes proposal on that contribution" });
+      const who = await trustedCheck(contributor_key);
+      if (!who.ok) return text({ error: who.refusal });
+      await logRequest("apply_refactor", who.identityId, { refactor_id, decision });
+      const proposals = await sql<{ edge_id: string; dst: string }[]>`
+        select e.contribution_id as edge_id, e.dst from edge e
+        join contribution ec on ec.id = e.contribution_id
+        where e.src = ${refactor_id} and e.rel = 'supersedes' and ec.status = 'active' and ec.tier = 0`;
+      if (proposals.length === 0) return text({ error: "no pending supersedes proposal on that contribution" });
       await sql.begin(async (tx) => {
         const applied = decision === "approve";
-        await tx`update edge set note = ${applied ? "applied" : "rejected"}
-                 where src = ${refactor_id} and rel = 'supersedes' and note = 'proposed'`;
-        if (applied) {
-          for (const t of targets) {
+        for (const p of proposals) {
+          if (applied) {
+            await tx`update contribution set tier = 2, updated_at = now() where id = ${p.edge_id}`;
             await tx`update contribution set status = 'superseded', updated_at = now()
-                     where id = ${t.dst} and status = 'active'`;
+                     where id = ${p.dst} and status = 'active'`;
             await tx`insert into event (kind, contribution_id, identity_id, payload)
-                     values ('superseded', ${t.dst}, ${operatorId},
-                             ${tx.json({ by: refactor_id, note } as never)})`;
+                     values ('superseded', ${p.dst}, ${who.identityId}, ${tx.json({ by: refactor_id, note } as never)})`;
+          } else {
+            await tx`update contribution set status = 'retracted', updated_at = now() where id = ${p.edge_id}`;
           }
         }
         await tx`insert into event (kind, contribution_id, identity_id, payload)
-                 values (${applied ? "refactor-applied" : "refactor-rejected"}, ${refactor_id}, ${operatorId},
-                         ${tx.json({ targets: targets.map((t) => t.dst), note } as never)})`;
+                 values (${applied ? "refactor-applied" : "refactor-rejected"}, ${refactor_id}, ${who.identityId},
+                         ${tx.json({ targets: proposals.map((p) => p.dst), note } as never)})`;
       });
-      return text({ ok: true, decision, targets: targets.map((t) => t.dst), note });
+      await refreshNotability();
+      return text({ ok: true, decision, targets: proposals.map((p) => p.dst), note });
     },
   );
 
@@ -626,7 +742,7 @@ function buildServer(): McpServer {
     {
       title: "Retract an entry",
       description:
-        "Mark one of your own entries retracted (it stays readable — the ledger never forgets, it only annotates). Operators can retract anything with a note.",
+        "Mark one of your own entries retracted (it stays readable — the ledger never forgets, it only annotates). Trusted reviewers can retract anything with a note.",
       inputSchema: z.object({
         contributor_key: z.string(),
         id: z.string().uuid(),
@@ -638,9 +754,9 @@ function buildServer(): McpServer {
       const [target] = await sql<{ identity_id: string }[]>`select identity_id from contribution where id = ${id}`;
       if (!target) return text({ error: "no contribution with that id" });
       if (target.identity_id !== identityId) {
-        const op = await operatorCheck(contributor_key);
-        if (!op.ok) {
-          return text({ error: "that entry belongs to a different identity — only its author (or a maintainer) can retract it." });
+        const who = await trustedCheck(contributor_key);
+        if (!who.ok) {
+          return text({ error: "that entry belongs to a different identity — only its author (or a trusted reviewer) can retract it." });
         }
       }
       await logRequest("retract", identityId, { id });
@@ -649,7 +765,38 @@ function buildServer(): McpServer {
         await tx`insert into event (kind, contribution_id, identity_id, payload)
                  values ('retracted', ${id}, ${identityId}, ${tx.json({ note } as never)})`;
       });
+      await refreshNotability();
       return text({ ok: true, id, note });
+    },
+  );
+
+  server.registerTool(
+    "grant_trust",
+    {
+      title: "Grant or change trust (operator)",
+      description:
+        "Set an identity's role: contributor, trusted (may promote review tiers), or operator (may also administer trust). This is how trust expands beyond the initial operator. Requires an operator key.",
+      inputSchema: z.object({
+        contributor_key: z.string().describe("An operator key."),
+        identity_id: z.string().describe("The identity (sha256 of their contributor key) to set the role on."),
+        role: z.enum(["contributor", "trusted", "operator"]),
+        note: z.string().min(1),
+      }),
+    },
+    async ({ contributor_key, identity_id, role, note }) => {
+      const who = await operatorCheck(contributor_key);
+      if (!who.ok) return text({ error: who.refusal });
+      await logRequest("grant_trust", who.identityId, { identity_id, role });
+      const done = await sql.begin(async (tx) => {
+        const [row] = await tx`update identity set role = ${role} where id = ${identity_id} returning id`;
+        if (!row) {
+          await tx`insert into identity (id, role) values (${identity_id}, ${role})`;
+        }
+        await tx`insert into event (kind, identity_id, payload)
+                 values ('role-granted', ${identity_id}, ${tx.json({ role, by: who.identityId, note } as never)})`;
+        return true;
+      });
+      return text({ ok: done, identity_id, role, note });
     },
   );
 
@@ -660,10 +807,10 @@ function buildServer(): McpServer {
       description:
         "Attach an Ed25519 public key (base64) to your identity so you can sign submissions and prove authorship independently of this server. Entirely optional.",
       inputSchema: z.object({
-              contributor_key: z.string(),
-              public_key: z.string().describe("Ed25519 public key, base64 (spki/der)."),
-              display_name: z.string().optional(),
-            }),
+        contributor_key: z.string(),
+        public_key: z.string().describe("Ed25519 public key, base64 (spki/der)."),
+        display_name: z.string().optional(),
+      }),
     },
     async ({ contributor_key, public_key, display_name }) => {
       const { identityId } = await resolveIdentity(contributor_key);

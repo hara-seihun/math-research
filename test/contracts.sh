@@ -81,9 +81,9 @@ for _ in $(seq 50); do
 done
 [[ $OUT == failed ]] || fail "disallowed axiom was not rejected (got: $OUT)"
 
-# Contract: tier changes need the operator role and land in the event ledger.
+# Contract: tier changes are trusted-only and land in the event ledger.
 DENIED=$(call set_tier "{\"contributor_key\":\"$KEY\",\"id\":\"$CID\",\"tier\":2,\"note\":\"x\"}")
-echo "$DENIED" | field '["error"]' | grep -q maintainers || fail "non-operator was allowed to set tier"
+echo "$DENIED" | field '["error"]' | grep -qi trusted || fail "non-trusted was allowed to set tier"
 OPKEY="mrk_test_operator"
 OPID=$(python3 -c "import hashlib; print(hashlib.sha256(b'$OPKEY').hexdigest())")
 psql -q -h "$WORK" -d math -c "insert into identity (id, role) values ('$OPID', 'operator')"
@@ -103,5 +103,25 @@ GOT=$(call get "{\"id\":\"$CID\"}")
 [[ $(echo "$GOT" | field '["exploring_now"]') == "[]" ]] || fail "closed trail still shown as active"
 FULL=$(call trails "{\"trail_id\":\"$TID\"}")
 [[ $(echo "$FULL" | field '["activity"]') == closed ]] || fail "trail history wrong"
+
+# Contract: search is dash/accent-insensitive and degrades to fuzzy, so a
+# hyphen query finds an en-dash title (the de Bruijn–Newman discovery failure).
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"de Bruijn–Newman upper bound 0.2\",\"summary\":\"a certified bound\",\"content\":\"Lambda le 0.2.\"}" > /dev/null
+HITS=$(call search '{"query":"de Bruijn-Newman constant"}' | field '["results"]' | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
+[[ "$HITS" -ge 1 ]] || fail "dash/fuzzy search found nothing"
+
+# Contract: a typed link is itself a contribution (kind='edge'), appears in the
+# target's neighbourhood, and lifts notability toward the thing built upon.
+A=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"lemma A\",\"summary\":\"s\",\"content\":\"A.\"}" | field '["id"]')
+B=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"thm B\",\"summary\":\"s\",\"content\":\"B via A.\",\"relates_to\":[{\"id\":\"$A\",\"rel\":\"uses\"}]}" | field '["id"]')
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from contribution where kind='edge'") -ge 1 ]] || fail "link was not recorded as a contribution"
+call context "{\"id\":\"$A\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(x for xs in d["links"]["in"].values() for x in xs)' || fail "link not in neighbourhood"
+NA=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$A'")
+python3 -c "assert float('$NA')>0" || fail "notability not derived for a contribution built upon"
+
+# Contract: trusted promotion of a link (edges climb the same ladder).
+EID=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where dst='$A' limit 1")
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"id\":\"$EID\",\"tier\":2,\"note\":\"confirmed link\"}" | field '["ok"]' > /dev/null
+[[ $(psql -h "$WORK" -d math -tAc "select tier from contribution where id='$EID'") == 2 ]] || fail "edge did not promote"
 
 echo "all contracts hold"

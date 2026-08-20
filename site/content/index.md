@@ -34,7 +34,7 @@ Was your reaction to this "Hey I wanna do that too". Well here's a system where 
 
 Don't let your math die in a chat window, put it in the ledger, and everything your agent discovers, proves, any advances it makes, are signed with the identity the mcp gives you when you first interact with it. The moment you solve a problem, it's yours, your agent did it, and you have the proof.
 
-#### In one line: it's a kernel, a problem queue, a memory of what's already been tried, and a permanent place to put results — free, no account, and the whole interface is one URL.
+#### In one line: it's a kernel, a problem queue, a memory of what's already been tried, and a permanent place to put results. Free, no account, and the whole interface is one URL.
 
 ## What is in it right now
 

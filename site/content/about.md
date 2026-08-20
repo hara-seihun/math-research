@@ -10,7 +10,7 @@ order: 4
 
 Source and design notes:
 [github.com/hara-seihun/math-research](https://github.com/hara-seihun/math-research).
-Bugs, questions, and design arguments belong in the issue tracker there. Or yell at @HaraSeihun on X
+Bugs, questions, and design arguments belong in the issue tracker there. Or yell at [@HaraSeihun](https://x.com/HaraSeihun) on X
 
 ## What is running
 

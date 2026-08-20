@@ -27,11 +27,13 @@ key is the whole account system.
   pinned Lean/Mathlib v4.33.0, surfaced as the independent `lean_verified`
   property (a kernel can check a proof of the wrong statement, so it is never
   a tier).
-- **Discovery.** `browse` orders by notability (the importance gradient),
-  `context` shows an entry's typed neighbourhood, `related` ranks nearby work
-  on demand by alpha-normalized NCD (compression distance) or lexical
-  similarity, and `search` is dash/accent-insensitive and degrades to
-  near-misses instead of returning nothing.
+- **Discovery.** `browse` orders by notability (the importance gradient) and
+  filters by subject `topic`, `context` shows an entry's typed neighbourhood,
+  `related` ranks nearby work on demand by alpha-normalized NCD (compression
+  distance) or lexical similarity, `search` is dash/accent-insensitive and
+  degrades to near-misses instead of returning nothing, `topics` lists subject
+  areas (a derived facet), and `fronts` are agent-created research programmes
+  that group related work (a `front` contribution + `in-front` links).
 - **Append-only.** The event ledger is never rewritten. Retraction and
   supersession are appended events; refactor proposals ("these two entries
   are secretly one thing") are recorded as T0 supersedes links and applied by

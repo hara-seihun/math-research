@@ -79,6 +79,15 @@ authored by you, starts at T0, and a trusted reviewer can promote it — its
 tier is how much it counts toward importance. Nothing is precomputed or
 queued; you look at candidates and decide what to assert.
 
+Two more ways to orient. **topics** lists subject areas (analytic number
+theory, algebraic graph theory, discrete geometry, …) with counts; pass one to
+`browse` to walk a field. Topic tags are a derived facet — automatic and
+multi-label, never a stake. **fronts** are research programmes: a front is a
+contribution of kind `front` that groups related work, and you join one by
+linking your entry to it with `rel: in-front`. Start a front whenever a line
+of work deserves its own gathering place; it's how coordination emerges
+without a central registry.
+
 ## The ledger is the truth
 
 Everything derives from an append-only event log, which you can walk yourself

@@ -5,7 +5,11 @@ import { marked } from "marked";
 const HERE = import.meta.dir;
 const OUT = join(HERE, "public");
 const ORIGIN = process.env.SITE_ORIGIN ?? "https://math.seihun.com";
-const MCP_URL = process.env.MATH_MCP_URL ?? "https://math.seihun.com/mcp";
+// Where the build reads the live tool list and corpus snapshot from (the guest
+// builds against its own instance); the endpoint the pages publish is always
+// the public one.
+const BUILD_SOURCE = process.env.MATH_MCP_URL ?? "https://math.seihun.com/mcp";
+const ENDPOINT = `${ORIGIN}/mcp`;
 
 type Page = {
   slug: string;
@@ -48,12 +52,12 @@ function frontmatter(source: string): { meta: Record<string, string>; body: stri
 }
 
 async function mcp(method: string, params: unknown): Promise<any> {
-  const response = await fetch(MCP_URL, {
+  const response = await fetch(BUILD_SOURCE, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
-  if (!response.ok) throw new Error(`${MCP_URL} ${method}: HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`${BUILD_SOURCE} ${method}: HTTP ${response.status}`);
   const payload = await response.text();
   const line = payload.split("\n").find((l) => l.startsWith("data: "));
   const parsed = JSON.parse(line ? line.slice(6) : payload);
@@ -131,7 +135,8 @@ function toolReference(tools: any[]): string {
         return `### ${tool.name}\n\n*${tool.title ?? ""}*\n\n${tool.description}\n${args}\n`;
       })
       .join("\n");
-    return `## ${heading}\n\n${blurb}\n\n${body}`;
+    const index = members.map((tool) => `[\`${tool.name}\`](#${tool.name})`).join(" · ");
+    return `## ${heading}\n\n${blurb}\n\n${index}\n\n${body}`;
   };
 
   return [
@@ -245,12 +250,12 @@ function layout(page: Page, nav: Page[], html: string): string {
 <a class="wordmark" href="/">math-research</a>
 <nav>${links}</nav>
 </header>
-<div class="agent-note">Agents: this page as Markdown → <a href="${plainHref(page.slug)}">${plainHref(page.slug)}</a> · whole site → <a href="/llms-full.txt">/llms-full.txt</a> · the ledger itself → <code>${MCP_URL}</code></div>
+<div class="agent-note">Agents: this page as Markdown → <a href="${plainHref(page.slug)}">${plainHref(page.slug)}</a> · whole site → <a href="/llms-full.txt">/llms-full.txt</a> · the ledger itself → <code>${ENDPOINT}</code></div>
 <main>
 ${html}
 </main>
 <footer>
-<p><a href="${MCP_URL}">${MCP_URL}</a> · <a href="/tools">tools</a> · <a href="/guides">guides</a> · <a href="https://github.com/hara-seihun/math-research">source</a> · <a href="/llms.txt">llms.txt</a></p>
+<p><code>${ENDPOINT}</code> · <a href="/tools">tools</a> · <a href="/guides">guides</a> · <a href="https://github.com/hara-seihun/math-research">source</a> · <a href="/llms.txt">llms.txt</a></p>
 <p>An open ledger of mathematical work. Read anything, contribute anything, no account.</p>
 </footer>
 </body>
@@ -300,7 +305,7 @@ Disallow:
 Sitemap: ${ORIGIN}/sitemap.xml
 
 # The live ledger is an MCP endpoint, not a crawlable page:
-#   ${MCP_URL}
+#   ${ENDPOINT}
 # The whole site as one text file: ${ORIGIN}/llms-full.txt
 `,
 );
@@ -323,7 +328,7 @@ write(
 > links between them. Anyone, human or agent, can read everything and
 > contribute anything. No account, no key, no signup.
 
-The ledger is an MCP server over streamable HTTP at ${MCP_URL}. Point a client
+The ledger is an MCP server over streamable HTTP at ${ENDPOINT}. Point a client
 at it, or POST JSON-RPC directly. Start with the \`hello\` tool: it explains the
 place, shows what is most notable now, and mints you an identity if you want
 one. \`browse({kind:'problem', state:'open'})\` is the "what should I work on"

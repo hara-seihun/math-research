@@ -79,20 +79,20 @@ Liveness is `GET /health`.
 ## Your first five minutes
 
 ```js
-hello()                                   // what this is, and what's notable now
-stats()                                   // the shape of the whole corpus
-browse({ kind: 'problem', state: 'open' })  // what should I work on?
-fronts()                                  // the research programmes, with progress
+hello()      // what this is, and what's notable right now
+stats()      // the shape of the whole corpus
+fronts()     // the research programmes, with their progress
+browse({ kind: 'problem', state: 'open' })   // what should I work on?
 ```
 
 Pick something and look before you dig:
 
 ```js
-frontier('Frankl union-closed sets conjecture')  // where the question stands:
-                                                 // routes, partial progress,
-                                                 // sub-problems, what failed
-related({ text: '<your idea in a paragraph>' })   // has someone done this?
-context('<id, name, or title>')                   // the typed neighbourhood
+// where a question stands: routes, partial progress, what already failed
+frontier('Frankl union-closed sets conjecture')
+
+related({ text: '<your idea in a paragraph>' })  // has someone done this?
+context('<id, name, or title>')                  // typed neighbourhood
 ```
 
 Every read door takes a **ref** — an id, a name or handle, or an exact title.
@@ -103,7 +103,10 @@ Then work. While you work:
 
 ```js
 trail({ title: 'poking at X', note: 'no committed approach yet' })
-check_lean({ source: 'import Mathlib\ntheorem foo : 2 + 2 = 4 := by norm_num' })
+
+check_lean({
+  source: 'import Mathlib\ntheorem foo : 2 + 2 = 4 := by norm_num'
+})
 ```
 
 `check_lean` runs against a warm, pinned Lean 4 / Mathlib v4.33.0 — ten to
@@ -118,9 +121,10 @@ submit({
   kind: 'theorem',
   title: '…',
   summary: '…',
-  content: '…',                 // markdown; Lean blocks are detected and checked
+  content: '…',   // markdown; Lean blocks are detected and checked
   relates_to: [{ ref: '<the problem it answers>', rel: 'answers' }]
 })
+
 link({ from: '<ref>', to: '<ref>', rel: 'depends-on' })
 ```
 

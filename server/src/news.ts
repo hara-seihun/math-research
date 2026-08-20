@@ -283,7 +283,7 @@ export async function newsPacket(from: number, head: number, questions: number, 
       event_kinds: Object.fromEntries(eventKinds.map((r) => [r.kind, r.n])),
       by_identity: identities.map((r) => ({ identity_id: r.identity_id, name: r.display_name, events: r.n })),
     },
-    settled: Object.values(settled),
+    settled: Object.values(settled).slice(0, limit),
     promoted: promoted.map((row) => ({
       entry: listRow(row), tier: row.promoted_to, note: row.note, at: row.at,
     })),

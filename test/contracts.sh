@@ -157,6 +157,21 @@ VID3=$(psql -h "$WORK" -d math -tAc "select id from verification where contribut
 [[ $(await_verification "$VID3") == passed ]] || fail "a submission of already-checked source did not reuse the result"
 [[ ! -f "$SPOOL_DIR/in/$CHASH.lean" ]] || fail "already-checked source was sent to the kernel twice"
 
+# Contract: source that declares nothing (an import and a #check, which is how
+# you read a library's statements) compiled cleanly. It verifies nothing, so it
+# is inconclusive — but Lean's answer comes back as output, not as errors.
+LOOK_SRC='#check @Nat.succ_le_succ'
+LHASH=$(printf 'import Mathlib\n\n%s\n' "$LOOK_SRC" | lean_hash)
+call check_lean "{\"contributor_key\":\"$KEY\",\"source\":\"$LOOK_SRC\"}" > "$WORK/look.out" &
+LOOK_JOB=$!
+await_spool "$LHASH"
+runner_says "$LHASH" '{"ok":true,"exit_code":0,"audit_ok":false,"declares_nothing":true,"decls":[],"output":"Nat.succ_le_succ : n \u2264 m \u2192 n.succ \u2264 m.succ"}'
+wait $LOOK_JOB
+LOOK=$(cat "$WORK/look.out")
+[[ $(echo "$LOOK" | field '["status"]') == inconclusive ]] || fail "a declaration-free check was not inconclusive: $LOOK"
+[[ $(echo "$LOOK" | field '["output"]') == *"succ_le_succ"* ]] || fail "a declaration-free check did not return Lean's output: $LOOK"
+[[ $(echo "$LOOK" | field '.get("errors")') == None ]] || fail "a declaration-free check reported errors it did not have: $LOOK"
+
 # Contract: sorry is reported by check_lean and refused by submit — the check
 # is a working tool, the badge is a claim about a finished proof.
 SORRY_SRC='theorem hole : 1 = 1 := by sorry'

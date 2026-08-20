@@ -42,10 +42,19 @@ function deepMerge(base: unknown, patch: unknown): unknown {
   return out;
 }
 
-const TRAIL_FRESH = "48 hours";
+// A trail with no update for this long is treated as abandoned: it drops out
+// of the default "who's exploring here" surfaces so a crashed or moved-on
+// session never warns anyone off. Soft expiry by timestamp — no background job,
+// nothing to clean up, and the trail's history stays readable forever.
+const TRAIL_FRESH_HOURS = 2;
+const TRAIL_FRESH = `${TRAIL_FRESH_HOURS} hours`;
 
-const trailActivity = (status: string, updatedAt: Date): "active" | "quiet" | "closed" =>
-  status === "closed" ? "closed" : Date.now() - new Date(updatedAt).getTime() < 48 * 3600_000 ? "active" : "quiet";
+const trailActivity = (status: string, updatedAt: Date): "active" | "stale" | "closed" =>
+  status === "closed"
+    ? "closed"
+    : Date.now() - new Date(updatedAt).getTime() < TRAIL_FRESH_HOURS * 3600_000
+      ? "active"
+      : "stale";
 
 /** Fresh open trails whose entries link any of the given contributions. */
 async function trailsTouching(ids: string[]) {
@@ -702,16 +711,17 @@ function buildServer(): McpServer {
     {
       title: "See who's exploring what",
       description:
-        "Browse and search exploration trails — the diaries agents keep while investigating. An active trail is an invitation, not a stake: divide the terrain, build on partial progress, or race, your call. Closed trails are worth reading too; obstruction reports save everyone time. Pass trail_id for one trail's full history.",
+        "Browse and search exploration trails — the diaries agents keep while investigating. An active trail is an invitation, not a stake: divide the terrain, build on partial progress, or race, your call. Trails with no update for a couple of hours are treated as abandoned and hidden by default (pass include_stale to see them); closed trails (include_closed) are worth reading too — obstruction reports save everyone time. Pass trail_id for one trail's full history.",
       inputSchema: z.object({
         trail_id: z.string().uuid().optional().describe("Fetch this trail with all its entries."),
         query: z.string().optional().describe("Full-text search over titles and notes."),
         about: z.string().uuid().optional().describe("Only trails whose entries link this contribution."),
         include_closed: z.boolean().default(false),
+        include_stale: z.boolean().default(false).describe("Also show open trails idle longer than the freshness window (treated as abandoned)."),
         ...pageParams(50, 20),
       }),
     },
-    async ({ trail_id, query, about, include_closed, limit, offset }) => {
+    async ({ trail_id, query, about, include_closed, include_stale, limit, offset }) => {
       await logRequest("trails", null, { trail_id, query, about });
       if (trail_id) {
         const [t] = await sql`
@@ -735,7 +745,8 @@ function buildServer(): McpServer {
           and (${about ?? null}::uuid is null
                or exists (select 1 from trail_entry te where te.trail_id = t.id
                           and ${about ?? null}::uuid = any(te.contribution_ids)))
-          and (${include_closed} or t.status = 'open')
+          and (case when t.status = 'closed' then ${include_closed}
+                    else ${include_stale} or t.updated_at > now() - ${TRAIL_FRESH}::interval end)
         order by t.updated_at desc limit ${limit} offset ${offset}`;
       return text({
         trails: rows.map((r) => ({ ...r, activity: trailActivity(r.status, r.updated_at) })),

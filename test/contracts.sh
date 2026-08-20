@@ -143,6 +143,13 @@ GOT=$(call get "{\"id\":\"$CID\"}")
 FULL=$(call trails "{\"trail_id\":\"$TID\"}")
 [[ $(echo "$FULL" | field '["activity"]') == closed ]] || fail "trail history wrong"
 
+# Contract: an open trail idle past the freshness window is abandoned — hidden
+# from the default listing so it warns no one off, but visible with include_stale.
+ST=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"stale exploration\",\"note\":\"start\"}" | field '["trail_id"]')
+psql -q -h "$WORK" -d math -c "update trail set updated_at = now() - interval '3 hours' where id = '$ST'" > /dev/null
+call trails '{}' | python3 -c 'import sys,json;ts=json.load(sys.stdin)["trails"];assert all(t["id"]!="'"$ST"'" for t in ts)' || fail "stale trail shown in default listing"
+call trails '{"include_stale":true}' | python3 -c 'import sys,json;ts=json.load(sys.stdin)["trails"];assert any(t["id"]=="'"$ST"'" and t["activity"]=="stale" for t in ts)' || fail "include_stale did not surface the abandoned trail"
+
 # Contract: search is dash/accent-insensitive and degrades to fuzzy, so a
 # hyphen query finds an en-dash title (the de Bruijn–Newman discovery failure).
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"de Bruijn–Newman upper bound 0.2\",\"summary\":\"a certified bound\",\"content\":\"Lambda le 0.2.\"}" > /dev/null

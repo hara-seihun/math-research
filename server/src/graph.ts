@@ -129,17 +129,23 @@ export async function createEdge(
 // direction, each link carrying the edge's own tier so a reader can tell a
 // trusted-reviewed connection from a freshly asserted one. No lexical
 // substitution — an empty neighbourhood is an honest gap, not filler.
+//
+// Each link also carries `linked_at`, the moment the connection was asserted.
+// That is the edge's own fact and exists nowhere else in the read surface: a
+// claim made an hour ago and one standing since the graph began look identical
+// without it, and "is this connection fresh?" is a question about the edge,
+// not about either endpoint.
 export async function neighbourhood(id: string) {
   const out = await sql`
     select e.rel, e.dst as id, c.kind, c.title, c.tier, c.notability, c.status,
-           ec.tier as edge_tier, ec.identity_id as asserted_by
+           ec.tier as edge_tier, ec.identity_id as asserted_by, e.created_at as linked_at
     from edge e join contribution ec on ec.id = e.contribution_id
     join contribution c on c.id = e.dst
     where e.src = ${id} and ec.status = 'active'
     order by ec.tier desc, c.notability desc`;
   const incoming = await sql`
     select e.rel, e.src as id, c.kind, c.title, c.tier, c.notability, c.status,
-           ec.tier as edge_tier, ec.identity_id as asserted_by
+           ec.tier as edge_tier, ec.identity_id as asserted_by, e.created_at as linked_at
     from edge e join contribution ec on ec.id = e.contribution_id
     join contribution c on c.id = e.src
     where e.dst = ${id} and ec.status = 'active'
@@ -148,7 +154,7 @@ export async function neighbourhood(id: string) {
     rows.reduce<Record<string, unknown[]>>((acc, r) => {
       (acc[r.rel] ??= []).push({
         id: r.id, kind: r.kind, title: r.title, tier: r.tier, notability: r.notability,
-        edge_tier: r.edge_tier, status: r.status,
+        edge_tier: r.edge_tier, status: r.status, linked_at: r.linked_at,
       });
       return acc;
     }, {});
@@ -193,7 +199,7 @@ export async function related(args: RelatedArgs) {
     const v = await embed(queryText);
     if (!v) return { error: "semantic search is warming up — use method 'ncd' or 'lexical' for now." };
     const rows = await sql`
-      select co.id, co.kind, co.title, co.tier, co.notability,
+      select co.id, co.kind, co.title, co.tier, co.notability, co.created_at,
              round((1 - (c.embedding <=> ${asVector(v)}::vector))::numeric, 4) as similarity
       from contribution c join contribution_overview co on co.id = c.id
       where c.kind <> 'edge' and co.status = 'active' and c.embedding is not null
@@ -206,8 +212,8 @@ export async function related(args: RelatedArgs) {
   const raw = normalizeText(`${queryText}`).slice(0, 300);
   const candidates = await sql.begin(async (tx: Tx) => {
     await tx`select set_config('pg_trgm.similarity_threshold', '0.15', true)`;
-    return tx<{ id: string; kind: string; title: string; tier: number; notability: number; content: string }[]>`
-      select c.id, c.kind, c.title, c.tier, c.notability, left(a.content, 4000) as content
+    return tx<{ id: string; kind: string; title: string; tier: number; notability: number; created_at: string; content: string }[]>`
+      select c.id, c.kind, c.title, c.tier, c.notability, c.created_at, left(a.content, 4000) as content
       from contribution_overview c join artifact a on a.hash = c.artifact_hash
       where c.kind <> 'edge' and c.status = 'active'
         and (${selfId}::uuid is null or c.id <> ${selfId})
@@ -220,7 +226,7 @@ export async function related(args: RelatedArgs) {
 
   const q = normalizeForNcd(queryText);
   const scored = candidates.map((c) => ({
-    id: c.id, kind: c.kind, title: c.title, tier: c.tier, notability: c.notability,
+    id: c.id, kind: c.kind, title: c.title, tier: c.tier, notability: c.notability, created_at: c.created_at,
     similarity: args.method === "ncd" ? Number((1 - ncd(q, normalizeForNcd(c.content))).toFixed(4)) : undefined,
   }));
   if (args.method === "ncd") scored.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));

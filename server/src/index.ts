@@ -137,10 +137,10 @@ function buildServer(): McpServer {
                count(*) filter (where kind = 'problem' and status = 'active') as problems
         from contribution`;
       const notable = await sql`
-        select id, kind, title, tier, notability, lean_verified from contribution_overview
+        select id, kind, title, tier, notability, lean_verified, created_at from contribution_overview
         where status = 'active' and kind <> 'edge' order by notability desc, created_at desc limit 8`;
       const fresh = await sql`
-        select id, kind, title, tier, notability from contribution_overview
+        select id, kind, title, tier, notability, created_at from contribution_overview
         where status = 'active' and kind <> 'edge' and tier >= 2 order by created_at desc limit 5`;
       return text({
         welcome:
@@ -208,6 +208,7 @@ function buildServer(): McpServer {
           summary: r.summary,
           statement: contents ? contents.get(r.id as string) : r.content,
           notability: r.notability,
+          created_at: r.created_at,
           exploring_now: trails.filter((t) => t.contribution_id === r.id).map(({ contribution_id, ...t }) => t),
         })),
         next: rows.length === limit ? { offset: offset + limit } : null,
@@ -336,10 +337,13 @@ function buildServer(): McpServer {
       await logRequest("fronts", null, { id });
       if (!id) {
         const rows = await sql`
-          select c.id, c.title, c.summary, c.tier, c.notability,
+          select c.id, c.title, c.summary, c.tier, c.notability, c.created_at,
                  (select count(*) from edge e join contribution ec on ec.id = e.contribution_id
                   join contribution m on m.id = e.src
-                  where e.dst = c.id and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active') as members
+                  where e.dst = c.id and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active') as members,
+                 (select max(e.created_at) from edge e join contribution ec on ec.id = e.contribution_id
+                  join contribution m on m.id = e.src
+                  where e.dst = c.id and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active') as last_joined_at
           from contribution_overview c
           where c.kind = 'front' and c.status = 'active'
           order by members desc, c.notability desc limit ${limit} offset ${offset}`;
@@ -347,12 +351,14 @@ function buildServer(): McpServer {
           tip: "Start one with submit (kind='front'); add work with link (rel='in-front'). Pass a front's id here to see inside it." });
       }
       const [front] = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.notability, i.display_name as author
+        select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.updated_at,
+               i.display_name as author
         from contribution_overview c join identity i on i.id = c.identity_id
         where c.id = ${id} and c.kind = 'front'`;
       if (!front) return text({ error: "no front with that id — fronts list is at fronts with no id." });
       const members = await sql`
-        select m.id, m.kind, m.title, m.tier, m.notability, m.lean_verified
+        select m.id, m.kind, m.title, m.tier, m.notability, m.lean_verified, m.created_at,
+               e.created_at as joined_at
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview m on m.id = e.src
         where e.dst = ${id} and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active'
@@ -376,17 +382,19 @@ function buildServer(): McpServer {
     async ({ id }) => {
       await logRequest("frontier", null, { id });
       const [q] = await sql`
-        select id, kind, title, summary, tier, notability from contribution_overview where id = ${id}`;
+        select id, kind, title, summary, tier, notability, created_at, updated_at
+        from contribution_overview where id = ${id}`;
       if (!q) return text({ error: "no contribution with that id — try search, browse, or resolve." });
       const progress = await sql`
-        select m.id, m.kind, m.title, m.tier, m.notability, e.rel, ec.tier as edge_tier
+        select m.id, m.kind, m.title, m.tier, m.notability, m.created_at, e.rel, ec.tier as edge_tier,
+               e.created_at as linked_at
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview m on m.id = e.src
         where e.dst = ${id} and ec.status = 'active' and m.status = 'active'
           and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'serves', 'partially-answers', 'refines', 'about')
         order by (e.rel in ('answers', 'proves', 'disproves', 'refutes')) desc, m.notability desc limit 20`;
       const openSub = await sql`
-        select t.id, t.kind, t.title, t.tier, t.notability, e.rel
+        select t.id, t.kind, t.title, t.tier, t.notability, t.created_at, e.rel, e.created_at as linked_at
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview t on t.id = e.dst
         where e.src = ${id} and ec.status = 'active' and t.status = 'active'
@@ -394,7 +402,7 @@ function buildServer(): McpServer {
           and t.kind in ('problem', 'conjecture')
         order by t.notability desc limit 20`;
       const feeds = await sql`
-        select s.id, s.kind, s.title, s.tier, s.notability, e.rel
+        select s.id, s.kind, s.title, s.tier, s.notability, s.created_at, e.rel, e.created_at as linked_at
         from edge e join contribution ec on ec.id = e.contribution_id
         join contribution_overview s on s.id = e.src
         where e.dst = ${id} and ec.status = 'active' and s.status = 'active'
@@ -425,7 +433,8 @@ function buildServer(): McpServer {
     async ({ id }) => {
       await logRequest("context", null, { id });
       const [c] = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.notability, c.tags, c.names, c.lean_verified, i.display_name as author
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.notability, c.tags, c.names,
+               c.lean_verified, c.created_at, c.updated_at, i.display_name as author
         from contribution_overview c join identity i on i.id = c.identity_id where c.id = ${id}`;
       if (!c) return text({ error: "no contribution with that id — try search or browse." });
       const links = await neighbourhood(id);
@@ -474,7 +483,7 @@ function buildServer(): McpServer {
       if (!c) return text({ error: "no contribution with that id — maybe search for it?" });
       const links = await neighbourhood(id);
       const verifications = await sql`
-        select method, outcome, detail, created_at from verification
+        select method, outcome, detail, created_at, updated_at from verification
         where contribution_id = ${id} order by id`;
       const [receipt] = await sql`select payload, server_signature from receipt where contribution_id = ${id}`;
       const events = await sql`
@@ -892,7 +901,7 @@ function buildServer(): McpServer {
         limit ${limit} offset ${offset}`;
       const proposals = await sql`
         select e.contribution_id as refactor_edge, e.src as refactor_id, e.dst as target_id,
-               rc.title as refactor_title, ec.identity_id as by
+               rc.title as refactor_title, ec.identity_id as by, e.created_at as proposed_at
         from edge e
         join contribution ec on ec.id = e.contribution_id
         join contribution rc on rc.id = e.src

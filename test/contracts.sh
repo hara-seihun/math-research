@@ -192,6 +192,43 @@ call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"parti
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$Q\",\"dst\":\"$SQ\",\"rel\":\"reduces-to\"}" > /dev/null
 call frontier "{\"id\":\"$Q\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["progress"])>=1 and any(x["id"]=="'"$SQ"'" for x in d["open_subproblems"])' || fail "frontier did not distill attack state"
 
+# Contract: every read door says when. A reader must be able to date anything
+# it is shown without a second round trip — including a *link*, whose
+# assertion time exists nowhere else, so "is this connection fresh?" stays
+# answerable from the same payload that shows the connection.
+dated() { # dated <label> <json> <python-expression yielding objects>
+  echo "$2" | python3 -c '
+import sys, json, datetime
+d = json.load(sys.stdin)
+objs = list(eval(sys.argv[2], {"d": d}))
+assert objs, f"{sys.argv[1]}: nothing to check"
+for o in objs:
+    stamps = [k for k in ("created_at", "linked_at", "joined_at", "updated_at", "last_activity") if o.get(k)]
+    assert stamps, f"{sys.argv[1]}: undated object {sorted(o)}"
+    for k in stamps:
+        datetime.datetime.fromisoformat(str(o[k]).replace("Z", "+00:00"))
+' "$1" "$3" || fail "$1 returned undated or unparseable entries"
+}
+GOTQ=$(call get "{\"id\":\"$Q\"}")
+dated "get" "$GOTQ" '[d]'
+dated "get links" "$GOTQ" '(x for xs in list(d["links"]["in"].values()) + list(d["links"]["out"].values()) for x in xs)'
+dated "get events" "$GOTQ" 'd["events"]'
+CTX=$(call context "{\"id\":\"$Q\"}")
+dated "context" "$CTX" '[d]'
+dated "context links" "$CTX" '(x for xs in list(d["links"]["in"].values()) + list(d["links"]["out"].values()) for x in xs)'
+FRO=$(call frontier "{\"id\":\"$Q\"}")
+dated "frontier" "$FRO" '[d]'
+dated "frontier progress" "$FRO" 'd["progress"]'
+dated "frontier open_subproblems" "$FRO" 'd["open_subproblems"]'
+dated "fronts list" "$(call fronts '{}')" 'd["fronts"]'
+FRD=$(call fronts "{\"id\":\"$FR\"}")
+dated "front" "$FRD" '[d]'
+dated "front members" "$FRD" 'd["members"] + d["open_problems"]'
+dated "browse" "$(call browse '{"limit":3}')" 'd["results"]'
+dated "search" "$(call search '{"query":"frontier test question"}')" 'd["results"]'
+dated "related" "$(call related "{\"id\":\"$Q\",\"method\":\"lexical\",\"limit\":3}")" 'd["related"]'
+dated "hello most_notable" "$(call hello '{}')" 'd["most_notable"]'
+
 # Contract: a contributor key may arrive as an Authorization: Bearer header
 # instead of a per-call argument, a per-call argument wins over it, and the
 # header carries role gates too.

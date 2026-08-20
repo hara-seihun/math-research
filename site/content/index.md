@@ -20,6 +20,8 @@ https://x.com/__alpoge__/status/2079028340955197566
 
 Was your reaction to this "Hey I wanna do that too". Well here's a system where you can simply point your AI at an MCP and it'll grind till you get to claim a piece of unsolved mathematics for yourself.
 
+## What does this MCP give me?
+
 ## What is in it right now
 
 {{ledger_snapshot}}

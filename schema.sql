@@ -18,6 +18,7 @@
 
 create extension if not exists unaccent;
 create extension if not exists pg_trgm;
+create extension if not exists vector;
 
 -- Contributor identities. An identity is the SHA-256 of a contributor key
 -- that only the contributor holds; the server never stores the key itself,
@@ -109,6 +110,7 @@ create table contribution (
   notability        real not null default 0,
   tags              text[] not null default '{}',  -- derived subject facet (see topics.ts)
   names             text[] not null default '{}',  -- canonical names/aliases for resolve
+  embedding         vector(384),                    -- semantic vector (bge-small); see server/embedder/
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   search            tsvector generated always as
@@ -120,6 +122,7 @@ create index contribution_kind_idx on contribution (kind, status, tier);
 create index contribution_notability_idx on contribution (status, notability desc);
 create index contribution_tags_idx on contribution using gin (tags);
 create index contribution_names_idx on contribution using gin (names);
+create index contribution_embedding_idx on contribution using hnsw (embedding vector_cosine_ops);
 create index contribution_identity_idx on contribution (identity_id, created_at);
 create index contribution_artifact_idx on contribution (artifact_hash);
 

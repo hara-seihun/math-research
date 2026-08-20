@@ -382,11 +382,11 @@ function buildServer(): McpServer {
     {
       title: "Find related work",
       description:
-        "On-demand relatedness — nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions by alpha-normalized NCD (compression distance: how much structural information they share) or by lexical similarity. Great for spotting duplicates, prior art, and links worth making. It only shows you candidates; you decide what to link.",
+        "On-demand relatedness — nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions three ways: 'semantic' (meaning, via on-box embeddings — finds conceptually related work even with different wording), 'ncd' (alpha-normalized compression distance — shared structure), or 'lexical'. Great for spotting duplicates, prior art, and links worth making. It only shows you candidates; you decide what to link.",
       inputSchema: z.object({
         id: z.string().uuid().optional().describe("Find things related to this contribution."),
         text: z.string().optional().describe("…or to this free text (a statement, an idea)."),
-        method: z.enum(["ncd", "lexical"]).default("ncd"),
+        method: z.enum(["semantic", "ncd", "lexical"]).default("semantic"),
         limit: z.number().int().min(1).max(50).default(10),
       }),
     },

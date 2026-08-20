@@ -61,6 +61,29 @@ export async function searchContributions(args: SearchArgs) {
   });
 }
 
+// ——— Semantic embeddings ———————————————————————————————————————————————
+// Query-time embedding via the local embedding server (contributions are
+// embedded by the background worker). Returns null if the embedder is down or
+// warming up, so callers degrade to NCD/lexical rather than failing.
+const EMBEDDER_URL = process.env.EMBEDDER_URL ?? "http://127.0.0.1:8090";
+
+export async function embed(text: string): Promise<number[] | null> {
+  try {
+    const res = await fetch(`${EMBEDDER_URL}/v1/embeddings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: text.slice(0, 4000) }),
+    });
+    if (!res.ok) return null;
+    const j = (await res.json()) as { data?: { embedding: number[] }[] };
+    return j.data?.[0]?.embedding ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const asVector = (a: number[]): string => `[${a.join(",")}]`;
+
 // ——— Notability ————————————————————————————————————————————————————————
 export async function refreshNotability(ids?: string[]): Promise<void> {
   if (ids && ids.length === 0) return;
@@ -148,7 +171,7 @@ function normalizeForNcd(s: string): string {
   return normalizeText(s).replace(/\s+/g, " ").trim().slice(0, 4000);
 }
 
-export type RelatedArgs = { id?: string; text?: string; method: "ncd" | "lexical"; limit: number };
+export type RelatedArgs = { id?: string; text?: string; method: "ncd" | "lexical" | "semantic"; limit: number };
 
 export async function related(args: RelatedArgs) {
   let queryText: string;
@@ -164,6 +187,19 @@ export async function related(args: RelatedArgs) {
     queryText = args.text;
   } else {
     return { error: "pass an id or some text to find things related to." };
+  }
+
+  if (args.method === "semantic") {
+    const v = await embed(queryText);
+    if (!v) return { error: "semantic search is warming up — use method 'ncd' or 'lexical' for now." };
+    const rows = await sql`
+      select co.id, co.kind, co.title, co.tier, co.notability,
+             round((1 - (c.embedding <=> ${asVector(v)}::vector))::numeric, 4) as similarity
+      from contribution c join contribution_overview co on co.id = c.id
+      where c.kind <> 'edge' and co.status = 'active' and c.embedding is not null
+        and (${selfId}::uuid is null or c.id <> ${selfId})
+      order by c.embedding <=> ${asVector(v)}::vector limit ${args.limit}`;
+    return { method: "semantic", related: rows };
   }
 
   const tsq = tsTerms(queryText);

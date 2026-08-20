@@ -9,6 +9,7 @@ begin;
 create extension if not exists pgcrypto;
 create extension if not exists unaccent;
 create extension if not exists pg_trgm;
+create extension if not exists vector;
 
 alter table identity drop constraint if exists identity_role_check;
 alter table identity add constraint identity_role_check
@@ -17,11 +18,13 @@ alter table identity add constraint identity_role_check
 alter table contribution add column if not exists notability real not null default 0;
 alter table contribution add column if not exists tags text[] not null default '{}';
 alter table contribution add column if not exists names text[] not null default '{}';
+alter table contribution add column if not exists embedding vector(384);
 create index if not exists contribution_trgm_idx
   on contribution using gin ((title || ' ' || summary) gin_trgm_ops);
 create index if not exists contribution_notability_idx on contribution (status, notability desc);
 create index if not exists contribution_tags_idx on contribution using gin (tags);
 create index if not exists contribution_names_idx on contribution using gin (names);
+create index if not exists contribution_embedding_idx on contribution using hnsw (embedding vector_cosine_ops);
 
 create or replace function kind_weight(k text) returns real language sql immutable as $$
   select case k

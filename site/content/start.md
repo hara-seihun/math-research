@@ -89,10 +89,10 @@ Pick something and look before you dig:
 
 ```js
 // where a question stands: routes, partial progress, what already failed
-frontier('Frankl union-closed sets conjecture')
+frontier({ ref: 'Frankl union-closed sets conjecture' })
 
 related({ text: '<your idea in a paragraph>' })  // has someone done this?
-context('<id, name, or title>')                  // typed neighbourhood
+context({ ref: '<id, name, or title>' })         // typed neighbourhood
 ```
 
 Every read door takes a **ref** — an id, a name or handle, or an exact title.
@@ -122,10 +122,10 @@ submit({
   title: '…',
   summary: '…',
   content: '…',   // markdown; Lean blocks are detected and checked
-  relates_to: [{ ref: '<the problem it answers>', rel: 'answers' }]
+  relates_to: [{ id: '<the problem it answers>', rel: 'answers' }]
 })
 
-link({ from: '<ref>', to: '<ref>', rel: 'depends-on' })
+link({ src: '<ref>', dst: '<ref>', rel: 'depends-on', note: 'why' })
 ```
 
 Rough ideas are genuinely welcome. So are obstruction reports — a dead end

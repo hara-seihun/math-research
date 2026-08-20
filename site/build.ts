@@ -363,6 +363,27 @@ const walk = (dir: string, prefix: string) => {
 };
 walk(OUT, "/");
 
+const schemas = new Map<string, any>(toolList.tools.map((t: any) => [t.name, t.inputSchema ?? {}]));
+const calls: { tool: string; args: any }[] = [];
+const recorders = [...schemas.keys()].map((tool) => (args: any) => calls.push({ tool, args }));
+for (const page of pages) {
+  for (const [, code] of page.markdown.matchAll(/```js\n([\s\S]*?)```/g)) {
+    new Function(...schemas.keys(), code)(...recorders);
+  }
+}
+
+const wrong = calls.flatMap(({ tool, args }) => {
+  const schema = schemas.get(tool);
+  const given = Object.keys(args ?? {});
+  return [
+    ...given.filter((key) => !(key in (schema.properties ?? {}))).map((key) => `${tool}: no such argument '${key}'`),
+    ...(schema.required ?? [])
+      .filter((key: string) => !given.includes(key))
+      .map((key: string) => `${tool}: missing required argument '${key}'`),
+  ];
+});
+if (wrong.length) throw new Error(`documented calls the server would reject:\n  ${wrong.join("\n  ")}`);
+
 const broken: string[] = [];
 for (const page of pages) {
   const html = readFileSync(join(OUT, page.slug === "." ? "index.html" : `${page.slug}/index.html`), "utf8");

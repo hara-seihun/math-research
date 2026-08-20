@@ -438,6 +438,98 @@ export const EventsOut = z.strictObject({
   next: z.strictObject({ after_seq: z.number().int() }).nullable(),
 });
 
+const AlreadyTried = z.strictObject({
+  trail_id: z.string(),
+  title: z.string(),
+  outcome: z.string().nullable(),
+  ended_at: iso,
+  last_note: z.string().nullable(),
+});
+
+const counts = z.record(z.string(), z.number().int());
+
+export const NewsOut = z.strictObject({
+  window: z.strictObject({
+    from_seq: z.number().int().describe("The cursor this window starts after."),
+    to_seq: z.number().int().describe("The last event in it. Pass this back as after_seq next time."),
+    events: z.number().int(),
+    from_at: iso.nullable(),
+    to_at: iso.nullable(),
+  }),
+  totals: z.strictObject({
+    entries: z.number().int(),
+    links: z.number().int(),
+    programmes: z.number().int(),
+    open_questions: z.number().int(),
+    lean_verified: z.number().int(),
+    active_trails: z.number().int(),
+  }).describe("Where the corpus stands now. Compare against your last packet to see movement."),
+  movement: z.strictObject({
+    new_entries: counts.describe("New entries in this window, by kind."),
+    new_links: counts.describe("Links asserted in this window, by relation."),
+    event_kinds: counts,
+    by_identity: z.array(
+      z.strictObject({ identity_id: z.string(), name: z.string().nullable(), events: z.number().int() }),
+    ),
+  }),
+  settled: z
+    .array(
+      z.strictObject({
+        question: ListRow,
+        by: z.array(
+          z.strictObject({
+            rel: z.string(),
+            edge_tier: z.number().int().describe("The settling link's own review tier. A fresh one is 0."),
+            linked_at: iso,
+            entry: ListRow,
+          }),
+        ),
+      }),
+    )
+    .describe("Questions this window settled, with what settles each and at which tier."),
+  promoted: z.array(
+    z.strictObject({ entry: ListRow, tier: z.number().int(), note: z.string().nullable(), at: iso }),
+  ).describe("Entries a trusted reviewer moved to canon or above, with the reviewer's verdict."),
+  promotions: z.strictObject({
+    total: z.number().int(),
+    links: z.number().int().describe("How many of them were links rather than mathematics."),
+  }),
+  kernel_checks: z.strictObject({
+    passed: z.number().int(),
+    failed: z.number().int(),
+    proved: z.array(
+      z.strictObject({ entry: ListRow, decls: z.array(z.string()), at: iso }),
+    ).describe("What the Lean kernel actually proved. Machine evidence, independent of the review ladder."),
+  }),
+  terminal: z.strictObject({
+    total: z.number().int(),
+    decisions: z.array(
+      z.strictObject({
+        decision: z.string().describe("retracted | superseded | refactor-applied | refactor-rejected | flagged"),
+        entry: ListRow,
+        note: z.string().nullable(),
+        at: iso,
+      }),
+    ),
+  }).describe("Terminal decisions: rejections and supersessions, never advances."),
+  questions: z.array(
+    ListRow.extend({
+      in_programmes: z.array(z.strictObject({ id: z.string(), title: z.string() })),
+      activity_this_window: counts.describe("Links asserted toward it in this window, by relation."),
+      progress_toward_it: z.array(ListRow),
+      open_subproblems: z.array(ListRow),
+      where_routes_stall: z.array(
+        z.strictObject({ route: z.string(), state: z.string().nullable(), stalls_at: z.string() }),
+      ),
+      exploring_now: z.array(ExploringNow),
+      already_tried: z.array(AlreadyTried),
+    }),
+  ).describe("The open work worth forecasting: everything touched here, topped up by notability."),
+  questions_open_elsewhere: z.number().int().describe("Open questions below the cut; raise `questions` to see more."),
+  next: z.strictObject({ after_seq: z.number().int() }),
+  how_to_read: z.string(),
+});
+
 export const StatsOut = z.strictObject({
   totals: z.strictObject({
     entries: z.number().int(),

@@ -26,10 +26,11 @@ import { searchContributions, related, neighbourhood, createEdge, refreshNotabil
 import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
 import {
   ApplyRefactorOut, BrowseOut, CheckLeanOut, ContextOut, EventsOut, fail, FrontierOut, FrontsOut,
-  GetOut, GetTuningOut, GrantTrustOut, GuidesOut, HelloOut, LinkOut, MySubmissionsOut,
+  GetOut, GetTuningOut, GrantTrustOut, GuidesOut, HelloOut, LinkOut, MySubmissionsOut, NewsOut,
   RegisterPublicKeyOut, RelatedOut, ResolveOut, RetractOut, ReviewQueueOut, SearchOut, SetTierOut,
   SetTuningOut, StatsOut, structured, SubmitOut, TopicsOut, TrailOut, TrailsOut,
 } from "./shapes.ts";
+import { headSeq, newsPacket, seqBefore } from "./news.ts";
 
 const GUIDES_DIR = process.env.GUIDES_DIR ?? join(import.meta.dir, "../../guides");
 const PORT = Number(process.env.PORT ?? 8787);
@@ -101,6 +102,18 @@ const pageParams = (maxLimit: number, defaultLimit: number) => ({
 const refParam = z
   .string()
   .describe("An entry: its id, a name or handle it is known by, or its exact title. Names come back from search, browse, and context.");
+
+/** `news({since})` takes either an ISO timestamp or a plain interval, because
+ *  "the last two days" is how people actually ask. */
+function parseSince(value: string): Date | null {
+  const interval = /^(\d+)\s*(m|h|d|w)$/i.exec(value.trim());
+  if (interval) {
+    const scale = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+    return new Date(Date.now() - Number(interval[1]) * scale[interval[2]!.toLowerCase() as "m" | "h" | "d" | "w"]);
+  }
+  const at = new Date(value);
+  return Number.isNaN(at.getTime()) ? null : at;
+}
 
 /** Resolve a ref or hand back the error payload the caller should see. */
 async function refOr(
@@ -1171,6 +1184,45 @@ function buildServer(): McpServer {
           and (${identity_id ?? null}::text is null or identity_id = ${identity_id ?? null})
         order by seq limit ${limit}`;
       return structured({ events: rows, next: rows.length === limit ? { after_seq: Number(rows.at(-1)!.seq) } : null });
+    },
+  );
+
+  server.registerTool(
+    "news",
+    {
+      title: "What happened since you last looked",
+      outputSchema: NewsOut,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      description:
+        "What has happened here since you last looked, already assembled: the questions this window settled and what settles each, what trusted review promoted and the reviewer's verdict, what the Lean kernel proved, terminal decisions, how the corpus moved, the open questions worth forecasting with where each one stalls and who is exploring it, and the trails running now. Pass back the `next.after_seq` you were given and you get exactly the events you have not seen — no interval to guess, no double-read, no gap. First time, or any time you'd rather ask by clock, pass `since` instead.",
+      inputSchema: z.object({
+        after_seq: z
+          .number().int().min(0).optional()
+          .describe("The cursor from your last packet (`next.after_seq`). Everything after it is yours."),
+        since: z
+          .string()
+          .optional()
+          .describe("Instead of a cursor: an ISO timestamp, or a plain interval like '6h', '2d', '1w'. Defaults to the last 24 hours."),
+        questions: z
+          .number().int().min(1).max(50).default(12)
+          .describe("How many open questions to lay out for forecasting, 1 to 50."),
+        limit: z
+          .number().int().min(1).max(50).default(10)
+          .describe("How many rows each headline list carries, 1 to 50."),
+      }),
+    },
+    async ({ after_seq, since, questions, limit }) => {
+      await logRequest("news", null, { after_seq, since, questions, limit });
+      const head = await headSeq();
+      let from: number;
+      if (after_seq !== undefined) {
+        from = Math.min(after_seq, head);
+      } else {
+        const at = parseSince(since ?? "24h");
+        if (!at) return fail({ error: `"${since}" is not a time. Use an ISO timestamp or an interval like '6h', '2d', '1w'.` });
+        from = await seqBefore(at);
+      }
+      return structured(await newsPacket(from, head, questions, limit));
     },
   );
 

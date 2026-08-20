@@ -345,6 +345,50 @@ call browse '{"kind":"problem","state":"open"}' | python3 -c 'import sys,json;as
 call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"note\":\"withdrawn\"}" | field '["ok"]' > /dev/null
 [[ $(call frontier "{\"ref\":\"$SQ\"}" | field '["state"]') == open ]] || fail "retracting the answer did not reopen the question"
 
+# Contract: news is a cursor, not a clock. A reader hands back the sequence
+# number it was given and gets exactly the events it has not seen -- no
+# interval to guess, no double-read, no gap -- and the packet carries the
+# custody vocabulary a summary must preserve.
+CUR=$(call news '{"since":"1h"}' | field '["next"]["after_seq"]')
+NQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"news test question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+NA=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"settles the news question\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$NQ\",\"rel\":\"answers\"}]}" | field '["id"]')
+# A settlement asserted and then withdrawn inside one window is not news that a
+# question closed, so this second pair must never reach `settled`.
+WQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"withdrawn-answer question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+WA=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"withdrawn answer\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$WQ\",\"rel\":\"answers\"}]}" | field '["id"]')
+call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$WA\",\"note\":\"withdrawn\"}" > /dev/null
+NEWS=$(call news "{\"after_seq\":$CUR,\"questions\":50}")
+echo "$NEWS" | NQ="$NQ" NA="$NA" WQ="$WQ" CUR="$CUR" python3 -c '
+import os, sys, json
+d = json.load(sys.stdin)
+nq, na, wq = os.environ["NQ"], os.environ["NA"], os.environ["WQ"]
+settled = {s["question"]["id"]: s for s in d["settled"]}
+assert nq in settled, "settled question missing from news"
+by = settled[nq]["by"]
+assert any(b["entry"]["id"] == na and b["rel"] == "answers" for b in by), "news did not name what settled it"
+assert all("edge_tier" in b for b in by), "news hid the settling link tier"
+assert wq not in settled, "a withdrawn answer was reported as a settlement"
+assert wq in {q["id"] for q in d["questions"]}, "reopened question missing from the forecast set"
+assert d["window"]["from_seq"] == int(os.environ["CUR"]), "news window did not start at the cursor"
+assert "T2 canon" in d["how_to_read"], "news dropped the custody vocabulary"
+' || fail "news did not report the window correctly: $(echo "$NEWS" | head -c 400)"
+
+# Contract: the cursor advances exactly once. Reading from the sequence number
+# the last packet handed back reports nothing that packet already carried.
+CUR2=$(echo "$NEWS" | field '["next"]["after_seq"]')
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$NQ\",\"tier\":2,\"note\":\"canon for the news contract\"}" > /dev/null
+NEWS2=$(call news "{\"after_seq\":$CUR2}")
+echo "$NEWS2" | NQ="$NQ" python3 -c '
+import os, sys, json
+d = json.load(sys.stdin)
+assert not d["settled"], "news replayed a settlement the previous packet carried"
+promoted = {p["entry"]["id"]: p for p in d["promoted"]}
+assert os.environ["NQ"] in promoted, "trusted promotion missing from news"
+assert promoted[os.environ["NQ"]]["tier"] == 2
+assert "news contract" in (promoted[os.environ["NQ"]]["note"] or ""), "news dropped the reviewer verdict"
+assert d["promotions"]["total"] >= len(d["promoted"])
+' || fail "news cursor did not advance cleanly: $(echo "$NEWS2" | head -c 400)"
+
 # Contract: every read door takes a name, not just a uuid. A reader who has
 # only seen an entry's name in a summary can ask about it directly.
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"named cell\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"cell-q4n-residual\"]}" > /dev/null
@@ -504,6 +548,7 @@ declare -A DOORS=(
   [guides]='{}'
   [stats]='{}'
   [events]='{}'
+  [news]='{}'
   [get_tuning]="{\"contributor_key\":\"$OPKEY\"}"
   [set_tuning]="{\"contributor_key\":\"$OPKEY\",\"notability_weights\":{},\"note\":\"no-op\"}"
   [review_queue]="{\"contributor_key\":\"$OPKEY\"}"

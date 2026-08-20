@@ -116,13 +116,19 @@ export const foreignAxioms = (decls: Decl[]): string[] => [
   ...new Set(decls.flatMap((d) => d.axioms.filter((a) => !ALLOWED_AXIOMS.has(a)))),
 ];
 
+/** The runner compiles in a scratch directory nobody else can act on. */
+const scrubPaths = (output: string | undefined) => output?.replace(/\S*\/Check[0-9a-f]+\.lean/g, "check.lean");
+
 /** What an agent gets back: the kernel's facts, in the order they matter. */
 export function report(row: CheckRow, extras: { cached: boolean; queued?: boolean }) {
   const detail = row.detail ?? {};
   const decls = detail.decls ?? [];
   const foreign = foreignAxioms(decls);
+  // The kernel accepts a proof that rests on sorryAx; calling that "passed"
+  // reads as done to anyone skimming, and it is precisely not done.
+  const incomplete = foreign.includes("sorryAx");
   const base = {
-    status: row.outcome === "pending" ? ("running" as const) : row.outcome,
+    status: row.outcome === "pending" ? ("running" as const) : incomplete ? ("incomplete" as const) : row.outcome,
     check_id: row.source_hash,
     cached: extras.cached,
     elapsed_seconds: detail.elapsed_ms != null ? Math.round(detail.elapsed_ms / 100) / 10 : undefined,
@@ -140,8 +146,9 @@ export function report(row: CheckRow, extras: { cached: boolean; queued?: boolea
       ...base,
       proved,
       foreign_axioms: foreign.length > 0 ? foreign : undefined,
-      note:
-        foreign.length > 0
+      note: incomplete
+        ? "it elaborates, but the declarations resting on sorryAx are holes, not proofs. Fill them and check again."
+        : foreign.length > 0
           ? "the kernel accepted it, but it rests on axioms outside {propext, Classical.choice, Quot.sound}, so submitting it would not earn lean_verified."
           : "kernel-checked against the pinned Lean/Mathlib. `proved` is exactly what was proven — read the statements, not the names.",
     };
@@ -150,7 +157,7 @@ export function report(row: CheckRow, extras: { cached: boolean; queued?: boolea
     ...base,
     reason: detail.reason,
     sorry: detail.sorry || undefined,
-    errors: detail.output,
+    errors: scrubPaths(detail.output),
     proved: proved.length > 0 ? proved : undefined,
   };
 }

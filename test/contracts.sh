@@ -168,6 +168,16 @@ runner_says "$SHASH" '{"ok":false,"exit_code":0,"output":"warning: declaration u
 wait $SORRY_JOB
 SORRY=$(cat "$WORK/sorry.out")
 [[ $(echo "$SORRY" | field '["sorry"]') == True ]] || fail "check_lean did not report the sorry: $SORRY"
+# A proof the kernel accepts because it rests on sorryAx is a hole, and must
+# not read as done to someone skimming the status.
+HOLE_SRC='theorem still_open : 1 = 1 := by sorry_placeholder'
+HHASH=$(printf 'import Mathlib\n\n%s\n' "$HOLE_SRC" | lean_hash)
+call check_lean "{\"contributor_key\":\"$KEY\",\"source\":\"$HOLE_SRC\"}" > "$WORK/hole.out" &
+HOLE_JOB=$!
+await_spool "$HHASH"
+runner_says "$HHASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"still_open","type":"1 = 1","axioms":["sorryAx"]}]}'
+wait $HOLE_JOB
+[[ $(field '["status"]' < "$WORK/hole.out") == incomplete ]] || fail "a sorryAx proof was reported as passed: $(cat "$WORK/hole.out")"
 SUB4=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"with sorry\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\nimport Mathlib\ntheorem s : 1 = 1 := by sorry\n\`\`\`\"}")
 VID4=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$(echo "$SUB4" | field '["id"]')'")
 [[ $(await_verification "$VID4") == failed ]] || fail "a submission containing sorry was not refused"

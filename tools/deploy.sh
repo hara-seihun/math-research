@@ -20,6 +20,6 @@ ssh mathvm '
     echo "${unit%:*} did not come back healthy" >&2
     exit 1
   done
-  sudo systemctl restart math-verifier lean-runner
+  sudo systemctl restart math-verifier lean-runner math-embedder-worker
 '
 curl -sf --max-time 10 https://math.seihun.com/health > /dev/null && echo "deployed and healthy"

@@ -1,4 +1,27 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { sql } from "./db.ts";
+
+/**
+ * The contributor key carried by the HTTP request itself
+ * (`Authorization: Bearer mrk_…`), for MCP clients that authenticate at the
+ * transport rather than passing `contributor_key` on every call. Generic MCP
+ * clients have no way to inject a per-call argument, so without this they
+ * would mint a throwaway identity on every request. A per-call
+ * `contributor_key` always wins.
+ */
+const requestKey = new AsyncLocalStorage<string | undefined>();
+
+export function withRequestKey<T>(key: string | undefined, run: () => T): T {
+  return requestKey.run(key, run);
+}
+
+/** Contributor key from an `Authorization: Bearer mrk_…` header, if present. */
+export function bearerKey(authorization: string | string[] | undefined): string | undefined {
+  const header = Array.isArray(authorization) ? authorization[0] : authorization;
+  return /^bearer\s+(mrk_[0-9a-f]{64})$/i.exec(header?.trim() ?? "")?.[1];
+}
+
+const effectiveKey = (contributorKey?: string) => contributorKey ?? requestKey.getStore();
 
 export function sha256hex(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -21,7 +44,8 @@ export type IdentityResolution = {
  * sight. No key at all is fine too: we mint one and hand it back, so the
  * very first tool call anyone makes just works.
  */
-export async function resolveIdentity(contributorKey?: string): Promise<IdentityResolution> {
+export async function resolveIdentity(argumentKey?: string): Promise<IdentityResolution> {
+  const contributorKey = effectiveKey(argumentKey);
   if (contributorKey) {
     const identityId = sha256hex(contributorKey);
     await sql`insert into identity (id) values (${identityId}) on conflict do nothing`;
@@ -35,7 +59,8 @@ export async function resolveIdentity(contributorKey?: string): Promise<Identity
 
 export type RoleCheck = { ok: true; identityId: string; role: string } | { ok: false; refusal: string };
 
-async function roleOf(contributorKey: string | undefined): Promise<{ identityId: string; role: string } | null> {
+async function roleOf(argumentKey: string | undefined): Promise<{ identityId: string; role: string } | null> {
+  const contributorKey = effectiveKey(argumentKey);
   if (!contributorKey) return null;
   const identityId = sha256hex(contributorKey);
   const [row] = await sql<{ role: string }[]>`select role from identity where id = ${identityId}`;

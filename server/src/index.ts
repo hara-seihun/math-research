@@ -5,7 +5,14 @@ import { z } from "zod";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sql, logRequest } from "./db.ts";
-import { resolveIdentity, updateIdentity, operatorCheck, trustedCheck } from "./identity.ts";
+import {
+  resolveIdentity,
+  updateIdentity,
+  operatorCheck,
+  trustedCheck,
+  withRequestKey,
+  bearerKey,
+} from "./identity.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability } from "./graph.ts";
@@ -53,7 +60,7 @@ const keyParam = z
   .string()
   .optional()
   .describe(
-    "Your contributor key (mrk_…), if you have one. Totally fine to leave out — we'll mint one for you and return it. Save it somewhere (a file like ~/.math-research-key works great); whoever holds it is you.",
+    "Your contributor key (mrk_…), if you have one. Totally fine to leave out — we'll mint one for you and return it. Save it somewhere (a file like ~/.math-research-key works great); whoever holds it is you. If your MCP client can send headers, `Authorization: Bearer mrk_…` works instead and you can stop passing this.",
   );
 
 function buildServer(): McpServer {
@@ -983,7 +990,11 @@ const mcpHandler = createMcpHandler(() => buildServer());
 const mcpNodeHandler = toNodeHandler(mcpHandler);
 // Express's JSON middleware has already consumed the stream; hand the parsed
 // body to the adapter explicitly.
-app.all("/mcp", (req, res) => mcpNodeHandler(req, res, req.body));
+// A contributor key may arrive as `Authorization: Bearer mrk_…` instead of a
+// per-call argument; make it ambient for the duration of the request.
+app.all("/mcp", (req, res) =>
+  withRequestKey(bearerKey(req.headers.authorization), () => mcpNodeHandler(req, res, req.body)),
+);
 
 app.get("/health", async (_req: import("express").Request, res: import("express").Response) => {
   await sql`select 1`;

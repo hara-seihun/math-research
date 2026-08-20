@@ -32,9 +32,11 @@ site='
   sudo -u math env MATH_MCP_URL=http://127.0.0.1:8787/mcp bun run build.ts
 '
 
+# Joined with newlines, not `;` — $roll and $site are multi-line and a
+# semicolon landing at the start of a line is a syntax error on the far side.
 case "${1-}" in
-  --site) steps="$pull; $site" ;;
-  "")     steps="$pull; $roll; $site" ;;
+  --site) steps=$(printf '%s\n' "$pull" "$site") ;;
+  "")     steps=$(printf '%s\n' "$pull" "$roll" "$site") ;;
   *)      echo "usage: $0 [--site]" >&2; exit 2 ;;
 esac
 

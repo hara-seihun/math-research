@@ -2,11 +2,11 @@ import type { TransactionSql } from "postgres";
 import { sql } from "./db.ts";
 import { sha256hex } from "./identity.ts";
 
-/** The handle a sql.begin callback receives — spelled out, because
+/** The handle a sql.begin callback receives. Spelled out, because
  *  sql.begin is overloaded and inferring it lands on `never`. */
 export type Tx = TransactionSql;
 
-// ——— Text normalization ————————————————————————————————————————————————
+// --- Text normalization ------
 // Fold every unicode dash/minus to ascii '-' and NFKD-lower, so a query typed
 // with a hyphen matches a corpus written with an en-dash ("de Bruijn–Newman").
 export function normalizeText(s: string): string {
@@ -30,7 +30,7 @@ function queryParts(q: string): { all: string; any: string } {
   };
 }
 
-// ——— Degrading search ——————————————————————————————————————————————————
+// --- Degrading search ------
 // Two demands pull against each other: a multi-word query must not be swamped
 // by entries that merely share its commonest word, and a query that matches
 // nothing exactly must still return the nearest thing rather than silence. So
@@ -93,7 +93,7 @@ export async function searchContributions(args: SearchArgs) {
   });
 }
 
-// ——— Semantic embeddings ———————————————————————————————————————————————
+// --- Semantic embeddings ------
 // Query-time embedding via the local embedding server (contributions are
 // embedded by the background worker). Returns null if the embedder is down or
 // warming up, so callers degrade to NCD/lexical rather than failing.
@@ -116,7 +116,7 @@ export async function embed(text: string): Promise<number[] | null> {
 
 const asVector = (a: number[]): string => `[${a.join(",")}]`;
 
-// ——— Notability ————————————————————————————————————————————————————————
+// --- Notability ------
 export async function refreshNotability(ids?: string[]): Promise<void> {
   if (ids && ids.length === 0) return;
   await sql`select refresh_notability(${ids ?? null}::uuid[])`;
@@ -136,7 +136,7 @@ export async function refreshAround(ids: string[]): Promise<void> {
   await sql`select refresh_around(${ids}::uuid[])`;
 }
 
-// ——— Edges are contributions ———————————————————————————————————————————
+// --- Edges are contributions ------
 // Creating a link inserts a kind='edge' contribution (its own author, tier 0,
 // metadata) plus the structural sidecar row. Same identity asserting the same
 // (src,dst,rel) twice is idempotent; different identities asserting it are
@@ -170,11 +170,11 @@ export async function createEdge(
   return { id: c!.id };
 }
 
-// ——— Typed neighbourhood ———————————————————————————————————————————————
+// --- Typed neighbourhood ------
 // The context door: what a contribution connects to, grouped by relation and
 // direction, each link carrying the edge's own tier so a reader can tell a
 // trusted-reviewed connection from a freshly asserted one. No lexical
-// substitution — an empty neighbourhood is an honest gap, not filler.
+// substitution. An empty neighbourhood is an honest gap, not filler.
 //
 // Each link also carries `linked_at`, the moment the connection was asserted.
 // That is the edge's own fact and exists nowhere else in the read surface: a
@@ -207,11 +207,11 @@ export async function neighbourhood(id: string) {
   return { out: group(out), in: group(incoming) };
 }
 
-// ——— Similarity oracle (NCD) ———————————————————————————————————————————
+// --- Similarity oracle (NCD) ------
 // On-demand relatedness, never a stored backlog. A cheap lexical prefilter
 // nominates candidates; alpha-normalized NCD (compression distance) ranks how
 // much structural information each shares with the query. Agents call this,
-// look, and decide what to link — the tool proposes nothing on its own.
+// look, and decide what to link. The tool proposes nothing on its own.
 function compress(s: string): number {
   return Bun.gzipSync(Buffer.from(s)).length;
 }
@@ -243,7 +243,7 @@ export async function related(args: RelatedArgs) {
 
   if (args.method === "semantic") {
     const v = await embed(queryText);
-    if (!v) return { error: "semantic search is warming up — use method 'ncd' or 'lexical' for now." };
+    if (!v) return { error: "semantic search is warming up, so use method 'ncd' or 'lexical' for now." };
     const rows = await sql`
       select co.id, co.kind, co.title, co.summary, co.tier, co.state, co.notability, co.lean_verified, co.created_at,
              round((1 - (c.embedding <=> ${asVector(v)}::vector))::numeric, 4) as similarity

@@ -135,14 +135,14 @@ async function roleOf(argumentKey: string | undefined): Promise<{ identityId: st
  */
 export async function trustedCheck(contributorKey: string | undefined): Promise<RoleCheck> {
   const refusal =
-    "promoting review tiers is trusted-only — it changes canon for everyone, and trust is intentionally narrow right now. Everything else here is all yours, and reviews of entries are very welcome as ordinary submissions (kind: review); a trusted reviewer can then promote them.";
+    "promoting review tiers is trusted-only, because it changes canon for everyone, and trust is intentionally narrow right now. Everything else here is all yours, and reviews of entries are very welcome as ordinary submissions (kind: review); a trusted reviewer can then promote them.";
   const who = await roleOf(contributorKey);
   return who && (who.role === "trusted" || who.role === "operator") ? { ok: true, ...who } : { ok: false, refusal };
 }
 
 /** Operator identities additionally administer trust and the server itself. */
 export async function operatorCheck(contributorKey: string | undefined): Promise<RoleCheck> {
-  const refusal = "this one's for the operator — it administers who is trusted.";
+  const refusal = "this one's for the operator. It administers who is trusted.";
   const who = await roleOf(contributorKey);
   return who && who.role === "operator" ? { ok: true, ...who } : { ok: false, refusal };
 }

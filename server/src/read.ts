@@ -1,7 +1,7 @@
 import { sql } from "./db.ts";
 import { normalizeText } from "./graph.ts";
 
-// ——— References ————————————————————————————————————————————————————————
+// --- References ------
 // Every read door takes the same `ref`: an id, a canonical name, an imported
 // handle, or a title. Requiring a uuid means a caller who just read "Cell A3
 // residual" in a summary cannot ask about it without a second lookup, which is
@@ -23,7 +23,7 @@ export async function deref(
   if (UUID.test(raw)) {
     const [row] = await sql<{ id: string; title: string; kind: string }[]>`
       select id, title, kind from contribution where id = ${raw}`;
-    return row ? { ...row, matched: "id" } : { error: `no entry with id ${raw} — try resolve or search.` };
+    return row ? { ...row, matched: "id" } : { error: `no entry with id ${raw}. Try resolve or search.` };
   }
   const norm = normalizeText(raw);
   const exact = await sql<{ id: string; title: string; kind: string; how: string }[]>`
@@ -42,7 +42,7 @@ export async function deref(
     exact.length === 1 ? exact[0] : titled.length === 1 ? titled[0] : preferred.length === 1 ? preferred[0] : undefined;
   if (winner) return { id: winner.id, title: winner.title, kind: winner.kind, matched: winner.how as "name" | "title" };
   if (exact.length > 1) {
-    return { error: `"${raw}" names ${exact.length} entries — pass one of these, by id or exact title.`, candidates: exact };
+    return { error: `"${raw}" names ${exact.length} entries. Pass one of these, by id or exact title.`, candidates: exact };
   }
   const fuzzy = await sql.begin(async (tx) => {
     await tx`select set_config('pg_trgm.word_similarity_threshold', '0.35', true)`;
@@ -56,7 +56,7 @@ export async function deref(
         and (${kind ?? null}::text is null or kind = ${kind ?? null})
       order by score desc, notability desc limit 5`;
   });
-  if (!fuzzy.length) return { error: `nothing here is called "${raw}" — try search, or browse a topic.` };
+  if (!fuzzy.length) return { error: `nothing here is called "${raw}". Try search, or browse a topic.` };
   // A tie the door itself can break: "cell N4 residual" asked of frontier is
   // the question, not the write-up attacking it.
   const top = fuzzy[0]!;
@@ -64,12 +64,12 @@ export async function deref(
   const preferredTied = prefer ? tied.filter((r) => prefer.includes(r.kind)) : [];
   const best = tied.length === 1 ? top : preferredTied.length === 1 ? preferredTied[0]! : undefined;
   if (!best) {
-    return { error: `"${raw}" is ambiguous — pass one of these, by id or exact title.`, candidates: fuzzy };
+    return { error: `"${raw}" is ambiguous. Pass one of these, by id or exact title.`, candidates: fuzzy };
   }
   return { id: best.id, title: best.title, kind: best.kind, matched: "fuzzy" };
 }
 
-// ——— Response shaping ——————————————————————————————————————————————————
+// --- Response shaping ------
 // List doors return many rows, and an imported statement's summary is up to
 // 2000 characters. Twenty of those is a 40 KB wall that buries the structure a
 // reader is scanning for, so list rows carry a headline-length summary and the
@@ -87,8 +87,8 @@ export const trim = (text: string | null, limit = LIST_SUMMARY): string | null =
 export const sameText = (a: string | null, b: string | null): boolean =>
   !!a && !!b && a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
 
-/** A title cut from the opening of its own summary — which is most of an
- *  imported corpus — makes the summary a verbatim echo. Show what the title
+/** A title cut from the opening of its own summary, which is most of an
+ *  imported corpus, makes the summary a verbatim echo. Show what the title
  *  does not already say, and nothing when that is nothing. */
 export function beyondTitle(title: string, summary: string | null, limit = LIST_SUMMARY): string | null {
   if (!summary) return null;

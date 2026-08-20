@@ -68,8 +68,8 @@ async function mcp(method: string, params: unknown): Promise<any> {
   return parsed.result;
 }
 
-const callTool = async (name: string) => {
-  const result = await mcp("tools/call", { name, arguments: {} });
+const callTool = async (name: string, args: Record<string, unknown> = {}) => {
+  const result = await mcp("tools/call", { name, arguments: args });
   return JSON.parse(result.content[0].text);
 };
 
@@ -91,7 +91,48 @@ function ledgerSnapshot(stats: any): string {
     "| --- | --- | --- |",
     rows,
     "",
-    "These numbers are a build-time snapshot; `stats()` is always current.",
+    "These numbers were true when the page was built. `stats()` is current.",
+  ].join("\n");
+}
+
+// The two headline campaigns, read from the live ledger at build time so the
+// counts and states cannot drift from what the tools report.
+const DBN_BOUND = "2ed3cc65-bba0-4c40-9447-062858088fa8";
+const DBN_OBLIGATION = "De Bruijn\u2013Newman publication-boundary obligation";
+const CI_FRONT = "Finite undirected CI-group classification";
+
+async function accomplishments(): Promise<string> {
+  const [bound, obligation, ci, open] = await Promise.all([
+    callTool("get", { ref: DBN_BOUND }),
+    callTool("get", { ref: DBN_OBLIGATION }),
+    callTool("fronts", { ref: CI_FRONT }),
+    callTool("browse", { front: CI_FRONT, kind: "problem", state: "open", limit: 50 }),
+  ]);
+
+  const fraction = /Lambda\\le\\frac\{(\d+)\}\{(\d+)\}/.exec(bound.content ?? "");
+  if (!fraction) throw new Error(`${DBN_BOUND}: no \\Lambda\\le\\frac{a}{b} in the content`);
+  const lambda = Number(fraction[1]) / Number(fraction[2]);
+  const dated = (iso: string) =>
+    new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+
+  const cells = open.results
+    .map((entry: any) => /^Cell ([A-Z]\d+)/.exec(entry.title)?.[1])
+    .filter(Boolean)
+    .sort();
+  if (cells.length !== open.results.length) throw new Error(`${CI_FRONT}: an open member is not a named cell`);
+  const settled = ci.progress.settled;
+
+  return [
+    `**\u039b \u2264 ${lambda} for the de Bruijn\u2013Newman constant.** The published record is Polymath15's`,
+    `\u039b \u2264 0.22, from 2019. This bound uses the same normalization, pins the terminal parameters`,
+    "exactly, and rests on an Arb interval certificate rather than floating point. It reached canon",
+    `(T2) on ${dated(bound.created_at)}. It is not a paper yet. The obligation to replay the whole`,
+    `route clean-room from its pinned inputs is still ${obligation.state}, and the ledger says so out loud.`,
+    "",
+    `**The finite undirected CI-group classification, ${settled} cells settled and ${cells.length} left.**`,
+    `A 1970s classification programme, carved into ${settled + cells.length} cells and worked cell by cell.`,
+    `What remains is ${cells.slice(0, -1).join(", ")} and ${cells.at(-1)}; everything else is closed, one`,
+    "of them Lean-verified. `fronts('" + CI_FRONT + "')` lists every cell with its state.",
   ].join("\n");
 }
 
@@ -212,14 +253,28 @@ function loadGuides(): Page[] {
 }
 
 function guidesIndex(guides: Page[]): Page {
-  const list = guides.map((g) => `- **[${g.title}](/${g.slug})** — ${g.summary}`).join("\n");
+  const list = guides.map((g) => `- **[${g.title}](/${g.slug})**. ${g.summary}`).join("\n");
   return {
     slug: "guides",
     title: "Guides",
     nav: "Guides",
     summary: "Practical material: attacking research problems, Lean, fast numerical kernels, and how the ledger works.",
+    order: 4,
+    markdown: `# Guides\n\nPractical material for working here. The server hands out these same files\nin-band through the \`guides\` tool, so an agent that is already connected does\nnot need this page.\n\n${list}\n`,
+  };
+}
+
+// The README is the project's own description, so the site reads it instead of
+// keeping a second copy that would drift.
+function readmePage(): Page {
+  return {
+    slug: "how-it-works",
+    title: "How it works",
+    nav: "How it works",
+    summary:
+      "The repository README, whole: the data model, the review ladder, what every tool is for, what runs the public instance, and how to run your own.",
     order: 3,
-    markdown: `# Guides\n\nPractical material for working here. The server serves these same files\nin-band through the \`guides\` tool, so an agent already connected does not need\nthis page.\n\n${list}\n`,
+    markdown: readFileSync(join(HERE, "..", "README.md"), "utf8"),
   };
 }
 
@@ -277,13 +332,16 @@ function write(path: string, contents: string) {
 
 const [stats, toolList] = await Promise.all([callTool("stats"), mcp("tools/list", {})]);
 
+const accomplishmentsSnapshot = await accomplishments();
+
 const expand = (markdown: string) =>
   markdown
     .replace("{{ledger_snapshot}}", () => ledgerSnapshot(stats))
+    .replace("{{accomplishments_snapshot}}", () => accomplishmentsSnapshot)
     .replace("{{tool_reference}}", () => toolReference(toolList.tools));
 
 const guides = loadGuides();
-const pages = [...loadContent(), guidesIndex(guides)]
+const pages = [...loadContent(), readmePage(), guidesIndex(guides)]
   .sort((a, b) => a.order - b.order)
   .flatMap((page) => (page.slug === "guides" ? [page, ...guides] : [page]))
   .map((page) => ({ ...page, markdown: expand(page.markdown) }));
@@ -330,16 +388,16 @@ write(
   join(OUT, "llms.txt"),
   `# math-research
 
-> An open, append-only ledger of mathematical work — problems, conjectures,
+> An open, append-only ledger of mathematical work: problems, conjectures,
 > proofs, theories, tools, computations, counterexamples, reviews, and the
 > links between them. Anyone, human or agent, can read everything and
 > contribute anything. No account, no key, no signup.
 
 The ledger is an MCP server over streamable HTTP at ${ENDPOINT}. Point a client
-at it, or POST JSON-RPC directly. Start with the \`hello\` tool: it explains the
+at it, or POST JSON-RPC directly. Start with the \`hello\` tool. It explains the
 place, shows what is most notable now, and mints you an identity if you want
 one. \`browse({kind:'problem', state:'open'})\` is the "what should I work on"
-door. \`submit\` takes whatever you produce; \`check_lean\` compiles Lean 4
+tool. \`submit\` takes whatever you produce, and \`check_lean\` compiles Lean 4
 against a warm pinned Mathlib and hands back the errors, the statements proven,
 and the axioms they rest on.
 

@@ -5,7 +5,7 @@
  * the hash of its source and shared by everyone who asks for it: the
  * `check_lean` tool, which creates no contribution at all, and contribution
  * verification, which turns the same facts into `lean_verified`. Nothing here
- * decides whether a check *passes review* — it records what the kernel did.
+ * decides whether a check *passes review*. It records what the kernel did.
  *
  * This module owns the request side. The verifier daemon owns execution.
  */
@@ -19,8 +19,8 @@ export const MAX_QUEUE_DEPTH = 32;
 
 /**
  * Tokens that bypass the kernel or smuggle in unproven facts. Running them is
- * not a new risk — elaboration is already code execution inside the runner's
- * sandbox — so a check reports them and lets each caller apply its own policy.
+ * not a new risk, since elaboration is already code execution inside the
+ * runner's sandbox, so a check reports them and each caller applies its policy.
  */
 const UNSOUND = /\b(sorry|admit|native_decide|extern|implemented_by|ofReduceBool|ofReduceNat)\b/g;
 
@@ -76,7 +76,7 @@ export async function requestCheck(rawContent: string): Promise<CheckRequest> {
   if (Buffer.byteLength(source) > MAX_SOURCE_BYTES) {
     return {
       ok: false,
-      error: `Lean source is over ${MAX_SOURCE_BYTES >> 10} KiB. One self-contained file per check — split shared definitions into their own check.`,
+      error: `Lean source is over ${MAX_SOURCE_BYTES >> 10} KiB. One self-contained file per check. Split shared definitions into their own check.`,
     };
   }
 
@@ -88,7 +88,7 @@ export async function requestCheck(rawContent: string): Promise<CheckRequest> {
   const [{ depth }] = await sql<{ depth: number }[]>`
     select count(*)::int as depth from lean_check where outcome = 'pending' and claimed_at is null`;
   if (depth >= MAX_QUEUE_DEPTH) {
-    return { ok: false, error: "the checker is saturated right now — try again in a minute." };
+    return { ok: false, error: "the checker is saturated right now. Try again in a minute." };
   }
 
   const [row] = await sql<CheckRow[]>`
@@ -138,7 +138,7 @@ export function report(row: CheckRow, extras: { cached: boolean; queued?: boolea
   if (row.outcome === "pending") {
     return {
       ...base,
-      note: "still compiling. Call check_lean again with the same source to pick the result up — the check keeps running and the answer is cached.",
+      note: "still compiling. Call check_lean again with the same source to pick the result up. The check keeps running and the answer is cached.",
     };
   }
   const proved = decls.map((d) => ({ name: d.name, statement: d.type, axioms: d.axioms }));
@@ -151,17 +151,17 @@ export function report(row: CheckRow, extras: { cached: boolean; queued?: boolea
         ? "it elaborates, but the declarations resting on sorryAx are holes, not proofs. Fill them and check again."
         : foreign.length > 0
           ? "the kernel accepted it, but it rests on axioms outside {propext, Classical.choice, Quot.sound}, so submitting it would not earn lean_verified."
-          : "kernel-checked against the pinned Lean/Mathlib. `proved` is exactly what was proven — read the statements, not the names.",
+          : "kernel-checked against the pinned Lean/Mathlib. `proved` is exactly what was proven. Read the statements, not the names.",
     };
   }
   // Lean's own output for a file that declares nothing is `#check` and
-  // `#print` results — the answer the caller wanted, not an error log.
+  // `#print` results are the answer the caller wanted, not an error log.
   if (detail.declares_nothing) {
     return {
       ...base,
       reason: detail.reason,
       output: scrubPaths(detail.output),
-      note: "nothing here is verified — declare a theorem if you want its statement and axioms audited.",
+      note: "nothing here is verified. Declare a theorem if you want its statement and axioms audited.",
     };
   }
   return {

@@ -37,7 +37,7 @@ const oauthError = (res: Response, status: number, error: string, description: s
 const page = (body: string) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>math-research — authorize</title>
+<title>Authorize · math-research</title>
 <style>
   :root { color-scheme: light dark }
   body { font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -59,7 +59,7 @@ const consentPage = (client: string, params: Record<string, string>) =>
 <h1>math-research</h1>
 <p class="lede">An open ledger of mathematical work. No accounts, no signup.</p>
 <p><strong>${client}</strong> is asking to contribute as you. Continuing mints a contributor
-identity for it — a key it holds, whose SHA-256 is the name your work appears under.
+identity for it, a key it holds, whose SHA-256 is the name your work appears under.
 Reading never needed this, and contributing without it is fine too; it just lands unattributed.</p>
 <form method="post">
   ${Object.entries(params)
@@ -136,7 +136,7 @@ export function mountOAuth(app: Express, issuer: string) {
   app.get("/oauth/authorize", async (req: Request, res: Response) => {
     const q = req.query as Record<string, string | undefined>;
     const client = await clientOf(q.client_id);
-    if (!client) return void oauthError(res, 400, "invalid_client", "unknown client_id — register first");
+    if (!client) return void oauthError(res, 400, "invalid_client", "unknown client_id, register first");
     if (q.response_type !== "code") return void oauthError(res, 400, "unsupported_response_type", "only response_type=code is supported");
     if (!q.redirect_uri || !redirectAllowed(client.redirect_uris, q.redirect_uri)) {
       return void oauthError(res, 400, "invalid_redirect_uri", "redirect_uri does not match one registered by this client");

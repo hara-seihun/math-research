@@ -131,7 +131,7 @@ runner_says "$HASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"
 [[ $(await_verification "$VID") == passed ]] || fail "a clean check did not pass"
 GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '["lean_verified"]') == True ]] || fail "pass did not set lean_verified"
-[[ $(echo "$GOT" | field '["tier"]') == 0 ]] || fail "verification changed the tier — it must not"
+[[ $(echo "$GOT" | field '["tier"]') == 0 ]] || fail "verification changed the tier, and it must not"
 
 # Contract: check_lean is a throwaway check. It runs the same kernel, reports
 # the exact statements proven, and creates no contribution.
@@ -149,7 +149,7 @@ CHECKED=$(cat "$WORK/check.out")
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from contribution") == "$BEFORE" ]] || fail "check_lean created a contribution"
 
 # Contract: a check is a pure function of its source, so the second caller
-# pays nothing — including when the second caller is a submission.
+# pays nothing, including when the second caller is a submission.
 CACHED=$(call check_lean "{\"contributor_key\":\"$KEY\",\"source\":\"$CHECK_SRC\"}")
 [[ $(echo "$CACHED" | field '["cached"]') == True ]] || fail "an identical check was not served from cache"
 SUB3=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"already checked\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\n$CHECK_SRC\n\`\`\`\"}")
@@ -159,7 +159,7 @@ VID3=$(psql -h "$WORK" -d math -tAc "select id from verification where contribut
 
 # Contract: source that declares nothing (an import and a #check, which is how
 # you read a library's statements) compiled cleanly. It verifies nothing, so it
-# is inconclusive — but Lean's answer comes back as output, not as errors.
+# is inconclusive, but Lean's answer comes back as output, not as errors.
 LOOK_SRC='#check @Nat.succ_le_succ'
 LHASH=$(printf 'import Mathlib\n\n%s\n' "$LOOK_SRC" | lean_hash)
 call check_lean "{\"contributor_key\":\"$KEY\",\"source\":\"$LOOK_SRC\"}" > "$WORK/look.out" &
@@ -172,7 +172,7 @@ LOOK=$(cat "$WORK/look.out")
 [[ $(echo "$LOOK" | field '["output"]') == *"succ_le_succ"* ]] || fail "a declaration-free check did not return Lean's output: $LOOK"
 [[ $(echo "$LOOK" | field '.get("errors")') == None ]] || fail "a declaration-free check reported errors it did not have: $LOOK"
 
-# Contract: sorry is reported by check_lean and refused by submit — the check
+# Contract: sorry is reported by check_lean and refused by submit, so the check
 # is a working tool, the badge is a claim about a finished proof.
 SORRY_SRC='theorem hole : 1 = 1 := by sorry'
 SHASH=$(printf 'import Mathlib\n\n%s\n' "$SORRY_SRC" | lean_hash)
@@ -219,7 +219,7 @@ GOT=$(call get "{\"ref\":\"$CID\"}")
 # Contract: a write refreshes what it touched, not the corpus. Promotion and
 # linking used to recompute state and notability over every row, which on a
 # real corpus is both slow and a deadlock (two whole-table updates take row
-# locks in opposite orders — observed live as "deadlock detected" on the fifth
+# locks in opposite orders, observed live as "deadlock detected" on the fifth
 # of five promotions). Fill the table first, so a whole-table refresh is
 # unmistakable in the tuple-update count.
 psql -q -h "$WORK" -d math -c "insert into contribution (kind, title, summary, artifact_hash, tier)
@@ -229,7 +229,7 @@ BEFORE=$(psql -h "$WORK" -d math -tAc "select n_tup_upd from pg_stat_user_tables
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"scope check\"}" | field '["ok"]' > /dev/null
 sleep 1.5
 AFTER=$(psql -h "$WORK" -d math -tAc "select n_tup_upd from pg_stat_user_tables where relname = 'contribution'")
-(( AFTER - BEFORE < 100 )) || fail "set_tier rewrote $((AFTER - BEFORE)) rows — it should refresh only what it touched"
+(( AFTER - BEFORE < 100 )) || fail "set_tier rewrote $((AFTER - BEFORE)) rows, and it should refresh only what it touched"
 
 # And under real contention the writes must all come back answers, not errors.
 WRITE_JOBS=()
@@ -260,7 +260,7 @@ echo "$GOT" | python3 -c 'import sys,json; assert not json.loads(sys.stdin.read(
 FULL=$(call trails "{\"trail_id\":\"$TID\"}")
 [[ $(echo "$FULL" | field '["activity"]') == closed ]] || fail "trail history wrong"
 
-# Contract: an open trail idle past the freshness window is abandoned — hidden
+# Contract: an open trail idle past the freshness window is abandoned, hidden
 # from the default listing so it warns no one off, but visible with include_stale.
 ST=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"stale exploration\",\"note\":\"start\"}" | field '["trail_id"]')
 psql -q -h "$WORK" -d math -c "update trail set updated_at = now() - interval '3 hours' where id = '$ST'" > /dev/null
@@ -380,7 +380,7 @@ assert len(r["summary"]) <= 281, len(r["summary"])
 [[ $(call get '{"ref":"long summary entry"}' | field '["content"]' | wc -c) -gt 1000 ]] || fail "get did not return the full content"
 
 # Contract: every read door says when. A reader must be able to date anything
-# it is shown without a second round trip — including a *link*, whose
+# it is shown without a second round trip, including a *link*, whose
 # assertion time exists nowhere else, so "is this connection fresh?" stays
 # answerable from the same payload that shows the connection.
 dated() { # dated <label> <json> <python-expression yielding objects>

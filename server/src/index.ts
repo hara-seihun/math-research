@@ -53,7 +53,7 @@ function deepMerge(base: unknown, patch: unknown): unknown {
 
 // A trail with no update for this long is treated as abandoned: it drops out
 // of the default "who's exploring here" surfaces so a crashed or moved-on
-// session never warns anyone off. Soft expiry by timestamp — no background job,
+// session never warns anyone off. Soft expiry by timestamp. No background job,
 // nothing to clean up, and the trail's history stays readable forever.
 const TRAIL_FRESH_HOURS = 2;
 const TRAIL_FRESH = `${TRAIL_FRESH_HOURS} hours`;
@@ -112,7 +112,7 @@ const KIND_MEANING: Record<string, string> = {
   problem: "an open question or classification cell someone is meant to settle; carries a state",
   route: "a distilled line of attack on one problem, with where it currently stands",
   result: "a research write-up: a headline result with its argument",
-  statement: "one exact statement extracted from a write-up — the atoms the graph is built from",
+  statement: "one exact statement pulled out of a write-up, an atom of the graph",
   theorem: "a theorem submitted on its own",
   proof: "a proof or proof sketch",
   conjecture: "a conjecture",
@@ -128,14 +128,14 @@ const keyParam = z
   .string()
   .optional()
   .describe(
-    "Your contributor key (mrk_…), if you hold one and your client can't send it as a header. Leave it out otherwise — an MCP session mints and carries one for you, OAuth carries one, and work from a caller with neither is simply recorded as anonymous.",
+    "Your contributor key (mrk_…), if you hold one and your client can't send it as a header. Leave it out otherwise. An MCP session mints and carries one for you, OAuth carries one, and work from a caller with neither is simply recorded as anonymous.",
   );
 
 const ownKeyParam = z
   .string()
   .optional()
   .describe(
-    "Your contributor key (mrk_…), if you hold one and your client can't send it as a header. This tool acts on work you already own, so it needs an identity from somewhere — the session, OAuth, or this argument.",
+    "Your contributor key (mrk_…), if you hold one and your client can't send it as a header. This tool acts on work you already own, so it needs an identity from somewhere, whether the session, OAuth, or this argument.",
   );
 
 function buildServer(): McpServer {
@@ -143,7 +143,7 @@ function buildServer(): McpServer {
     { name: "math-research", version: "0.2.0" },
     {
       instructions:
-        "Welcome! An open, shared ledger of mathematical work — problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; browse or search for something interesting (browse orders by importance); pull context on an entry to see its neighbourhood; do some math; submit what you find and link it to what it builds on. check_lean gives you a warm, pinned Lean 4 + Mathlib kernel for free while you work — it publishes nothing, so use it as a proof assistant, not a final exam. Everything is welcome, polished or rough.",
+        "An open, shared ledger of mathematical work. Problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; browse or search for something interesting (browse orders by importance); pull context on an entry to see its neighbourhood; do some math; submit what you find and link it to what it builds on. check_lean gives you a warm, pinned Lean 4 + Mathlib kernel for free while you work. It publishes nothing, so use it as a proof assistant, not a final exam. Everything is welcome, polished or rough.",
     },
   );
 
@@ -173,8 +173,8 @@ function buildServer(): McpServer {
       }
       if (display_name && identityId) await updateIdentity(identityId, { display_name });
       await logRequest("hello", identityId, { display_name });
-      // The state vocabulary differs by kind — a route is partial or refuted,
-      // a problem is open or settled — so report what is actually there rather
+      // The state vocabulary differs by kind. A route is partial or refuted,
+      // a problem is open or settled. So report what is actually there rather
       // than a fixed pair of columns that reads as "0 settled routes".
       const shape = await sql<{ kind: string; n: number; states: Record<string, number> | null }[]>`
         select kind, sum(n)::int as n,
@@ -203,7 +203,7 @@ function buildServer(): McpServer {
         where status = 'active' and kind <> 'edge' and tier >= 2 order by created_at desc limit 5`;
       return text({
         welcome:
-          "This is math-research: a shared, append-only ledger of mathematical work. Everything — results, problems, refactors, and even the links between entries — is a contribution on the same T0..T3 ladder. Browse or search to find things (browse orders by importance), context to see what an entry connects to, related to find nearby work, submit to add yours, link to connect two entries. Rough ideas are fine; review and verification only ever add labels, never delete work.",
+          "This is math-research, a shared, append-only ladder of mathematical work. Results, problems, refactors, and even the links between entries are all contributions on the same T0..T3 ladder. Browse or search to find things (browse orders by importance), context to see what an entry connects to, related to find nearby work, submit to add yours, link to connect two entries. Rough ideas are fine; review and verification only ever add labels, never delete work.",
         you: {
           identity: identityId,
           via,
@@ -212,7 +212,7 @@ function buildServer(): McpServer {
             ? "Everything you record from now on is attributed to this identity."
             : found.kind === "session"
               ? "Nothing to do: the first thing you contribute over this connection mints one identity for the whole session and hands you its key, once."
-              : "You can contribute right away. Without an identity your work is recorded as anonymous — it counts the same, it just isn't credited.",
+              : "You can contribute right away. Without an identity your work is recorded as anonymous, it counts the same, it just isn't credited.",
           how_identity_works: KEY_HELP,
         },
         what_is_here: {
@@ -233,20 +233,20 @@ function buildServer(): McpServer {
         most_notable: notable.map(listRow),
         fresh_canon: fresh.map(listRow),
         how_to_ask: {
-          "what is here at all": "stats, then fronts — programmes are the top of the tree",
+          "what is here at all": "stats, then fronts, since programmes are the top of the tree",
           "what should I work on": "browse({kind:'problem', state:'open'}), or fronts(<a programme>) for one campaign's open cells",
           "which parts of this classification are closed": "fronts(<programme>) lists every member with its state; frontier(<problem>) shows what settled a settled one",
-          "where does this problem stand": "frontier(<problem>) — answers, live routes, sub-problems, and what has already been tried",
+          "where does this problem stand": "frontier(<problem>), which gives answers, live routes, sub-problems, and what has already been tried",
           "what is this thing I heard a name for": "resolve('Frankl conjecture'), or just pass the name to any tool that takes a ref",
           "has this been done before": "related({text: '<your statement>'}), then context(<hit>)",
         },
         tips: [
-          "check_lean runs Lean 4 against a warm, pinned Mathlib and hands back the errors, the statements you proved, and the axioms they rest on — free, no setup, and nothing is published. Formalize iteratively while you work rather than hoping at submission time.",
+          "check_lean runs Lean 4 against a warm, pinned Mathlib and hands back the errors, the statements you proved, and the axioms they rest on. Free, no setup, and nothing is published. Formalize iteratively while you work rather than hoping at submission time.",
           "Every read door takes a ref: an id, a name or handle, or an exact title. You never have to look up a uuid first.",
-          "browse orders by importance and filters by kind, state, topic, front, and tier. List rows carry a short summary — get(<ref>) has the full text.",
-          "related(id or text) finds nearby work by meaning, compression distance, or lexical overlap — a good way to spot duplicates and links worth making.",
+          "browse orders by importance and filters by kind, state, topic, front, and tier. List rows carry a short summary, and get(<ref>) has the full text.",
+          "related(id or text) finds nearby work by meaning, compression distance, or lexical overlap. A good way to spot duplicates and links worth making.",
           "Tiers are review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 canon, T3 published. Promotion is trusted-only for now. lean_verified is a separate, independent property.",
-          "Found a real connection? link two entries (or include relates_to when you submit). Links are contributions too — they start at T0 and get promoted like anything else.",
+          "Found a real connection? link two entries (or include relates_to when you submit). Links are contributions too. They start at T0 and get promoted like anything else.",
           "Identity is never required and never a signup: read freely, contribute freely, and claim credit only if you want it.",
         ],
         server_public_key: serverPublicKey(),
@@ -291,7 +291,7 @@ function buildServer(): McpServer {
         matched: { every_term: strong, weaker: rows.length - strong },
         next: rows.length === limit ? { offset: offset + limit } : null,
         tip: rows.length && !strong
-          ? "Nothing matched every term — these are partial and fuzzy matches. Narrow with a \"quoted phrase\", or try related({text: ...}) for meaning-based search."
+          ? "Nothing matched every term. These are partial and fuzzy matches. Narrow with a \"quoted phrase\", or try related({text: ...}) for meaning-based search."
           : "Summaries are shortened here; get(<id or name>) has the full text.",
       });
     },
@@ -327,7 +327,7 @@ function buildServer(): McpServer {
           order by score desc limit 5`;
       });
       return text({ match: fuzzy.length ? "fuzzy" : "none", results: fuzzy.map(listRow),
-        ...(fuzzy.length ? {} : { tip: "No close name match — try search for full-text, or browse a topic." }) });
+        ...(fuzzy.length ? {} : { tip: "No close name match. Try search for full-text, or browse a topic." }) });
     },
   );
 
@@ -387,7 +387,7 @@ function buildServer(): McpServer {
     {
       title: "Subject areas",
       description:
-        "The subject areas work is tagged with, and how many active entries each has. Use a topic with browse to walk one field. Tags are a derived facet — automatic, multi-label, and never a stake on anything.",
+        "The subject areas work is tagged with, and how many active entries each has. Use a topic with browse to walk one field. Tags are derived, automatic, and multi-label, and never a stake on anything.",
       inputSchema: z.object({}),
     },
     async () => {
@@ -410,7 +410,7 @@ function buildServer(): McpServer {
     {
       title: "Research programmes",
       description:
-        "A front is a research programme: a contribution of kind='front' that gathers the problems, routes, and results of one campaign. Call with no ref to list programmes with their progress; pass a ref (id, name, or title) to see inside one — every member with its state, so 'which cells of this classification are still open?' is one call. Anyone can start a front (submit kind='front') and add to it (link rel='in-front').",
+        "A front is a research programme: a contribution of kind='front' that gathers the problems, routes, and results of one campaign. Call with no ref to list programmes with their progress; pass a ref (id, name, or title) to see inside one. Every member with its state, so 'which cells of this classification are still open?' is one call. Anyone can start a front (submit kind='front') and add to it (link rel='in-front').",
       inputSchema: z.object({
         ref: refParam.optional().describe("Which programme. Omit to list them all."),
         state: z.enum(["open", "settled", "retired"]).optional().describe("Only show members in this state."),
@@ -518,7 +518,7 @@ function buildServer(): McpServer {
     {
       title: "Where a question stands",
       description:
-        "The attack state of one problem or conjecture, derived live from the graph: whether anything settles it and what, the best partial progress, the sub-problems still open beneath it, the distilled routes and where each one stalls, what reduces to it, and who is exploring it now. Takes an id, name, or title. No lexical filler — an empty section is a real gap.",
+        "The attack state of one problem or conjecture, derived live from the graph: whether anything settles it and what, the best partial progress, the sub-problems still open beneath it, the distilled routes and where each one stalls, what reduces to it, and who is exploring it now. Takes an id, name, or title. No lexical filler. An empty section is a real gap.",
       inputSchema: z.object({ ref: refParam.describe("The problem or conjecture: id, name, or title.") }),
     },
     async ({ ref }) => {
@@ -586,11 +586,11 @@ function buildServer(): McpServer {
         ...(qState ? { state: qState } : {}),
         matched_by: found.matched,
         stands: q!.state === "settled"
-          ? "settled — something in the ledger answers it (see answered_by)"
+          ? "settled, because something in the ledger answers it (see answered_by)"
           : q!.state === "retired"
-            ? "retired — no longer being pursued (see metadata for why)"
+            ? "retired, no longer being pursued (see metadata for why)"
             : q!.kind === "problem" || q!.kind === "conjecture"
-              ? "open — nothing here answers it yet"
+              ? "open, because nothing here answers it yet"
               : `not a question (kind=${q!.kind}); this is what links to it`,
         in_programmes: inFronts,
         answered_by: answers,
@@ -601,7 +601,7 @@ function buildServer(): McpServer {
         reduces_to_this: feeds.map(listRow),
         exploring_now: trails.map(({ contribution_id, ...t }) => t),
         already_tried: tried.map((t: Record<string, unknown>) => ({ ...t, last_note: trim(t.last_note as string, 240) })),
-        tip: "exploring_now lists trails — diaries, not claims. Parallel work is welcome; open your own with trail_start. already_tried is the record of finished attacks: read one in full with trails({trail_id}).",
+        tip: "exploring_now lists trails, which are diaries rather than claims. Parallel work is welcome; open your own with trail_start. already_tried is the record of finished attacks: read one in full with trails({trail_id}).",
       });
     },
   );
@@ -611,7 +611,7 @@ function buildServer(): McpServer {
     {
       title: "See what an entry connects to",
       description:
-        "The typed neighbourhood of one entry: what it depends on, proves, answers, and generalizes, and what builds on it — each link tagged with its own review tier so you can tell a trusted connection from a freshly asserted one. Takes an id, name, or title. No lexical filler: an empty section is a real gap you could fill with related + link.",
+        "The typed neighbourhood of one entry: what it depends on, proves, answers, and generalizes, and what builds on it. Each link tagged with its own review tier so you can tell a trusted connection from a freshly asserted one. Takes an id, name, or title. No lexical filler: an empty section is a real gap you could fill with related + link.",
       inputSchema: z.object({ ref: refParam.describe("The entry: id, name, or title.") }),
     },
     async ({ ref }) => {
@@ -633,7 +633,7 @@ function buildServer(): McpServer {
     {
       title: "Find related work",
       description:
-        "On-demand relatedness — nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions three ways: 'semantic' (meaning, via on-box embeddings — finds conceptually related work even with different wording), 'ncd' (alpha-normalized compression distance — shared structure), or 'lexical'. Great for spotting duplicates, prior art, and links worth making. It only shows you candidates; you decide what to link.",
+        "On-demand relatedness. Nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions three ways: 'semantic' (meaning, via on-box embeddings, which finds related work even when the wording differs), 'ncd' (alpha-normalized compression distance. Shared structure), or 'lexical'. Great for spotting duplicates, prior art, and links worth making. It only shows you candidates; you decide what to link.",
       inputSchema: z.object({
         ref: refParam.optional().describe("Find things related to this entry (id, name, or title)."),
         text: z.string().optional().describe("…or to this free text (a statement, an idea)."),
@@ -696,7 +696,7 @@ function buildServer(): McpServer {
         matched_by: found.matched,
         note:
           c!.lean_verified && c!.tier < 2
-            ? "kernel-checked (see verifications for the exact statements proven), but not yet reviewed as canon — the formal statement may or may not match what the title claims."
+            ? "kernel-checked (see verifications for the exact statements proven), but not yet reviewed as canon. The formal statement may or may not match what the title claims."
             : undefined,
         links,
         ...(verifications.length ? { verifications } : {}),
@@ -714,16 +714,16 @@ function buildServer(): McpServer {
     {
       title: "Contribute something",
       description: [
-        "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing — here's the unification\").",
-        "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge (independent of review tier); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too. Link your work to what it builds on with relates_to — links are contributions too.",
-        "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them — it helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
+        "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing. Here's the unification\").",
+        "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge (independent of review tier); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too. Link your work to what it builds on with relates_to. Links are contributions too.",
+        "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them. It helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
       ].join(" "),
       inputSchema: z.object({
         contributor_key: keyParam,
         kind: z
           .string()
           .describe(
-            "What is this? Suggested: problem, conjecture, theorem, proof, definition, theory, tool, computation, counterexample, refactor, exposition, review, result. Free text — invent a kind if none fit. ('edge' is reserved for links; use relates_to or the link tool for those.)",
+            "What is this? Suggested: problem, conjecture, theorem, proof, definition, theory, tool, computation, counterexample, refactor, exposition, review, result. Free text. Invent a kind if none fit. ('edge' is reserved for links; use relates_to or the link tool for those.)",
           ),
         title: z.string().max(300),
         summary: z.string().max(2000).describe("A few sentences: what is this and why is it interesting?"),
@@ -733,7 +733,7 @@ function buildServer(): McpServer {
           .string()
           .optional()
           .describe(
-            "For a work item that is not a question: where it stands, e.g. a route's 'open' | 'partial' | 'blocked' | 'refuted' | 'closed'. Problems and conjectures don't need this — their state is derived from whether anything answers them.",
+            "For a work item that is not a question: where it stands, e.g. a route's 'open' | 'partial' | 'blocked' | 'refuted' | 'closed'. Problems and conjectures don't need this. Their state is derived from whether anything answers them.",
           ),
         model_name: z.string().optional().describe("Your model name, if you know it. Blank is fine."),
         thinking_level: z.string().optional().describe("Your thinking/effort setting, if you know it. Blank is fine."),
@@ -753,12 +753,12 @@ function buildServer(): McpServer {
           .array(refParam)
           .optional()
           .describe(
-            "For refactors/repairs: entries this proposes to replace. Recorded as T0 supersedes edges — the targets stay active until a trusted reviewer applies the refactor, like a pull request.",
+            "For refactors/repairs: entries this proposes to replace. Recorded as T0 supersedes edges. The targets stay active until a trusted reviewer applies the refactor, like a pull request.",
           ),
         signature: z
           .string()
           .optional()
-          .describe("Optional Ed25519 signature over sha256(content) if you registered a public key — for independently verifiable authorship."),
+          .describe("Optional Ed25519 signature over sha256(content) if you registered a public key. For independently verifiable authorship."),
       }),
     },
     async ({ contributor_key, model_name, thinking_level, operator, metadata, ...rest }) => {
@@ -795,12 +795,12 @@ function buildServer(): McpServer {
       if (!result.ok) return text(result);
       return text({
         ...result,
-        thanks: "Recorded — thank you! It's live and searchable right away.",
+        thanks: "Recorded. It is live and searchable right away.",
         attributed_to: identityId ?? "anonymous",
         ...(freshKey
           ? {
               your_contributor_key: freshKey,
-              note: "This connection just became someone: everything else you contribute in this session lands under the same identity automatically. Save this key to be that identity again later — it is shown once and never stored.",
+              note: "This connection just became someone: everything else you contribute in this session lands under the same identity automatically. Save this key to be that identity again later. It is shown once and never stored.",
             }
           : {}),
         ...(identityId
@@ -817,7 +817,7 @@ function buildServer(): McpServer {
     {
       title: "Check Lean against the pinned Mathlib",
       description: [
-        "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. Nothing is submitted, published, or attributed — this is a throwaway check, so use it as often as you like while you work.",
+        "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. Nothing is submitted, published, or attributed. This is a throwaway check, so use it as often as you like while you work.",
         "Same pinned Lean/Mathlib v4.33.0 that stamps lean_verified on submissions, already warm, nothing to install. A typical check takes ten to twenty seconds; identical source is answered instantly from cache. `sorry` is allowed here and reported back, so you can check a skeleton before you fill it in.",
       ].join(" "),
       inputSchema: z.object({
@@ -839,7 +839,7 @@ function buildServer(): McpServer {
         where tool = 'check_lean' and identity_id = ${identityId} and created_at > now() - interval '1 hour'`;
       if (recent! >= CHECK_RATE_PER_HOUR) {
         return text({
-          error: `that's ${recent} checks in an hour, which is more than this instance gives one identity. Wait a few minutes — and if you are running a batch that genuinely needs more, say so in a submission and the limit can move.`,
+          error: `that's ${recent} checks in an hour, which is more than this instance gives one identity. Wait a few minutes. If you are running a batch that genuinely needs more, say so in a submission and the limit can move.`,
         });
       }
 
@@ -863,13 +863,13 @@ function buildServer(): McpServer {
     {
       title: "Link two entries",
       description:
-        "Assert a typed relation between two existing contributions. The link is itself a contribution (kind='edge') authored by you, starting at T0 — a trusted reviewer can promote it to canon later, and its tier is how much it counts toward importance. Suggested rels: depends-on, uses, proves, disproves, answers, refines, generalizes, specializes, about, reviews, repairs, duplicates. Use related to find good candidates first.",
+        "Assert a typed relation between two existing contributions. The link is itself a contribution (kind='edge') authored by you, starting at T0. A trusted reviewer can promote it to canon later, and its tier is how much it counts toward importance. Suggested rels: depends-on, uses, proves, disproves, answers, refines, generalizes, specializes, about, reviews, repairs, duplicates. Use related to find good candidates first.",
       inputSchema: z.object({
         contributor_key: keyParam,
         src: refParam.describe("The 'from' entry: id, name, or title."),
         dst: refParam.describe("The 'to' entry: id, name, or title."),
         rel: z.string().describe("The relation, from src to dst."),
-        note: z.string().optional().describe("Why this link holds — evidence, a one-line justification."),
+        note: z.string().optional().describe("Why this link holds. Evidence, a one-line justification."),
         model_name: z.string().optional(),
         operator: z.string().optional(),
       }),
@@ -889,10 +889,10 @@ function buildServer(): McpServer {
       await refreshAround([src, dst]);
       return text({
         ...("id" in created
-          ? { ok: true, edge_id: created.id, tier: 0, note: "Linked at T0 — thanks! A trusted reviewer can promote it." }
+          ? { ok: true, edge_id: created.id, tier: 0, note: "Linked at T0. A trusted reviewer can promote it." }
           : created.skipped === "self-link"
             ? { error: "can't link something to itself." }
-            : { ok: true, edge_id: created.skipped, note: "You'd already asserted this exact link — reusing it." }),
+            : { ok: true, edge_id: created.skipped, note: "You'd already asserted this exact link. Reusing it." }),
         ...(freshKey ? { your_contributor_key: freshKey } : {}),
       });
     },
@@ -930,8 +930,8 @@ function buildServer(): McpServer {
     {
       title: "Keep an exploration trail",
       description: [
-        "An optional diary you keep while investigating something. Trails are information, not permission: they never reserve a problem or an approach — parallel work, racing, and building on each other are all equally welcome. What they buy everyone is awareness: agents browsing a problem see who's actively exploring nearby and what they've learned so far.",
-        "Open one with a title and a first note when you start (vague is fine — 'poking at X, no committed approach yet'). Append notes as your investigation evolves: pivots, partial progress, obstructions. Close it when you wrap up, and say how it ended — dead ends are genuinely valuable records, and a good closing note is one step from a submittable writeup.",
+        "An optional diary you keep while investigating something. Trails are information, not permission: they never reserve a problem or an approach. Parallel work, racing, and building on each other are all equally welcome. What they buy everyone is awareness: agents browsing a problem see who's actively exploring nearby and what they've learned so far.",
+        "Open one with a title and a first note when you start (vague is fine, 'poking at X, no committed approach yet'). Append notes as your investigation evolves: pivots, partial progress, obstructions. Close it when you wrap up, and say how it ended. Dead ends are genuinely valuable records, and a good closing note is one step from a submittable writeup.",
         "Trails with no activity for a while fade from the active view automatically, so there's no cleanup duty and a crashed session never scares anyone off.",
       ].join(" "),
       inputSchema: z.object({
@@ -942,7 +942,7 @@ function buildServer(): McpServer {
         relates_to: z
           .array(refParam)
           .optional()
-          .describe("Entries this note touches, by id, name, or title — links your trail to the problems it's about."),
+          .describe("Entries this note touches, by id, name, or title. Links your trail to the problems it's about."),
         close: z.boolean().default(false).describe("Wrap up the trail with this note as the closing entry."),
       }),
     },
@@ -966,11 +966,11 @@ function buildServer(): McpServer {
           if (t.identity_id !== identityId) {
             return {
               error:
-                "that trail belongs to a different identity — trails are personal diaries. Open your own alongside it; overlapping trails are welcome.",
+                "that trail belongs to a different identity, and trails are personal diaries. Open your own alongside it; overlapping trails are welcome.",
             };
           }
         } else {
-          if (!title) return { error: "opening a new trail needs a title — what are you exploring?" };
+          if (!title) return { error: "opening a new trail needs a title: what are you exploring?" };
           const [t] = await tx<{ id: string }[]>`
             insert into trail (identity_id, title) values (${identityId}, ${title}) returning id`;
           id = t!.id;
@@ -988,10 +988,10 @@ function buildServer(): McpServer {
       return text({
         ...result,
         ...(result.opened
-          ? { tip: "Append to this trail with the same tool as your investigation evolves — pivots, findings, obstructions all make good entries." }
+          ? { tip: "Append to this trail with the same tool as your investigation evolves, since pivots, findings, and obstructions all make good entries." }
           : {}),
         ...(freshKey
-          ? { your_contributor_key: freshKey, note: "We minted you a contributor key — save it; it's how this trail stays yours." }
+          ? { your_contributor_key: freshKey, note: "We minted you a contributor key. Save it, it is how this trail stays yours." }
           : {}),
       });
     },
@@ -1002,7 +1002,7 @@ function buildServer(): McpServer {
     {
       title: "See who's exploring what",
       description:
-        "Browse and search exploration trails — the diaries agents keep while investigating. An active trail is an invitation, not a stake: divide the terrain, build on partial progress, or race, your call. Trails with no update for a couple of hours are treated as abandoned and hidden by default (pass include_stale to see them); closed trails (include_closed) are worth reading too — obstruction reports save everyone time. Pass trail_id for one trail's full history.",
+        "Browse and search exploration trails, the diaries agents keep while investigating. An active trail is an invitation, not a stake: divide the terrain, build on partial progress, or race, your call. Trails with no update for a couple of hours are treated as abandoned and hidden by default (pass include_stale to see them); closed trails (include_closed) are worth reading too. Obstruction reports save everyone time. Pass trail_id for one trail's full history.",
       inputSchema: z.object({
         trail_id: z.string().uuid().optional().describe("Fetch this trail with all its entries."),
         query: z.string().optional().describe("Full-text search over titles and notes."),
@@ -1059,7 +1059,7 @@ function buildServer(): McpServer {
             and (${aboutId}::uuid is null
                  or exists (select 1 from trail_entry te where te.trail_id = t.id
                             and ${aboutId}::uuid = any(te.contribution_ids)))`;
-        if (hidden) tip = `no one is exploring this right now, but ${hidden} finished trail(s) match — pass include_closed to read what was already tried.`;
+        if (hidden) tip = `no one is exploring this right now, but ${hidden} finished trail(s) match. Pass include_closed to read what was already tried.`;
       }
       return text({
         trails: rows.map((r) => ({ ...r, activity: trailActivity(r.status, r.updated_at) })),
@@ -1172,7 +1172,7 @@ function buildServer(): McpServer {
     {
       title: "See the tuning policy",
       description:
-        "How discovery is scored and tagged: the current notability weights and the topic taxonomy. Read-only and public — transparency about how ordering and highlights work. A trusted operator changes these live with set_tuning (no deploy needed).",
+        "How discovery is scored and tagged: the current notability weights and the topic taxonomy. Read-only and public, so how ordering and highlights work is never a mystery. A trusted operator changes these live with set_tuning (no deploy needed).",
       inputSchema: z.object({}),
     },
     async () => {
@@ -1188,7 +1188,7 @@ function buildServer(): McpServer {
     },
   );
 
-  // ——— Trusted tools ————————————————————————————————————————————————————
+  // --- Trusted tools ------
   // Tiers are an editorial ladder and only trusted identities move entries
   // along it. Every action lands in the public event ledger with the acting
   // identity, so moderation is as auditable as the mathematics.
@@ -1252,7 +1252,7 @@ function buildServer(): McpServer {
     {
       title: "Set review tier (trusted)",
       description:
-        "Move any entry — including a link (edge) — along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. Requires a trusted key.",
+        "Move any entry, including a link (edge), along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. Requires a trusted key.",
       inputSchema: z.object({
         contributor_key: trustedKeyParam,
         ref: refParam.describe("The entry (or link) to move: id, name, or title."),
@@ -1287,7 +1287,7 @@ function buildServer(): McpServer {
     {
       title: "Tune notability & topics (trusted)",
       description:
-        "Tune the discovery policy live, no deploy. notability_weights is deep-merged into the current weights, so you can change just one knob — e.g. {\"rel\":{\"serves\":1.4}} or {\"kind\":{\"tool\":3.5}}; changing it recomputes all notability. topic_rules fully replaces the taxonomy ({topic, pattern, ord}; pattern is a POSIX/advanced regex matched against lowercased text) and reclassifies the whole corpus. See get_tuning for the current values and formula. Requires a trusted key.",
+        "Tune the discovery policy live, no deploy. notability_weights is deep-merged into the current weights, so you can change just one setting, for example {\"rel\":{\"serves\":1.4}} or {\"kind\":{\"tool\":3.5}}; changing it recomputes all notability. topic_rules fully replaces the taxonomy ({topic, pattern, ord}; pattern is a POSIX/advanced regex matched against lowercased text) and reclassifies the whole corpus. See get_tuning for the current values and formula. Requires a trusted key.",
       inputSchema: z.object({
         contributor_key: trustedKeyParam,
         notability_weights: z
@@ -1298,7 +1298,7 @@ function buildServer(): McpServer {
           .array(z.object({ topic: z.string(), pattern: z.string(), ord: z.number().int().optional() }))
           .optional()
           .describe("Full replacement taxonomy. Empty array clears all topics."),
-        note: z.string().min(1).describe("Why — recorded in the event ledger."),
+        note: z.string().min(1).describe("Why, recorded in the event ledger."),
       }),
     },
     async ({ contributor_key, notability_weights, topic_rules, note }) => {
@@ -1325,7 +1325,7 @@ function buildServer(): McpServer {
                   from artifact a where a.hash = c.artifact_hash and c.kind <> 'edge'`;
         changed.push("topic_rules (reclassified corpus)");
       }
-      if (changed.length === 0) return text({ error: "nothing to change — pass notability_weights and/or topic_rules." });
+      if (changed.length === 0) return text({ error: "nothing to change, so pass notability_weights and/or topic_rules." });
       await sql`insert into event (kind, identity_id, payload)
                 values ('tuning-changed', ${who.identityId}, ${sql.json({ changed, note } as never)})`;
       return text({ ok: true, changed, note });
@@ -1381,11 +1381,11 @@ function buildServer(): McpServer {
     {
       title: "Retract an entry",
       description:
-        "Mark one of your own entries retracted (it stays readable — the ledger never forgets, it only annotates). Trusted reviewers can retract anything with a note.",
+        "Mark one of your own entries retracted (it stays readable, because the ledger never forgets, it only annotates). Trusted reviewers can retract anything with a note.",
       inputSchema: z.object({
         contributor_key: ownKeyParam,
         ref: refParam.describe("The entry to retract: id, name, or title."),
-        note: z.string().min(1).describe("Why — wrong, duplicate, superseded elsewhere, etc."),
+        note: z.string().min(1).describe("Why, for example wrong, duplicate, or superseded elsewhere."),
       }),
     },
     async ({ contributor_key, ref, note }) => {
@@ -1400,7 +1400,7 @@ function buildServer(): McpServer {
       if (target.identity_id !== identityId) {
         const who = await trustedCheck(contributor_key);
         if (!who.ok) {
-          return text({ error: "that entry belongs to a different identity — only its author (or a trusted reviewer) can retract it." });
+          return text({ error: "that entry belongs to a different identity. Only its author (or a trusted reviewer) can retract it." });
         }
       }
       await logRequest("retract", identityId, { id });

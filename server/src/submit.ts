@@ -29,7 +29,7 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
   const notes: string[] = [];
   const content = input.content ?? "";
   if (!input.title?.trim() || !input.summary?.trim() || !content.trim()) {
-    return { ok: false, error: "title, summary, and content are all needed — everything else is optional." };
+    return { ok: false, error: "title, summary, and content are all needed. Everything else is optional." };
   }
   if (Buffer.byteLength(content) > MAX_CONTENT_BYTES) {
     return {
@@ -80,14 +80,14 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
   });
 
   if (existing) {
-    notes.push(`heads up: identical content already exists as ${existing.id} — linked it for you.`);
+    notes.push(`identical content already exists as ${existing.id}, so I linked it for you.`);
   }
   const touched = [result.id, ...(input.relates_to ?? []).map((l) => l.id), ...(input.supersedes ?? [])];
   await refreshAround(touched);
 
   if ((input.supersedes ?? []).length > 0) {
     notes.push(
-      "supersedes recorded as a proposal — the targets stay active until the refactor is reviewed and applied.",
+      "supersedes recorded as a proposal. The targets stay active until the refactor is reviewed and applied.",
     );
   }
 
@@ -95,7 +95,7 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
   if (LEAN_HINT.test(content) || mediaType === "text/x-lean") {
     await sql`insert into verification (contribution_id, method) values (${result.id}, 'lean-kernel')`;
     leanQueued = true;
-    notes.push("looks like Lean — queued for a kernel check. Watch my_submissions for the result.");
+    notes.push("looks like Lean, so it is queued for a kernel check. Watch my_submissions for the result.");
   }
 
   const receipt = await issueReceipt(result);

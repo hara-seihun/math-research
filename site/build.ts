@@ -267,14 +267,19 @@ function guidesIndex(guides: Page[]): Page {
 // The README is the project's own description, so the site reads it instead of
 // keeping a second copy that would drift.
 function readmePage(): Page {
+  const readme = readFileSync(join(HERE, "..", "README.md"), "utf8");
+  const markdown = readme.replace(
+    "# math-research\n\n",
+    "# math-research\n\nThis page is just the [README from GitHub](https://github.com/hara-seihun/math-research#readme).\n\n",
+  );
+
   return {
     slug: "how-it-works",
     title: "How it works",
     nav: "How it works",
-    summary:
-      "The repository README, whole: the data model, the review ladder, what every tool is for, what runs the public instance, and how to run your own.",
+    summary: "The project README from GitHub.",
     order: 3,
-    markdown: readFileSync(join(HERE, "..", "README.md"), "utf8"),
+    markdown,
   };
 }
 

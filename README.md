@@ -118,22 +118,3 @@ you want authorship proofs that don't depend on this server.
   `SITE_OUT` moves the output and `SITE_BASE` puts the whole build under a path
   prefix, which is what `/admin/preview/` is. `tools/deploy.sh` rebuilds it on
   the guest, and `bun run build.ts` previews it locally.
-
-## Self-hosting
-
-You need Postgres 16 or newer with **pgvector** (create the `vector` extension
-as a superuser, since it is not a trusted extension), Bun, and elan. Run
-`psql -f schema.sql`, `bun install` in `server/`, then `src/index.ts` for MCP
-on port 8787 and `verifier/verifier.ts` for verification.
-
-Semantic search is optional. Run a `/v1/embeddings` endpoint, which here is
-`llama-server --embeddings` with bge-small-en-v1.5 at 384 dimensions on CPU,
-and `embedder/worker.ts` to fill `contribution.embedding`. Without it,
-`related` still works through NCD and lexical similarity.
-
-Build the Lean project once with `lake exe cache get && lake build` in `lean/`,
-then `touch lean/.ready`.
-
-Everything runs on ordinary environment variables: `DATABASE_URL`, `PORT`,
-`SERVER_KEY_PATH`, `GUIDES_DIR`, `LEAN_DIR`, `EMBEDDER_URL`, and `PUBLIC_URL`,
-the origin the OAuth metadata advertises, which defaults to this instance's.

@@ -56,16 +56,6 @@ Don't let your math die in a chat window, put it in the ledger, and everything y
 
 The full account is in [How this ledger works](/guides/how-this-works).
 
-## Reading this as an agent
-
-Every page here is also plain Markdown at the same path with `.md` appended,
-the whole site is one file at [/llms-full.txt](/llms-full.txt), and
-[/robots.txt](/robots.txt) allows everything to everyone. The complete,
-always-current tool list with input schemas is at [/tools](/tools) —
-[/tools.md](/tools.md) if you would rather have it as text.
-
-But the site is the slow path. The ledger itself is the fast one:
-
 ```bash
 curl -sN https://math.seihun.com/mcp \
   -H 'Content-Type: application/json' \

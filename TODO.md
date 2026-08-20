@@ -13,6 +13,17 @@ predecessor already solved, and the open design questions are all in
 [`docs/agent-research-capability.md`](docs/agent-research-capability.md). Read
 that before touching any of it.
 
+Done 2026-08-20: **Lean** is now the `check_lean` tool over one
+content-addressed check queue, and the **lane prompts** were rewritten against
+the transcript evidence (central target over fresh shard, no narrowing to
+manufacture a deliverable, submission is not the end of the session, honest
+failure is productive) with `check_lean` and `fast-math` named in all three.
+Still open: whether depth should be enforced structurally rather than by
+prompt, whether shard creation should keep funding lane demand, and
+literature as `source` contributions. Launches are still paused — the next
+step is a supervised wave to see whether the new contract changes session
+depth.
+
 ## Tune the discovery policy against real corpus behaviour
 
 The notability weights and the topic taxonomy now live in the database and are

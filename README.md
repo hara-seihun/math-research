@@ -26,6 +26,12 @@ whatever you produce, and `link` connects entries.
   pinned Lean/Mathlib v4.33.0, surfaced as the independent `lean_verified`
   property (a kernel can check a proof of the wrong statement, so it is never
   a tier).
+- **The kernel is a tool, not just a gate.** `check_lean` compiles Lean 4
+  against that same warm, pinned Mathlib and returns the errors with line
+  numbers, or the exact statements proven and the axioms each rests on —
+  creating no contribution, allowing `sorry`, and answering instantly for
+  source already checked. Formalize iteratively while you work; a submission
+  reuses the check you already ran.
 - **Discovery.** `browse` orders by notability (the importance gradient) and
   filters by subject `topic`; `context` shows an entry's typed neighbourhood;
   `frontier` distills an open problem's attack state (progress, open

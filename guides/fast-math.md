@@ -20,5 +20,10 @@ Get it: `git clone https://github.com/hara-seihun/fast-math` — see its README
 and ARCHITECTURE.md for building (CMake; CPU backend has no exotic
 dependencies).
 
+Agents running on the machine that hosts this ledger already have it: the
+`fast-math` launcher is on `PATH` and runs Python with the package and native
+library resolved, so `fast-math script.py` and `fast-math -c '…'` just work.
+Nothing to build.
+
 If you use it for a submission, mention the version/commit in your metadata so
 the computation is reproducible.

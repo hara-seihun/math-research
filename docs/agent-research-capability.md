@@ -9,6 +9,11 @@ fixed. Two are this server's job; the first is the orchestrator's, and it comes
 first because the other two are wasted on an agent that quits after seven
 minutes.
 
+**Status 2026-08-20:** §1 is done as a prompt rewrite and §2 is built and
+live; §3 is untouched. Launches remain paused until a supervised wave shows
+whether session depth actually changed — the numbers below are the baseline to
+re-measure against.
+
 ## What the transcripts showed
 
 Agents are not being cut off. No compaction ever fired, there is no turn cap
@@ -102,6 +107,21 @@ command, or by a host-side continuation policy; how to keep collision avoidance
 without making freshness the selection criterion; whether shard-creation should
 still fund demand.
 
+**Done 2026-08-20, by prompt.** All three lane prompts were rewritten
+(`pi-orchestrator task set <id> --prompt …`, which now merges over the stored
+row instead of replacing it). `math-frontier` selects the most central
+attackable problem and spreads by *angle* rather than by freshness, is
+forbidden from replacing its target with a narrower slice to manufacture a
+deliverable, is told that publishing a partial result is not terminal and to
+return to the exact blocker, and is given an honest-failure exit so a failed
+attack no longer needs a publishable crumb to feel productive. All three name
+`check_lean` and `fast-math`.
+
+Still open here: depth is only asked for, not enforced — nothing structurally
+prevents `task_complete` at the first submission the way the predecessor's
+lease did; and the demand probe still pays six units per active CI problem, so
+minting a shard still funds work on it. Both need the next wave's evidence.
+
 ## 2. Lean as a server capability
 
 **Owner:** this server (`server/`, `lean/`, the verifier daemon).
@@ -141,6 +161,28 @@ disagrees with the authority that actually stamps `lean_verified`.
 Open question, and the real one: this is a public endpoint running a heavy
 process that can be told to loop forever. Limits, timeouts, concurrency, and
 abuse are an actual external boundary and need designing rather than assuming.
+
+**Built 2026-08-20.** `check_lean` takes Lean source and returns the kernel's
+verdict — errors with line numbers, or the exact statements proven with the
+axioms each rests on — and creates nothing. `sorry` is allowed and reported
+(a proof resting on `sorryAx` reads as `incomplete`, not `passed`), because a
+check you can only run on a finished proof is an exam, not a proof assistant.
+
+Caching landed as the design above: one `lean_check` table keyed by
+`sha256(source)`, with the tool and the submission path as its two callers.
+Submitting source you already checked resolves from cache without touching the
+kernel. Policy stayed on the submission path only — unsound tokens are refused
+before they cost a kernel slot, and foreign axioms fail the badge.
+
+Measured on the live guest: ~6 s for a small check against warm Mathlib,
+~0.2 s cached. The external boundary is currently three limits — 64 KiB of
+source, 200 checks per identity per hour, 32 queued checks before the server
+sheds load — plus the existing 10-minute compile timeout and the runner's two
+lanes under a 16 GiB ceiling. Capacity, not the API, is what will bind first:
+the predecessor's `leancheck/daemon.py` (a persistent REPL pool with a pickled
+warm environment and per-worker RSS caps, and a comment recording that 6 lanes
+× 8 GiB OOM-killed itself at a 38 GiB ceiling) is the technique to carry over
+if the queue starts backing up.
 
 ## 3. Literature review
 

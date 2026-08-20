@@ -6,9 +6,12 @@ import { sql } from "../src/db.ts";
 
 const EMBEDDER = process.env.EMBEDDER_URL ?? "http://127.0.0.1:8090";
 const BATCH = 16;
-// bge-small truncates at 512 tokens; ~1400 chars stays comfortably under that
-// and title+summary+lead carries the topical signal anyway.
-const MAX_CHARS = 1400;
+// bge-small hard-caps at 512 tokens per sequence and dense math text tokenizes
+// heavily, so we cap chars for the batch attempt and, if a batch trips the
+// limit, fall back to per-item embedding with shrinking caps down to a floor
+// that is always under 512 tokens — one long entry never stalls the backfill.
+const BATCH_CHARS = 900;
+const SHRINK = [900, 600, 400, 256];
 
 function vec(a: number[]): string {
   return `[${a.join(",")}]`;
@@ -23,6 +26,18 @@ async function embedBatch(texts: string[]): Promise<number[][]> {
   if (!res.ok) throw new Error(`embedder ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const j = (await res.json()) as { data: { embedding: number[] }[] };
   return j.data.map((d) => d.embedding);
+}
+
+async function embedOne(full: string): Promise<number[]> {
+  for (const cap of SHRINK) {
+    try {
+      const [e] = await embedBatch([full.slice(0, cap)]);
+      return e!;
+    } catch (err) {
+      if (cap === SHRINK.at(-1)) throw err;
+    }
+  }
+  throw new Error("unreachable");
 }
 
 async function waitForEmbedder(): Promise<void> {
@@ -46,17 +61,26 @@ for (;;) {
     await Bun.sleep(10000);
     continue;
   }
-  const texts = rows.map((r) => `${r.title}\n${r.summary}\n${r.content}`.slice(0, MAX_CHARS));
+  const full = rows.map((r) => `${r.title}\n${r.summary}\n${r.content}`);
   let embs: number[][];
   try {
-    embs = await embedBatch(texts);
-  } catch (e) {
-    console.error(String(e));
-    await Bun.sleep(5000);
-    continue;
+    embs = await embedBatch(full.map((t) => t.slice(0, BATCH_CHARS)));
+  } catch {
+    // A too-long member tripped the batch; embed each row individually so the
+    // long ones shrink and the rest still make progress.
+    embs = [];
+    for (const t of full) {
+      try {
+        embs.push(await embedOne(t));
+      } catch (e) {
+        console.error(String(e));
+        embs.push([]);
+      }
+    }
   }
   await sql.begin(async (tx) => {
     for (let i = 0; i < rows.length; i++) {
+      if (embs[i]!.length === 0) continue;
       await tx`update contribution set embedding = ${vec(embs[i]!)}::vector where id = ${rows[i]!.id}`;
     }
   });

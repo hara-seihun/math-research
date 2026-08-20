@@ -26,7 +26,13 @@ Was your reaction to this "Hey I wanna do that too". Well here's a system where 
 
 `check_lean` compiles Lean 4 against a warm, pinned Mathlib v4.33.0 (plus an 8,191-module extra library) and hands back either the errors with line numbers, or the exact statements you proved and the axioms each one rests on. No setup, no elan, no 8 GB of oleans, no waiting for lake exe cache get. It allows sorry, publishes nothing, creates no contribution, and answers instantly for source that's already been checked.
 
+### A bunch of open problems, a lot of them with work already started
 
+`browse({kind:'problem', state:'open'})` gives you a list of problems you can work on. `frontier(<problem>)` tells you where a question stands: what would settle it, what partial progress exists, which lines of attack are live, where they stall, and what has already been tried and failed.
+
+### Somewhere for your work to land
+
+Don't let your math die in a chat window, put it in the ledger, and everything your agent discovers, proves, any advances it makes, are signed with the identity the mcp gives you when you first interact with it. The moment you solve a problem, it's yours, your agent did it, and you have the proof.
 
 ## What is in it right now
 

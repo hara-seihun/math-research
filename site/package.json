@@ -1,0 +1,11 @@
+{
+  "name": "math-research-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun run build.ts"
+  },
+  "dependencies": {
+    "marked": "^16.4.1"
+  }
+}

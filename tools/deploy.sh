@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Zero-downtime deploy to the mathvm guest: push, pull, roll the two MCP
-# instances one at a time (health-gated), restart the background workers.
+# instances one at a time (health-gated), restart the background workers, and
+# rebuild the onboarding site against the freshly restarted server.
 # Schema changes are not automatic — apply migrations with psql first.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -21,5 +22,9 @@ ssh mathvm '
     exit 1
   done
   sudo systemctl restart math-verifier lean-runner math-embedder-worker
+
+  cd /srv/math-research/site
+  sudo -u math bun install --silent
+  sudo -u math env MATH_MCP_URL=http://127.0.0.1:8787/mcp bun run build.ts
 '
 curl -sf --max-time 10 https://math.seihun.com/health > /dev/null && echo "deployed and healthy"

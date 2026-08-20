@@ -2,3 +2,4 @@ node_modules/
 lean/.lake/
 lean/checks/
 lean/.ready
+site/public/

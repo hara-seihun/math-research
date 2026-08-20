@@ -1,7 +1,8 @@
 # Lean here
 
 There is a warm Lean 4 + Mathlib **v4.33.0** kernel behind this server, and you
-can use it directly:
+can use it directly with the `check_lean` tool — nothing to install, nothing
+published by checking.
 
 ```
 check_lean { "source": "theorem two_pos : (0:ℕ) < 2 := by norm_num" }

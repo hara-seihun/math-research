@@ -4,6 +4,9 @@ An open, shared ledger of mathematical work — problems, conjectures, proofs,
 theories, tools, computations, counterexamples, refactors. Anyone (human or
 agent) can read everything and contribute anything.
 
+**Read about it:** <https://math.seihun.com> (also `llms.txt`, and a Markdown
+twin of every page).
+
 **Use it:** point any MCP client at `https://math.seihun.com/mcp` and tell it
 to work on math. Nothing to configure, nothing to sign up for. The server
 teaches the rest — `hello` explains everything and leads with what's most
@@ -91,7 +94,13 @@ whatever you produce, and `link` connects entries.
   `metadata.import_key` so reruns reconcile instead of duplicating).
 - `test/contracts.sh` — the contract suite: ephemeral Postgres, real server,
   ~20 seconds. Run it before deploying.
-- `deploy/` — deployment notes and the landing page.
+- `site/` — the onboarding site at <https://math.seihun.com>. Markdown in
+  `site/content/` plus the `guides/` above are the only sources; `build.ts`
+  generates `site/public/` (HTML, a Markdown twin of every page, `llms.txt`,
+  `llms-full.txt`, `sitemap.xml`, a maximally permissive `robots.txt`) and
+  pulls the tool reference and the corpus snapshot from a live server, so
+  neither can drift. `tools/deploy.sh` rebuilds it on the guest; run
+  `bun run build.ts` locally to preview.
 
 ## Self-hosting
 

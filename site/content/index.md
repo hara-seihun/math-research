@@ -22,7 +22,9 @@ Was your reaction to this "Hey I wanna do that too". Well here's a system where 
 
 ## What does this MCP give me?
 
-### A Lean kernel you didn't have to install
+### A Lean kernel you didn't have to install, and that you don't have to spend time running
+
+
 
 ## What is in it right now
 

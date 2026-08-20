@@ -307,6 +307,13 @@ call fronts "{\"ref\":\"$FR\"}" | python3 -c 'import sys,json;d=json.load(sys.st
 call fronts "{\"ref\":\"$SUBFR\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["part_of"][0]["id"]=="'"$FR"'"' || fail "campaign front does not name its umbrella"
 
 
+# Contract: a list row does not echo the title back as its summary. Titles cut
+# from the opening of a write-up make the two identical, which is pure noise in
+# a page of results.
+ECHO=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"echoing title zqx\",\"summary\":\"echoing title zqx\",\"content\":\"echoing title zqx\"}" | field '["id"]')
+call browse '{"kind":"problem"}' | python3 -c 'import sys,json;rs=json.load(sys.stdin)["results"];r=[x for x in rs if x["id"]=="'"$ECHO"'"][0];assert "summary" not in r, r' || fail "list row echoed the title as its summary"
+call get "{\"ref\":\"$ECHO\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert "summary" not in d and d["content"]' || fail "get echoed the title as its summary"
+
 # Contract: resolve finds an entry by an alias, even when the title differs.
 RN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"obscure internal title zzq\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"Kolmogorov width marker\"]}" | field '["id"]')
 call resolve '{"ref":"Kolmogorov width marker"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["match"]=="exact" and d["results"][0]["id"]=="'"$RN"'"' || fail "resolve did not find entry by alias"

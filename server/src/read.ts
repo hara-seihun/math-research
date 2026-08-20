@@ -78,8 +78,25 @@ export const trim = (text: string | null, limit = LIST_SUMMARY): string | null =
   return line.length <= limit ? line : line.slice(0, limit - 1).replace(/\s+\S*$/, "") + "…";
 };
 
+/** Two strings that say the same thing, whitespace aside. */
+export const sameText = (a: string | null, b: string | null): boolean =>
+  !!a && !!b && a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+
+/** A title cut from the opening of its own summary — which is most of an
+ *  imported corpus — makes the summary a verbatim echo. Show what the title
+ *  does not already say, and nothing when that is nothing. */
+export function beyondTitle(title: string, summary: string | null, limit = LIST_SUMMARY): string | null {
+  if (!summary) return null;
+  const line = summary.replace(/\s+/g, " ").trim();
+  const head = title.replace(/\s+/g, " ").trim().replace(/…$/, "");
+  if (!line.startsWith(head)) return trim(line, limit);
+  const rest = line.slice(head.length).replace(/^[\s.:;,—–-]+/, "");
+  return rest ? trim(rest, limit) : null;
+}
+
 /** One list row: the identifying facts, nothing that needs paging. */
 export function listRow(r: Record<string, unknown>) {
+  const summary = beyondTitle(r.title as string, r.summary as string | null);
   const out: Record<string, unknown> = {
     id: r.id,
     kind: r.kind,
@@ -88,7 +105,7 @@ export function listRow(r: Record<string, unknown>) {
     tier: r.tier,
     ...(r.lean_verified ? { lean_verified: true } : {}),
     notability: r.notability,
-    summary: trim(r.summary as string),
+    ...(summary ? { summary } : {}),
   };
   if (Array.isArray(r.tags) && r.tags.length) out.topics = r.tags;
   if (Array.isArray(r.names) && r.names.length) out.names = (r.names as string[]).slice(0, 4);

@@ -23,7 +23,7 @@ import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
-import { deref, listRow, settlement, trim, type Ref } from "./read.ts";
+import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
 
 const GUIDES_DIR = process.env.GUIDES_DIR ?? join(import.meta.dir, "../../guides");
 const PORT = Number(process.env.PORT ?? 8787);
@@ -438,7 +438,9 @@ function buildServer(): McpServer {
           fronts: rows.map((r: Record<string, unknown>) => ({
             id: r.id,
             title: r.title,
-            summary: trim(r.summary as string),
+            ...(beyondTitle(r.title as string, r.summary as string | null)
+              ? { summary: beyondTitle(r.title as string, r.summary as string | null) }
+              : {}),
             members: Number(r.members),
             problems: { open: Number(r.open_problems), settled: Number(r.settled_problems) },
             notability: r.notability,
@@ -682,10 +684,12 @@ function buildServer(): McpServer {
         where contribution_id = ${id} order by seq limit 200`;
       const activeTrails = await trailsTouching([id]);
       // A kind without work-state should not show `state: null`; empty
-      // sections likewise say nothing a reader needs.
-      const { state, ...entry } = c!;
+      // sections likewise say nothing a reader needs. A short entry whose
+      // title, summary and content are the same sentence should say it once.
+      const { state, summary, ...entry } = c!;
       return text({
         ...entry,
+        ...(sameText(summary as string, entry.title as string) ? {} : { summary }),
         ...(state ? { state } : {}),
         matched_by: found.matched,
         note:

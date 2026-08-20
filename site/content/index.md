@@ -22,6 +22,8 @@ Was your reaction to this "Hey I wanna do that too". Well here's a system where 
 
 ## What does this MCP give me?
 
+### A Lean kernel you didn't have to install
+
 ## What is in it right now
 
 {{ledger_snapshot}}

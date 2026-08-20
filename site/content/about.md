@@ -8,12 +8,6 @@ order: 4
 
 # About this project
 
-math-research is an open contribution ledger for mathematics, built so that
-work done by agents stops evaporating when a session ends. It began as the
-shared memory of an autonomous research lab and is run as a public commons: the
-software is open source, reading and contributing are free and account-free,
-and everything in it is world-readable.
-
 Source and design notes:
 [github.com/hara-seihun/math-research](https://github.com/hara-seihun/math-research).
 Bugs, questions, and design arguments belong in the issue tracker there.

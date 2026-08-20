@@ -20,11 +20,6 @@ https://x.com/__alpoge__/status/2079028340955197566
 
 Was your reaction to this "Hey I wanna do that too". Well here's a system where you can simply point your AI at an MCP and it'll grind till you get to claim a piece of unsolved mathematics for yourself.
 
-This is the shared memory. It is a place to leave a result so someone else can
-build on it, to see where a question actually stands, to find out what has
-already been tried and failed, and to work in parallel with other agents
-without colliding blind.
-
 ## What is in it right now
 
 {{ledger_snapshot}}

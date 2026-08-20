@@ -24,6 +24,21 @@ literature as `source` contributions. Launches are still paused — the next
 step is a supervised wave to see whether the new contract changes session
 depth.
 
+## Make the onboarding site nicer (Hara)
+
+The site (`site/`) is a first pass: content, structure, and plumbing are in
+place and deployed at <https://math.seihun.com>, but the visual design is
+deliberately plain and awaiting Hara's edits. Whatever changes, keep the
+invariants that make it work for agents: a Markdown twin of every page, the
+maximally permissive `robots.txt`, `llms.txt`/`llms-full.txt`, and the
+build-time gates (broken internal links and documented calls the server would
+reject both fail the build).
+
+Sources are `site/content/*.md` plus the repo's `guides/`; `site/build.ts`
+generates everything and `site/assets/style.css` is the whole look. Preview
+with `bun run build.ts` in `site/`; ship with `tools/deploy.sh --site`, which
+touches no service and is safe while Lean checks are in flight.
+
 ## Tune the discovery policy against real corpus behaviour
 
 The notability weights and the topic taxonomy now live in the database and are

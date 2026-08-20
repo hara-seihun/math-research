@@ -6,6 +6,7 @@
 # when it is absent, and must carry pgvector because the schema stores
 # semantic embeddings.
 set -euo pipefail
+[[ -n "${TRACE:-}" ]] && set -x
 cd "$(dirname "$0")/.."
 
 command -v initdb > /dev/null || exec nix shell --impure --expr \

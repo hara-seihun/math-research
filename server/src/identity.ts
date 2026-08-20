@@ -18,7 +18,7 @@ export function withRequestKey<T>(key: string | undefined, run: () => T): T {
 /** Contributor key from an `Authorization: Bearer mrk_…` header, if present. */
 export function bearerKey(authorization: string | string[] | undefined): string | undefined {
   const header = Array.isArray(authorization) ? authorization[0] : authorization;
-  return /^bearer\s+(mrk_[0-9a-f]{64})$/i.exec(header?.trim() ?? "")?.[1];
+  return /^bearer\s+(mrk_\S+)$/i.exec(header?.trim() ?? "")?.[1];
 }
 
 const effectiveKey = (contributorKey?: string) => contributorKey ?? requestKey.getStore();

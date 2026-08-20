@@ -469,16 +469,41 @@ function buildServer(): McpServer {
         order by (m.state = 'open') desc, m.notability desc limit ${limit} offset ${offset}`;
       const byKind: Record<string, unknown[]> = {};
       for (const m of members) (byKind[m.kind as string] ??= []).push(listRow(m));
-      const problems = members.filter((m) => m.kind === "problem");
+      // Over every member, not the page: a programme with 97 members must not
+      // report the 50 that fit.
+      const [totals] = await sql<{ members: number; open: number; settled: number; retired: number }[]>`
+        select count(*)::int as members,
+               count(*) filter (where m.kind in ('problem','conjecture') and m.state = 'open')::int as open,
+               count(*) filter (where m.kind in ('problem','conjecture') and m.state = 'settled')::int as settled,
+               count(*) filter (where m.kind in ('problem','conjecture') and m.state = 'retired')::int as retired
+        from edge e join contribution ec on ec.id = e.contribution_id
+        join contribution m on m.id = e.src
+        where e.dst = ${f.id} and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active'`;
+      // Programmes nest: a campaign is part-of the broader front that covers it.
+      const partOf = await sql`
+        select p.id, p.kind, p.title, p.summary, p.tier, p.state, p.notability, p.lean_verified, p.names, p.created_at
+        from edge e join contribution ec on ec.id = e.contribution_id
+        join contribution_overview p on p.id = e.dst
+        where e.src = ${f.id} and e.rel = 'part-of' and ec.status = 'active'
+          and p.status = 'active' and p.kind = 'front' order by p.notability desc`;
+      const subProgrammes = await sql`
+        select p.id, p.kind, p.title, p.summary, p.tier, p.state, p.notability, p.lean_verified, p.names, p.created_at
+        from edge e join contribution ec on ec.id = e.contribution_id
+        join contribution_overview p on p.id = e.src
+        where e.dst = ${f.id} and e.rel = 'part-of' and ec.status = 'active'
+          and p.status = 'active' and p.kind = 'front' order by p.notability desc`;
       return text({
         ...row,
         matched_by: f.matched,
         progress: {
-          members: members.length,
-          open: problems.filter((p) => p.state === "open").length,
-          settled: problems.filter((p) => p.state === "settled").length,
-          retired: problems.filter((p) => p.state === "retired").length,
+          members: Number(totals.members),
+          open: Number(totals.open),
+          settled: Number(totals.settled),
+          ...(Number(totals.retired) ? { retired: Number(totals.retired) } : {}),
+          ...(members.length < Number(totals.members) ? { showing: members.length } : {}),
         },
+        ...(partOf.length ? { part_of: partOf.map(listRow) } : {}),
+        ...(subProgrammes.length ? { sub_programmes: subProgrammes.map(listRow) } : {}),
         members_by_kind: byKind,
         next: members.length === limit ? { offset: offset + limit } : null,
         tip: "frontier(<a member>) shows where that question stands and what has already been tried.",

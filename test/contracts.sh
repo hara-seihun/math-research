@@ -298,6 +298,15 @@ FR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"front\",\"title\":\"t
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$A\",\"dst\":\"$FR\",\"rel\":\"in-front\"}" | field '["ok"]' > /dev/null
 call fronts "{\"ref\":\"$FR\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(m["id"] for ms in d["members_by_kind"].values() for m in ms)' || fail "front member not surfaced"
 
+# Contract: programmes nest, and both directions are visible. A campaign front
+# is part-of the broader front that covers it; a reader landing on either must
+# be able to walk to the other.
+SUBFR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"front\",\"title\":\"test campaign\",\"summary\":\"s\",\"content\":\"one campaign.\"}" | field '["id"]')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$SUBFR\",\"dst\":\"$FR\",\"rel\":\"part-of\"}" | field '["ok"]' > /dev/null
+call fronts "{\"ref\":\"$FR\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["sub_programmes"][0]["id"]=="'"$SUBFR"'"' || fail "umbrella front does not list its campaigns"
+call fronts "{\"ref\":\"$SUBFR\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["part_of"][0]["id"]=="'"$FR"'"' || fail "campaign front does not name its umbrella"
+
+
 # Contract: resolve finds an entry by an alias, even when the title differs.
 RN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"obscure internal title zzq\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"Kolmogorov width marker\"]}" | field '["id"]')
 call resolve '{"ref":"Kolmogorov width marker"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["match"]=="exact" and d["results"][0]["id"]=="'"$RN"'"' || fail "resolve did not find entry by alias"

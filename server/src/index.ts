@@ -414,7 +414,7 @@ function buildServer(): McpServer {
       inputSchema: z.object({
         ref: refParam.optional().describe("Which programme. Omit to list them all."),
         state: z.enum(["open", "settled", "retired"]).optional().describe("Only show members in this state."),
-        ...pageParams(200, 50),
+        ...pageParams(200, 30),
       }),
     },
     async ({ ref, state, limit, offset }) => {

@@ -52,10 +52,10 @@ export async function searchContributions(args: SearchArgs) {
         and (${args.kind ?? null}::text is null or c.kind = ${args.kind ?? null})
         and (${args.min_tier ?? null}::int is null or c.tier >= ${args.min_tier ?? 0})
         and (${args.include_inactive ?? false} or c.status = 'active')
-      order by (ts_rank(c.search, to_tsquery('english', ${tsq}))
-                  + ts_rank(a.search, to_tsquery('english', ${tsq}))) * 3
-               + similarity(lower(c.title || ' ' || c.summary), ${raw}) * 2
-               + ln(1 + greatest(c.notability, 0)) * 0.4 desc,
+      order by ((ts_rank(c.search, to_tsquery('english', ${tsq}))
+                   + ts_rank(a.search, to_tsquery('english', ${tsq}))) * 3
+                + similarity(lower(c.title || ' ' || c.summary), ${raw}) * 2)
+               * (1 + 0.2 * ln(1 + greatest(c.notability, 0))) desc,
                c.created_at desc
       limit ${args.limit} offset ${args.offset}`;
   });

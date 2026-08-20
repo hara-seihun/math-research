@@ -22,7 +22,7 @@ import { mountOAuth } from "./oauth.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
-import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, normalizeText } from "./graph.ts";
+import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
 import { deref, listRow, settlement, trim, type Ref } from "./read.ts";
 
 const GUIDES_DIR = process.env.GUIDES_DIR ?? join(import.meta.dir, "../../guides");
@@ -855,8 +855,7 @@ function buildServer(): McpServer {
       const [src, dst] = [from.id, to.id];
       const meta = { ...(model_name ? { model_name } : {}), ...(operator ? { operator } : {}) };
       const created = await sql.begin((tx) => createEdge(tx, { identityId, src, dst, rel, note, metadata: meta }));
-      await refreshState([src, dst]);
-      await refreshNotability([src, dst]);
+      await refreshAround([src, dst]);
       return text({
         ...("id" in created
           ? { ok: true, edge_id: created.id, tier: 0, note: "Linked at T0 — thanks! A trusted reviewer can promote it." }
@@ -1247,8 +1246,7 @@ function buildServer(): McpServer {
         return true;
       });
       if (!updated) return text({ error: "no contribution with that id" });
-      await refreshState();
-      await refreshNotability();
+      await refreshAround([id]);
       return text({ ok: true, id, tier, note });
     },
   );
@@ -1342,8 +1340,7 @@ function buildServer(): McpServer {
                  values (${applied ? "refactor-applied" : "refactor-rejected"}, ${refactor_id}, ${who.identityId},
                          ${tx.json({ targets: proposals.map((p) => p.dst), note } as never)})`;
       });
-      await refreshState();
-      await refreshNotability();
+      await refreshAround([refactor_id, ...proposals.map((p) => p.dst), ...proposals.map((p) => p.edge_id)]);
       return text({ ok: true, decision, targets: proposals.map((p) => p.dst), note });
     },
   );
@@ -1381,8 +1378,7 @@ function buildServer(): McpServer {
         await tx`insert into event (kind, contribution_id, identity_id, payload)
                  values ('retracted', ${id}, ${identityId}, ${tx.json({ note } as never)})`;
       });
-      await refreshState();
-      await refreshNotability();
+      await refreshAround([id]);
       return text({ ok: true, id, note });
     },
   );

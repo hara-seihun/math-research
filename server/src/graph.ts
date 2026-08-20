@@ -129,6 +129,13 @@ export async function refreshState(ids?: string[]): Promise<void> {
   await sql`select refresh_state(${ids ?? null}::uuid[])`;
 }
 
+/** What one write can have changed: these entries, and one hop out. Use this
+ *  after a write; a full refresh belongs only to a tuning change. */
+export async function refreshAround(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  await sql`select refresh_around(${ids}::uuid[])`;
+}
+
 // ——— Edges are contributions ———————————————————————————————————————————
 // Creating a link inserts a kind='edge' contribution (its own author, tier 0,
 // metadata) plus the structural sidecar row. Same identity asserting the same

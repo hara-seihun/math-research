@@ -376,6 +376,17 @@ declare
   w jsonb;
   settle_rels text[];
 begin
+  -- Lock ordering. Two refreshes running at once update overlapping rows in
+  -- whatever order the planner picked, take row locks in opposite orders, and
+  -- deadlock — seen live as "deadlock detected" on a burst of promotions. A
+  -- scoped refresh therefore claims its rows up front in ascending id order,
+  -- which every transaction agrees on; a whole-table refresh is short and rare
+  -- enough to simply serialize.
+  if ids is null then
+    perform pg_advisory_xact_lock(hashtext('refresh_notability'));
+  else
+    perform 1 from contribution where id = any (ids) order by id for no key update;
+  end if;
   select value into w from config where key = 'notability_weights';
   if w is null then w := '{}'::jsonb; end if;
   settle_rels := array(select jsonb_array_elements_text(
@@ -432,6 +443,11 @@ end $$;
 -- question kinds.
 create or replace function refresh_state(ids uuid[] default null) returns void language plpgsql as $$
 begin
+  if ids is null then
+    perform pg_advisory_xact_lock(hashtext('refresh_state'));
+  else
+    perform 1 from contribution where id = any (ids) order by id for no key update;
+  end if;
   update contribution c
      set state = case
            when c.status <> 'active' then 'retired'
@@ -445,6 +461,29 @@ begin
            else 'open' end
    where c.kind in ('problem', 'conjecture')
      and (ids is null or c.id = any (ids));
+end $$;
+
+-- What one write can change: the entry itself, both ends of a link, and the
+-- neighbours of an entry whose weight moved. Everything else in a 58k-row
+-- table is unaffected, so a promotion or a retraction refreshes a handful of
+-- rows instead of rewriting the corpus twice.
+create or replace function refresh_around(ids uuid[]) returns void language plpgsql as $$
+declare
+  targets uuid[];
+begin
+  if ids is null or cardinality(ids) = 0 then return; end if;
+  select array_agg(distinct t) into targets from (
+    select unnest(ids) as t
+    union select e.src from edge e where e.contribution_id = any (ids)
+    union select e.dst from edge e where e.contribution_id = any (ids)
+    union select e.dst from edge e where e.src = any (ids)
+    union select e.src from edge e where e.dst = any (ids)
+  ) x where t is not null;
+  -- One ordered claim covers both refreshes; each also claims its own, which
+  -- is a no-op once these locks are held.
+  perform 1 from contribution where id = any (targets) order by id for no key update;
+  perform refresh_state(targets);
+  perform refresh_notability(targets);
 end $$;
 
 \ir tools/tuning-defaults.sql

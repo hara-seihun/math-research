@@ -215,6 +215,37 @@ psql -q -h "$WORK" -d math -c "insert into identity (id, role) values ('$OPID', 
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"reviewed\"}" | field '["ok"]' > /dev/null
 GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '["tier"]') == 2 ]] || fail "operator set_tier did not apply"
+
+# Contract: a write refreshes what it touched, not the corpus. Promotion and
+# linking used to recompute state and notability over every row, which on a
+# real corpus is both slow and a deadlock (two whole-table updates take row
+# locks in opposite orders — observed live as "deadlock detected" on the fifth
+# of five promotions). Fill the table first, so a whole-table refresh is
+# unmistakable in the tuple-update count.
+psql -q -h "$WORK" -d math -c "insert into contribution (kind, title, summary, artifact_hash, tier)
+  select 'result', 'filler ' || g, 'filler', (select artifact_hash from contribution limit 1), 1
+  from generate_series(1, 400) g"
+BEFORE=$(psql -h "$WORK" -d math -tAc "select n_tup_upd from pg_stat_user_tables where relname = 'contribution'")
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"scope check\"}" | field '["ok"]' > /dev/null
+sleep 1.5
+AFTER=$(psql -h "$WORK" -d math -tAc "select n_tup_upd from pg_stat_user_tables where relname = 'contribution'")
+(( AFTER - BEFORE < 100 )) || fail "set_tier rewrote $((AFTER - BEFORE)) rows — it should refresh only what it touched"
+
+# And under real contention the writes must all come back answers, not errors.
+WRITE_JOBS=()
+for i in 1 2 3 4 5 6; do
+  call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"concurrent $i\"}" > "$WORK/tier.$i.out" &
+  WRITE_JOBS+=($!)
+  call link "{\"contributor_key\":\"$KEY\",\"src\":\"$CID\",\"dst\":\"$CID2\",\"rel\":\"about\",\"note\":\"concurrent $i\"}" > "$WORK/link.$i.out" &
+  WRITE_JOBS+=($!)
+done
+# Only these jobs: the server and the verifier are background jobs too, and a
+# bare `wait` would wait for the suite's own infrastructure to exit.
+wait "${WRITE_JOBS[@]}"
+for f in "$WORK"/tier.*.out "$WORK"/link.*.out; do
+  [[ $(field '["ok"]' < "$f") == True ]] || fail "a concurrent write failed: $(cat "$f")"
+done
+
 echo "$GOT" | python3 -c 'import sys,json; evs=[e["kind"] for e in json.loads(sys.stdin.read())["events"]]; assert "tier-changed" in evs' || fail "no tier-changed event"
 
 # Contract: trails are visible where the work happens and never block anyone.

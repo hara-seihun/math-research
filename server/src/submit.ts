@@ -1,7 +1,7 @@
 import { sql } from "./db.ts";
 import { sha256hex } from "./identity.ts";
 import { issueReceipt } from "./receipts.ts";
-import { createEdge, refreshNotability, refreshState } from "./graph.ts";
+import { createEdge, refreshAround } from "./graph.ts";
 
 const MAX_CONTENT_BYTES = 1 << 20; // 1 MiB
 
@@ -83,8 +83,7 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
     notes.push(`heads up: identical content already exists as ${existing.id} — linked it for you.`);
   }
   const touched = [result.id, ...(input.relates_to ?? []).map((l) => l.id), ...(input.supersedes ?? [])];
-  await refreshState(touched);
-  await refreshNotability(touched);
+  await refreshAround(touched);
 
   if ((input.supersedes ?? []).length > 0) {
     notes.push(

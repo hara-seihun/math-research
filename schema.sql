@@ -108,6 +108,7 @@ create table contribution (
                     check (status in ('active', 'retracted', 'superseded')),
   notability        real not null default 0,
   tags              text[] not null default '{}',  -- derived subject facet (see topics.ts)
+  names             text[] not null default '{}',  -- canonical names/aliases for resolve
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   search            tsvector generated always as
@@ -118,6 +119,7 @@ create index contribution_trgm_idx on contribution using gin ((title || ' ' || s
 create index contribution_kind_idx on contribution (kind, status, tier);
 create index contribution_notability_idx on contribution (status, notability desc);
 create index contribution_tags_idx on contribution using gin (tags);
+create index contribution_names_idx on contribution using gin (names);
 create index contribution_identity_idx on contribution (identity_id, created_at);
 create index contribution_artifact_idx on contribution (artifact_hash);
 
@@ -203,7 +205,7 @@ create index request_log_identity_idx on request_log (identity_id, id);
 -- property, so no query re-derives it ad hoc.
 create view contribution_overview as
 select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
-       c.artifact_hash, c.metadata, c.notability, c.tags, c.created_at, c.updated_at, c.search,
+       c.artifact_hash, c.metadata, c.notability, c.tags, c.names, c.created_at, c.updated_at, c.search,
        exists (select 1 from verification v
                where v.contribution_id = c.id
                  and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified

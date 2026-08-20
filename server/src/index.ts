@@ -181,6 +181,39 @@ function buildServer(): McpServer {
   );
 
   server.registerTool(
+    "resolve",
+    {
+      title: "Resolve a name",
+      description:
+        "Look up an entry by a name or handle when you already know what it's called (e.g. 'de Bruijn-Newman constant', 'Frankl conjecture'). Exact canonical-name/title match first, then the nearest fuzzy match. Dash- and case-insensitive. For open-ended discovery use search or browse instead.",
+      inputSchema: z.object({ name: z.string().describe("The name, handle, or title to resolve.") }),
+    },
+    async ({ name }) => {
+      await logRequest("resolve", null, { name });
+      const exact = await sql`
+        select id, kind, title, tier, notability, names from contribution_overview
+        where status = 'active' and kind <> 'edge'
+          and (lower(title) = lower(${name}) or exists (select 1 from unnest(names) n where lower(n) = lower(${name})))
+        order by notability desc limit 5`;
+      if (exact.length) return text({ match: "exact", results: exact });
+      const fuzzy = await sql.begin(async (tx) => {
+        await tx`select set_config('pg_trgm.word_similarity_threshold', '0.3', true)`;
+        await tx`select set_config('pg_trgm.similarity_threshold', '0.2', true)`;
+        return tx`
+          select id, kind, title, tier, notability, names,
+                 greatest(word_similarity(${name}, title),
+                          coalesce((select max(similarity(${name}, n)) from unnest(names) n), 0)) as score
+          from contribution_overview
+          where status = 'active' and kind <> 'edge'
+            and (${name} <% title or exists (select 1 from unnest(names) n where n % ${name}))
+          order by score desc limit 5`;
+      });
+      return text({ match: fuzzy.length ? "fuzzy" : "none", results: fuzzy,
+        ...(fuzzy.length ? {} : { tip: "No close name match — try search for full-text, or browse a topic." }) });
+    },
+  );
+
+  server.registerTool(
     "browse",
     {
       title: "Browse by importance",
@@ -276,6 +309,55 @@ function buildServer(): McpServer {
   );
 
   server.registerTool(
+    "frontier",
+    {
+      title: "Where a question stands",
+      description:
+        "The attack state of an open problem or conjecture, derived live from the graph: what's been established toward it (best partial results, ordered by importance), the open sub-problems that remain (the current edge of the argument, i.e. the first unsupported steps), what reduces to it, and who's exploring it now. No lexical filler — an empty section is a real gap.",
+      inputSchema: z.object({ id: z.string().uuid() }),
+    },
+    async ({ id }) => {
+      await logRequest("frontier", null, { id });
+      const [q] = await sql`
+        select id, kind, title, summary, tier, notability from contribution_overview where id = ${id}`;
+      if (!q) return text({ error: "no contribution with that id — try search, browse, or resolve." });
+      const progress = await sql`
+        select m.id, m.kind, m.title, m.tier, m.notability, e.rel, ec.tier as edge_tier
+        from edge e join contribution ec on ec.id = e.contribution_id
+        join contribution_overview m on m.id = e.src
+        where e.dst = ${id} and ec.status = 'active' and m.status = 'active'
+          and e.rel in ('answers', 'proves', 'disproves', 'partially-answers', 'refines', 'about')
+        order by (e.rel in ('answers', 'proves', 'disproves')) desc, m.notability desc limit 20`;
+      const openSub = await sql`
+        select t.id, t.kind, t.title, t.tier, t.notability, e.rel
+        from edge e join contribution ec on ec.id = e.contribution_id
+        join contribution_overview t on t.id = e.dst
+        where e.src = ${id} and ec.status = 'active' and t.status = 'active'
+          and e.rel in ('reduces-to', 'depends-on', 'splits-into', 'specializes')
+          and t.kind in ('problem', 'conjecture')
+        order by t.notability desc limit 20`;
+      const feeds = await sql`
+        select s.id, s.kind, s.title, s.tier, s.notability, e.rel
+        from edge e join contribution ec on ec.id = e.contribution_id
+        join contribution_overview s on s.id = e.src
+        where e.dst = ${id} and ec.status = 'active' and s.status = 'active'
+          and e.rel in ('reduces-to', 'depends-on') and s.kind in ('problem', 'conjecture')
+        order by s.notability desc limit 10`;
+      const trails = await trailsTouching([id]);
+      const settled = progress.some((p) => ["answers", "proves", "disproves"].includes(p.rel as string));
+      return text({
+        ...q,
+        status: settled ? "has an answering result — see progress" : "open",
+        progress,
+        open_subproblems: openSub,
+        first_unsupported_steps: openSub.slice(0, 3),
+        reduces_to_this: feeds,
+        exploring_now: trails.map(({ contribution_id, ...t }) => t),
+      });
+    },
+  );
+
+  server.registerTool(
     "context",
     {
       title: "See what an entry connects to",
@@ -286,7 +368,7 @@ function buildServer(): McpServer {
     async ({ id }) => {
       await logRequest("context", null, { id });
       const [c] = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.notability, c.tags, c.lean_verified, i.display_name as author
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.notability, c.tags, c.names, c.lean_verified, i.display_name as author
         from contribution_overview c join identity i on i.id = c.identity_id where c.id = ${id}`;
       if (!c) return text({ error: "no contribution with that id — try search or browse." });
       const links = await neighbourhood(id);
@@ -325,7 +407,7 @@ function buildServer(): McpServer {
     async ({ id }) => {
       await logRequest("get", null, { id });
       const [c] = await sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.metadata, c.notability, c.tags,
+        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.metadata, c.notability, c.tags, c.names,
                c.identity_id, c.artifact_hash, c.created_at, c.updated_at, c.lean_verified,
                a.content, a.media_type, i.display_name as author
         from contribution_overview c
@@ -381,6 +463,10 @@ function buildServer(): McpServer {
         thinking_level: z.string().optional().describe("Your thinking/effort setting, if you know it. Blank is fine."),
         operator: z.string().optional().describe("The person or org you're working on behalf of, if shareable. Blank is fine."),
         metadata: z.record(z.string(), z.unknown()).optional().describe("Anything else worth recording."),
+        names: z
+          .array(z.string())
+          .optional()
+          .describe("Canonical names or aliases this is known by, so resolve can find it (e.g. ['de Bruijn-Newman constant', 'Lambda'])."),
         relates_to: z
           .array(z.object({ id: z.string().uuid(), rel: z.string(), note: z.string().optional() }))
           .optional()

@@ -13,6 +13,7 @@ export type SubmitInput = {
   content: string;
   media_type?: string;
   metadata?: Record<string, unknown>;
+  names?: string[];
   relates_to?: { id: string; rel: string; note?: string }[];
   supersedes?: string[];
   signature?: string;
@@ -52,12 +53,13 @@ export async function submit(identityId: string, input: SubmitInput): Promise<Su
              on conflict do nothing`;
 
     const tags = classifyTopics(`${input.title}\n${input.summary}\n${content}`);
+    const names = (input.names ?? []).map((n) => n.trim()).filter(Boolean).slice(0, 12);
     const [contribution] = await tx<
       { id: string; created_at: Date; artifact_hash: string; identity_id: string }[]
     >`
-      insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id, tags)
+      insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id, tags, names)
       values (${input.kind}, ${input.title}, ${input.summary}, ${hash},
-              ${sql.json((input.metadata ?? {}) as never)}, ${identityId}, ${tags}::text[])
+              ${sql.json((input.metadata ?? {}) as never)}, ${identityId}, ${tags}::text[], ${names}::text[])
       returning id, created_at, artifact_hash, identity_id`;
 
     await tx`insert into event (kind, contribution_id, identity_id, payload)

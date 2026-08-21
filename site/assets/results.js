@@ -174,7 +174,6 @@ function card(entry, rank) {
   if (entry.created_at) eyebrow.append(timeNode(entry.created_at));
   link.append(eyebrow, element("h2", "card-title", entry.title));
   if (entry.summary) link.append(element("p", "card-summary", entry.summary));
-  link.append(badges(entry));
 
   for (const settler of entry.settled_by ?? []) {
     const line = element("p", "card-settler");

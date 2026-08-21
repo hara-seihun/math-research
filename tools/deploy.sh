@@ -13,6 +13,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Agents deploy concurrently. Without one host-wide lease, two otherwise-safe
+# rolling deploys can restart opposite instances at the same time and make the
+# final public health probe fail. Hold this descriptor through push, guest
+# mutation, and validation; flock releases it on every exit path.
+exec 9>/tmp/math-research-deploy.lock
+flock 9
+
 # Content edited at https://math.seihun.com/admin is committed on the guest
 # (which holds no GitHub credential), so the guest is upstream of the host for
 # those commits. Collect them before pushing, or the guest's pull diverges.

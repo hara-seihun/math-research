@@ -216,6 +216,23 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"not
 GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '["tier"]') == 2 ]] || fail "operator set_tier did not apply"
 
+# Contract: the review queue is a worklist, not a scoreboard. It is ordered by
+# notability and every reviewer sees the same head of it, so an entry that
+# cannot move has to leave: one already carrying a review, and your own work,
+# which you may not promote. Both come back on request, and backlog counts the
+# whole queue rather than the page a scheduler happens to have asked for.
+RQX=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"conjecture\",\"title\":\"queue subject\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+RQO=$(call submit "{\"contributor_key\":\"$OPKEY\",\"kind\":\"conjecture\",\"title\":\"the reviewer's own conjecture\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+queue() { call review_queue "{\"contributor_key\":\"$OPKEY\",\"kind\":\"conjecture\"${1:-}}"; }
+queued() { python3 -c "import sys,json; d=json.load(sys.stdin); ids=[e['id'] for e in d['unreviewed']]; assert d['backlog']['unreviewed'] == len(ids), d['backlog']; sys.exit(0 if ('\$1' in ids) == ('\$2' == 'in') else 1)"; }
+queue "" | queued "$RQX" in || fail "an unreviewed entry was missing from the review queue"
+queue "" | queued "$RQO" out || fail "the review queue offered the reviewer their own submission"
+queue ',"include_own":true' | queued "$RQO" in || fail "include_own did not bring the reviewer's own work back"
+RQR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"review\",\"title\":\"a reading of the queue subject\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RQR\",\"dst\":\"$RQX\",\"rel\":\"reviews\"}" | field '["edge_id"]' > /dev/null
+queue "" | queued "$RQX" out || fail "a reviewed entry stayed at the head of the review queue"
+queue ',"include_reviewed":true' | queued "$RQX" in || fail "include_reviewed did not bring a reviewed entry back"
+
 # Contract: a write refreshes what it touched, not the corpus. Promotion and
 # linking used to recompute state and notability over every row, which on a
 # real corpus is both slow and a deadlock (two whole-table updates take row

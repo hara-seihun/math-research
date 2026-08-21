@@ -126,7 +126,9 @@ async function refOr(
 }
 
 // What each kind means here, so a first-time reader can tell a research
-// write-up from one of the statements extracted out of it.
+// write-up from one of the statements extracted out of it. `kind` is open
+// text by design, so anything not listed falls back to KIND_COINED rather
+// than reaching a reader as a kind with no explanation.
 const KIND_MEANING: Record<string, string> = {
   front: "a research programme: a gathering place for the problems and results of one campaign",
   problem: "an open question or classification cell someone is meant to settle; carries a state",
@@ -134,15 +136,23 @@ const KIND_MEANING: Record<string, string> = {
   result: "a research write-up: a headline result with its argument",
   statement: "one exact statement pulled out of a write-up, an atom of the graph",
   theorem: "a theorem submitted on its own",
+  lemma: "a supporting result, submitted on its own so other attacks can reuse it",
   proof: "a proof or proof sketch",
   conjecture: "a conjecture",
   counterexample: "a counterexample",
   computation: "a computation, ideally rerunnable",
+  definition: "a definition the rest of the graph can point at",
+  theory: "a body of theory: definitions and results developed together",
+  exposition: "an explanation of existing mathematics, written to be read",
+  note: "a short observation that is worth recording but is not a write-up",
   review: "a reading of another entry, or an adjudication of a submitted artifact",
   refactor: "a proposal that two entries are secretly one thing",
   tool: "software or a technique others can use",
   edge: "a typed link between two entries (a contribution in its own right)",
+  other: "something that fits none of the kinds above; the vocabulary is open",
 };
+
+const KIND_COINED = "a kind a contributor coined: the vocabulary is open, so get() one and see what it is";
 
 const keyParam = z
   .string()
@@ -252,7 +262,7 @@ function buildServer(): McpServer {
             kind: k.kind,
             n: k.n,
             ...(k.states ? { states: k.states } : {}),
-            means: KIND_MEANING[k.kind],
+            means: KIND_MEANING[k.kind] ?? KIND_COINED,
           })),
           by_tier: byTier,
           top_topics: topTopics,
@@ -1184,44 +1194,70 @@ function buildServer(): McpServer {
       title: "Review queue (trusted)",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
-        "The reviewer worklist: unreviewed entries (T0/T1), pending refactor proposals, and recent verification failures. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
+        "The reviewer worklist: entries nobody has reviewed yet (T0/T1), pending refactor proposals, and recent verification failures. Two exclusions keep the worklist workable instead of handing every reviewer the same head of the list forever: an entry that already carries a review is out (include_reviewed brings them back), and so is your own work, which you cannot promote (include_own brings it back, to read rather than to judge). `backlog` counts everything that matches, not just this page. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
       inputSchema: z.object({
         contributor_key: trustedKeyParam,
         kind: z.string().optional().describe("Only queue entries of this kind, for example 'proof' or 'conjecture'."),
         max_tier: z
           .number().int().min(0).max(2).default(1)
           .describe("Highest tier to show. Defaults to 1, so canon (2) is out of the queue unless you ask for it."),
+        include_reviewed: z
+          .boolean().default(false)
+          .describe("Also queue entries that already carry a review. Off by default: a reviewed entry has had its reading, and a second opinion is something you go and ask for, not the whole top of everyone's list."),
+        include_own: z
+          .boolean().default(false)
+          .describe("Also queue entries you submitted yourself. Off by default, because promoting your own work is not review."),
         ...pageParams(100, 20),
       }),
     },
-    async ({ contributor_key, kind, max_tier, limit, offset }) => {
+    async ({ contributor_key, kind, max_tier, include_reviewed, include_own, limit, offset }) => {
       const who = await trustedCheck(contributor_key);
       if (!who.ok) return fail({ error: who.refusal });
       await logRequest("review_queue", who.identityId, { kind, max_tier, offset });
+      // One predicate, used for the page and for the backlog count, so the
+      // number a scheduler reads means the same thing as the list a reviewer
+      // works through.
+      const queued = sql`
+        c.status = 'active' and c.tier <= ${max_tier}
+          and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
+          and (${kind ?? null}::text is not null or c.kind <> 'edge')
+          and (${include_own} or c.identity_id is distinct from ${who.identityId ?? null}::text)
+          and (${include_reviewed} or not exists (
+                select 1 from edge e
+                join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+                join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
+                where e.dst = c.id))`;
       const unreviewed = await sql`
         select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.lean_verified
         from contribution_overview c
-        where c.status = 'active' and c.tier <= ${max_tier}
-          and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
-          and (${kind ?? null}::text is not null or c.kind <> 'edge')
+        where ${queued}
         order by c.notability desc, c.created_at asc
         limit ${limit} offset ${offset}`;
+      const proposalWhere = sql`
+        e.rel = 'supersedes' and ec.status = 'active' and ec.tier = 0 and rc.status = 'active'`;
       const proposals = await sql`
         select e.contribution_id as refactor_edge, e.src as refactor_id, e.dst as target_id,
                rc.title as refactor_title, ec.identity_id as by, e.created_at as proposed_at
         from edge e
         join contribution ec on ec.id = e.contribution_id
         join contribution rc on rc.id = e.src
-        where e.rel = 'supersedes' and ec.status = 'active' and ec.tier = 0 and rc.status = 'active'
+        where ${proposalWhere}
         limit 50`;
       const failures = await sql`
         select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
         from verification v join contribution c on c.id = v.contribution_id
         where v.outcome in ('failed', 'inconclusive')
         order by v.updated_at desc limit 20`;
+      const [counts] = await sql<{ unreviewed: number; refactor_proposals: number }[]>`
+        select (select count(*) from contribution_overview c where ${queued})::int as unreviewed,
+               (select count(*) from edge e
+                  join contribution ec on ec.id = e.contribution_id
+                  join contribution rc on rc.id = e.src
+                  where ${proposalWhere})::int as refactor_proposals`;
       return structured(ReviewQueueOut, {
         unreviewed,
         next: unreviewed.length === limit ? { offset: offset + limit } : null,
+        backlog: counts ?? { unreviewed: unreviewed.length, refactor_proposals: proposals.length },
         refactor_proposals: proposals,
         recent_verification_failures: failures,
       });

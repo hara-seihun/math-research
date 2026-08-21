@@ -529,6 +529,10 @@ export const ReviewQueueOut = z.strictObject({
     }),
   ),
   next: offsetCursor,
+  backlog: z.strictObject({
+    unreviewed: z.number().int(),
+    refactor_proposals: z.number().int(),
+  }),
   refactor_proposals: z.array(
     z.strictObject({
       refactor_edge: z.string(),

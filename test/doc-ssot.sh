@@ -108,7 +108,7 @@ done
 
 # Holes something fills in. `guides` expands the pinned ones as it serves a
 # guide; the site build expands these and its own.
-known_placeholders='mathlib_version|lean_version|how_it_works_digest|ledger_snapshot|accomplishments_snapshot|tool_reference|resource_reference|prompt_reference|results_js'
+known_placeholders='mathlib_version|lean_version|how_it_works_digest|ledger_snapshot|tool_reference|resource_reference|prompt_reference|results_js'
 unknown=$(grep -rhoE '\{\{[a-z_]+\}\}' guides site/content \
   | sort -u | grep -Ev "^\{\{($known_placeholders)\}\}$" || true)
 [[ -z $unknown ]] || fail "nothing fills these in:" $unknown

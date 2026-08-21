@@ -311,6 +311,7 @@ function renderEntry(entry) {
   const header = element("header", "entry-header");
   const eyebrow = element("div", "card-eyebrow");
   eyebrow.append(element("span", "kind", entry.kind));
+  eyebrow.append(element("span", "tier", tierLabel(entry.tier)));
   eyebrow.append(timeNode(entry.created_at));
   header.append(eyebrow, element("h1", "entry-title", entry.title));
   if (entry.summary && !restatesTheBody(entry)) header.append(element("p", "entry-summary", entry.summary));

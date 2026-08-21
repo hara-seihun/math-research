@@ -306,6 +306,7 @@ td:nth-child(2) { color: var(--muted); white-space: nowrap; }
 }
 
 .kind { text-transform: uppercase; letter-spacing: 0.06em; }
+.card-eyebrow .tier { color: var(--accent); font-weight: 700; }
 .meta-time { margin-left: auto; }
 
 .card-title {

@@ -14,7 +14,7 @@
  * statement, and the axioms it depends on. The orchestrator turns that into
  * the verification outcome; this process decides nothing.
  */
-import { mkdirSync, readdirSync, existsSync, rmSync, renameSync, writeFileSync, readFileSync, copyFileSync, cpSync } from "node:fs";
+import { mkdirSync, readdirSync, existsSync, lstatSync, rmSync, renameSync, symlinkSync, writeFileSync, readFileSync, copyFileSync, cpSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import type { PatchJob, PatchModuleResult, PatchResult } from "./patch-job.ts";
 
@@ -197,6 +197,32 @@ const parseAudit = (output: string) => {
  * because publication installs exactly what was verified rather than
  * compiling the library a second time.
  */
+function linkChildren(source: string, target: string) {
+  mkdirSync(target, { recursive: true });
+  for (const name of readdirSync(source)) symlinkSync(join(source, name), join(target, name));
+}
+
+/** Turn only the symlinked ancestor directories of one output file into real
+ *  directories whose untouched children remain symlinks. */
+function writableOverlayPath(base: string, overlay: string, rel: string): string {
+  let source = base;
+  let target = overlay;
+  for (const part of dirname(rel).split("/")) {
+    source = join(source, part);
+    target = join(target, part);
+    if (!existsSync(target)) {
+      if (existsSync(source)) linkChildren(source, target);
+      else mkdirSync(target, { recursive: true });
+    } else if (lstatSync(target).isSymbolicLink()) {
+      rmSync(target);
+      linkChildren(source, target);
+    }
+  }
+  const file = join(overlay, rel);
+  rmSync(file, { force: true });
+  return file;
+}
+
 async function runPatchJob(id: string) {
   const jobDir = join(SPOOL_IN, `patch-${id}`);
   const work = join(WORK_DIR, `patch-${id}`);
@@ -213,15 +239,16 @@ async function runPatchJob(id: string) {
 
     // Lean stops at the first LEAN_PATH root containing a module's directory;
     // a sparse `out/MathlibPlus/X.olean` therefore hides every unchanged
-    // `MathlibPlus/*.olean` in later roots. A symlink overlay is a cheap full
-    // namespace across the sandbox's bind-mount boundary: unlink before
-    // writing so the read-only published tree is never modified, and return
-    // only the files this job rebuilt.
+    // `MathlibPlus/*.olean` in later roots. A sparse copy-on-write overlay is
+    // a cheap full namespace across the sandbox's bind-mount boundary: every
+    // untouched subtree is one symlink, while ancestors of outputs become
+    // real directories containing symlinked siblings.
     const base = (process.env.EXTRA_LEAN_PATH ?? "").split(":").find((dir) => existsSync(dir));
     if (!base) throw new Error("patch runner has no readable EXTRA_LEAN_PATH");
-    const cloned = Bun.spawnSync(["cp", "-as", `${base}/.`, overlay], { stdout: "pipe", stderr: "pipe" });
-    if (cloned.exitCode !== 0) throw new Error(`could not create patch olean overlay: ${cloned.stderr.toString()}`);
-    for (const deleted of job.deleted) rmSync(join(overlay, `${deleted.replaceAll(".", "/")}.olean`), { force: true });
+    linkChildren(base, overlay);
+    for (const deleted of job.deleted) {
+      writableOverlayPath(base, overlay, `${deleted.replaceAll(".", "/")}.olean`);
+    }
 
     const deadline = started + job.timeout_ms;
     const modules: PatchModuleResult[] = [];
@@ -240,8 +267,8 @@ async function runPatchJob(id: string) {
         result.modules = modules;
         return;
       }
-      const olean = join(overlay, `${module.module.replaceAll(".", "/")}.olean`);
-      rmSync(olean, { force: true });
+      const rel = `${module.module.replaceAll(".", "/")}.olean`;
+      const olean = writableOverlayPath(base, overlay, rel);
       mkdirSync(dirname(olean), { recursive: true });
       const budget = Math.min(TIMEOUT_MS, Math.max(1, deadline - Date.now()));
       const compiled = await runLean([`--root=${src}`, "-o", olean, join(src, module.path)], work, budget, { before: overlay });

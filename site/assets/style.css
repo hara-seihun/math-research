@@ -171,6 +171,13 @@ footer p { margin: 0 0 0.4rem; }
 
 /* --- The results feed -------------------------------------------------- */
 
+/* The browser hides [hidden] with `display: none` from its own stylesheet,
+   which any class rule setting display beats on specificity. Everything the
+   feed shows and hides -- the census, the window selector, the load-more
+   button -- sets display, so without this they are all permanently visible.
+   That is why the window selector was offered on a tab that ignores it. */
+[hidden] { display: none !important; }
+
 .feed { margin-top: 2rem; }
 
 .census {

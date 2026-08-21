@@ -67,7 +67,7 @@ alter table artifact drop column if exists search;
 -- The append-only event ledger.
 create table if not exists event (
   seq             bigserial primary key,
-  kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | refactor-applied | refactor-rejected | flagged | identity-updated | imported | role-granted
+  kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | refactor-applied | refactor-rejected | amendment-applied | amendment-rejected | flagged | identity-updated | imported | role-granted
   contribution_id uuid,
   identity_id     text,
   payload         jsonb not null default '{}'::jsonb,

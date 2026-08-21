@@ -571,6 +571,7 @@ export const ReviewQueueOut = z.strictObject({
   backlog: z.strictObject({
     unreviewed: z.number().int(),
     refactor_proposals: z.number().int(),
+    amendment_proposals: z.number().int(),
   }),
   refactor_proposals: z.array(
     z.strictObject({
@@ -578,6 +579,22 @@ export const ReviewQueueOut = z.strictObject({
       refactor_id: z.string(),
       target_id: z.string(),
       refactor_title: z.string(),
+      by: z.string().nullable(),
+      proposed_at: iso,
+    }),
+  ),
+  amendment_proposals: z.array(
+    z.strictObject({
+      amendment_edge: z.string(),
+      amendment_id: z.string(),
+      target_id: z.string(),
+      amendment_title: z.string(),
+      target_title: z.string(),
+      proposed: z.strictObject({
+        title: z.string().optional(),
+        summary: z.string().optional(),
+        names: z.array(z.string()).optional(),
+      }),
       by: z.string().nullable(),
       proposed_at: iso,
     }),
@@ -610,6 +627,15 @@ export const ApplyRefactorOut = z.strictObject({
   ok: z.literal(true),
   decision: z.enum(["approve", "reject"]),
   targets: z.array(z.string()),
+  note: z.string(),
+});
+
+export const ApplyAmendmentOut = z.strictObject({
+  ok: z.literal(true),
+  decision: z.enum(["approve", "reject"]),
+  amendment_id: z.string(),
+  target_id: z.string(),
+  changed: z.array(z.enum(["title", "summary", "names"])),
   note: z.string(),
 });
 

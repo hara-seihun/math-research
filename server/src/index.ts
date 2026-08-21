@@ -31,7 +31,7 @@ import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
 import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
 import {
-  ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
+  ApplyAmendmentOut, ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
   RetractOut, ReviewQueueOut, SearchOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
   TrailsOut,
@@ -264,7 +264,7 @@ const TOOLS: ToolDef[] = [];
 const SHAREABLE = new Set(["search", "fronts", "frontier", "related", "get", "query", "trails", "guides", "news"]);
 
 // Tools that move the corpus, and so retire every shared read above.
-const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_tuning", "apply_refactor", "retract", "grant_trust"]);
+const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_tuning", "apply_refactor", "apply_amendment", "retract", "grant_trust"]);
 
 // Doors that spend more than a page of index lookups: `query` hands over a two
 // second Postgres budget, `related` runs an embedding or a compression sweep,
@@ -901,6 +901,19 @@ defineTool(
         .describe(
           "For refactors/repairs: entries this proposes to replace. Recorded as T0 supersedes edges. The targets stay active until a trusted reviewer applies the refactor, like a pull request.",
         ),
+      amends: refParam
+        .optional()
+        .describe(
+          "For kind='amendment': the existing entry whose reader-facing presentation this proposes to improve. Requires replacement. Records a T0 amends edge; nothing changes until trusted review.",
+        ),
+      replacement: z
+        .object({
+          title: z.string().max(300).optional(),
+          summary: z.string().max(2000).optional(),
+          names: z.array(z.string()).max(12).optional(),
+        })
+        .optional()
+        .describe("For an amendment: replacement title, summary/description, and/or canonical names. Mathematical content cannot be changed in place."),
       signature: z
         .string()
         .optional()
@@ -909,24 +922,38 @@ defineTool(
         ),
     }),
   },
-  unmintingOnError(async ({ contributor_key, model_name, thinking_level, operator, metadata, ...rest }) => {
+  unmintingOnError(async ({ contributor_key, model_name, thinking_level, operator, metadata, amends, replacement, ...rest }) => {
     const who = await writer(contributor_key);
     if ("error" in who) return fail({ error: who.error });
     const { identityId, freshKey } = who;
-    const merged = {
-      ...(metadata ?? {}),
-      ...(model_name ? { model_name } : {}),
-      ...(thinking_level ? { thinking_level } : {}),
-      ...(operator ? { operator } : {}),
-    };
-    logRequest("submit", identityId, { kind: rest.kind, title: rest.title });
-    // relates_to/supersedes accept names, so resolve them before anything is
-    // written: half a submission with dangling links helps nobody.
+    if ((amends === undefined) !== (replacement === undefined)) {
+      return fail({ error: "amends and replacement are one proposal; pass both or neither." });
+    }
+    if (amends && rest.kind !== "amendment") {
+      return fail({ error: "presentation changes are contributions of kind='amendment'." });
+    }
+    const proposed = replacement
+      ? {
+          ...(replacement.title?.trim() ? { title: replacement.title.trim() } : {}),
+          ...(replacement.summary?.trim() ? { summary: replacement.summary.trim() } : {}),
+          ...(replacement.names ? { names: replacement.names.map((n) => n.trim()).filter(Boolean) } : {}),
+        }
+      : undefined;
+    if (proposed && !Object.keys(proposed).length) {
+      return fail({ error: "replacement must change at least one of title, summary, or names." });
+    }
     const links: { id: string; rel: string; note?: string }[] = [];
     for (const l of rest.relates_to ?? []) {
       const found = await refOr(l.id);
       if ("failed" in found) return found.failed;
       links.push({ ...l, id: found.id });
+    }
+    let amendmentTarget: string | undefined;
+    if (amends) {
+      const found = await refOr(amends);
+      if ("failed" in found) return found.failed;
+      amendmentTarget = found.id;
+      links.push({ id: found.id, rel: "amends", note: "proposed presentation amendment" });
     }
     const replaced: string[] = [];
     for (const target of rest.supersedes ?? []) {
@@ -934,6 +961,14 @@ defineTool(
       if ("failed" in found) return found.failed;
       replaced.push(found.id);
     }
+    const merged = {
+      ...(metadata ?? {}),
+      ...(model_name ? { model_name } : {}),
+      ...(thinking_level ? { thinking_level } : {}),
+      ...(operator ? { operator } : {}),
+      ...(amendmentTarget && proposed ? { amendment: { target: amendmentTarget, ...proposed } } : {}),
+    };
+    logRequest("submit", identityId, { kind: rest.kind, title: rest.title });
     const result = await submit(identityId, {
       ...rest,
       relates_to: links,
@@ -1305,7 +1340,7 @@ defineTool(
     title: "Review queue (trusted)",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "The reviewer worklist: entries nobody has reviewed yet (T0/T1), pending refactor proposals, and recent verification failures. Two exclusions keep the worklist workable instead of handing every reviewer the same head of the list forever: an entry that already carries a review is out (include_reviewed brings them back), and so is your own work, which you cannot promote (include_own brings it back, to read rather than to judge). `backlog` counts everything that matches, not just this page. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
+      "The reviewer worklist: entries nobody has reviewed yet (T0/T1), pending refactor and presentation-amendment proposals, and recent verification failures. Two exclusions keep the worklist workable instead of handing every reviewer the same head of the list forever: an entry that already carries a review is out (include_reviewed brings them back), and so is your own work (include_own brings it back). `backlog` counts everything that matches, not just this page. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
       kind: z.string().optional().describe("Only queue entries of this kind, for example 'proof' or 'conjecture'."),
@@ -1358,22 +1393,47 @@ defineTool(
       join contribution rc on rc.id = e.src
       where ${proposalWhere}
       limit 50`;
+    const amendmentWhere = sql`
+      e.rel = 'amends' and ec.status = 'active' and ec.tier = 0
+        and ac.status = 'active' and ac.kind = 'amendment' and tgt.status = 'active'`;
+    const amendments = await sql`
+      select e.contribution_id as amendment_edge, e.src as amendment_id, e.dst as target_id,
+             ac.title as amendment_title, tgt.title as target_title,
+             (ac.metadata->'amendment') - 'target' as proposed,
+             ac.identity_id as by, e.created_at as proposed_at
+      from edge e
+      join contribution ec on ec.id = e.contribution_id
+      join contribution ac on ac.id = e.src
+      join contribution tgt on tgt.id = e.dst
+      where ${amendmentWhere}
+      order by tgt.notability desc, e.created_at asc
+      limit 50`;
     const failures = await sql`
       select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
       from verification v join contribution c on c.id = v.contribution_id
       where v.outcome in ('failed', 'inconclusive')
       order by v.updated_at desc limit 20`;
-    const [counts] = await sql<{ unreviewed: number; refactor_proposals: number }[]>`
+    const [counts] = await sql<{ unreviewed: number; refactor_proposals: number; amendment_proposals: number }[]>`
       select (select count(*) from contribution_overview c where ${queued})::int as unreviewed,
              (select count(*) from edge e
                 join contribution ec on ec.id = e.contribution_id
                 join contribution rc on rc.id = e.src
-                where ${proposalWhere})::int as refactor_proposals`;
+                where ${proposalWhere})::int as refactor_proposals,
+             (select count(*) from edge e
+                join contribution ec on ec.id = e.contribution_id
+                join contribution ac on ac.id = e.src
+                join contribution tgt on tgt.id = e.dst
+                where ${amendmentWhere})::int as amendment_proposals`;
     return structured(ReviewQueueOut, {
       unreviewed,
       next: unreviewed.length === limit ? { offset: offset + limit } : null,
-      backlog: counts ?? { unreviewed: unreviewed.length, refactor_proposals: proposals.length },
+      backlog: counts ?? {
+        unreviewed: unreviewed.length,
+        refactor_proposals: proposals.length,
+        amendment_proposals: amendments.length,
+      },
       refactor_proposals: proposals,
+      amendment_proposals: amendments,
       recent_verification_failures: failures,
     });
   },
@@ -1467,6 +1527,103 @@ defineTool(
     await sql`insert into event (kind, identity_id, payload)
               values ('tuning-changed', ${who.identityId}, ${sql.json({ changed, note } as never)})`;
     return structured(SetTuningOut, { ok: true, changed, note });
+  },
+);
+
+defineTool(
+  "apply_amendment",
+  {
+    title: "Apply or reject a presentation amendment (trusted)",
+    outputSchema: ApplyAmendmentOut,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    description:
+      "Decide a pending T0 amendment proposal. Approval promotes the proposal and its amends edge to T2, changes only the target's title, summary/description, and/or canonical names, and records the complete before/after in the append-only event ledger. Mathematical content, authorship, and identity never change. Rejection retracts the proposal and edge. Requires a trusted key.",
+    inputSchema: z.object({
+      contributor_key: trustedKeyParam,
+      amendment_id: z.string().uuid().describe("The T0 contribution of kind='amendment' to decide."),
+      decision: z.enum(["approve", "reject"]),
+      note: z.string().min(1).describe("Why this presentation is clearer or why the proposal is rejected."),
+    }),
+  },
+  async ({ contributor_key, amendment_id, decision, note }) => {
+    const who = await trustedCheck(contributor_key);
+    if (!who.ok) return fail({ error: who.refusal });
+    logRequest("apply_amendment", who.identityId, { amendment_id, decision });
+    type Proposal = { title?: string; summary?: string; names?: string[]; target?: string };
+    const [row] = await sql<{
+      edge_id: string;
+      target_id: string;
+      proposed: Proposal;
+      old_title: string;
+      old_summary: string;
+      old_names: string[];
+    }[]>`
+      select e.contribution_id as edge_id, e.dst as target_id,
+             ac.metadata->'amendment' as proposed,
+             tgt.title as old_title, tgt.summary as old_summary, tgt.names as old_names
+      from edge e
+      join contribution ec on ec.id = e.contribution_id
+      join contribution ac on ac.id = e.src
+      join contribution tgt on tgt.id = e.dst
+      where e.src = ${amendment_id} and e.rel = 'amends'
+        and ec.status = 'active' and ec.tier = 0
+        and ac.status = 'active' and ac.kind = 'amendment'
+        and tgt.status = 'active'
+      order by e.created_at asc limit 1`;
+    if (!row) return fail({ error: "no pending amendment proposal on that contribution" });
+    const proposed = row.proposed ?? {};
+    if (proposed.target !== row.target_id) {
+      return fail({ error: "amendment metadata and amends edge disagree on the target" });
+    }
+    if (proposed.title !== undefined && (typeof proposed.title !== "string" || !proposed.title.trim())) {
+      return fail({ error: "proposed title must be nonempty text" });
+    }
+    if (proposed.summary !== undefined && (typeof proposed.summary !== "string" || !proposed.summary.trim())) {
+      return fail({ error: "proposed summary must be nonempty text" });
+    }
+    if (proposed.names !== undefined && (!Array.isArray(proposed.names) || proposed.names.some((n) => typeof n !== "string"))) {
+      return fail({ error: "proposed names must be text" });
+    }
+    const next = {
+      title: proposed.title?.trim() ?? row.old_title,
+      summary: proposed.summary?.trim() ?? row.old_summary,
+      names: proposed.names?.map((n) => n.trim()).filter(Boolean).slice(0, 12) ?? row.old_names,
+    };
+    const changed = ([
+      ...(next.title !== row.old_title ? ["title"] : []),
+      ...(next.summary !== row.old_summary ? ["summary"] : []),
+      ...(JSON.stringify(next.names) !== JSON.stringify(row.old_names) ? ["names"] : []),
+    ] as ("title" | "summary" | "names")[]);
+    if (decision === "approve" && !changed.length) {
+      return fail({ error: "the target already has every proposed value; reject this stale amendment instead." });
+    }
+    await sql.begin(async (tx) => {
+      if (decision === "approve") {
+        await tx`update contribution
+                 set title = ${next.title}, summary = ${next.summary}, names = ${next.names}::text[], updated_at = now()
+                 where id = ${row.target_id}`;
+        await tx`update contribution set tier = 2, updated_at = now()
+                 where id in (${amendment_id}, ${row.edge_id})`;
+        await tx`insert into event (kind, contribution_id, identity_id, payload)
+                 values ('amendment-applied', ${row.target_id}, ${who.identityId},
+                         ${tx.json({ amendment_id, before: { title: row.old_title, summary: row.old_summary, names: row.old_names }, after: next, changed, note } as never)})`;
+      } else {
+        await tx`update contribution set status = 'retracted', updated_at = now()
+                 where id in (${amendment_id}, ${row.edge_id})`;
+        await tx`insert into event (kind, contribution_id, identity_id, payload)
+                 values ('amendment-rejected', ${amendment_id}, ${who.identityId},
+                         ${tx.json({ target_id: row.target_id, note } as never)})`;
+      }
+    });
+    await refreshAround([amendment_id, row.edge_id, row.target_id]);
+    return structured(ApplyAmendmentOut, {
+      ok: true,
+      decision,
+      amendment_id,
+      target_id: row.target_id,
+      changed: decision === "approve" ? changed : [],
+      note,
+    });
   },
 );
 

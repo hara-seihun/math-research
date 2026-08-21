@@ -693,6 +693,21 @@ call search '{"kind":"theorem","limit":1}' | python3 -c 'import sys,json;d=json.
 
 PROPOSAL=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"title\":\"proposal\",\"summary\":\"s\",\"content\":\"c.\",\"supersedes\":[\"$SQ\"]}" | field '["id"]')
 
+# Contract: presentation changes are contributions, not privileged silent
+# edits. A T0 amendment leaves the target untouched, appears in the reviewer
+# queue, and only apply_amendment changes it. The event preserves both sides.
+EDIT_TARGET=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"opaque task title\",\"summary\":\"opaque summary\",\"content\":\"The mathematical body stays immutable.\",\"names\":[\"old alias\"]}" | field '["id"]')
+AMENDMENT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Clarify the opaque task\",\"summary\":\"A reader-facing correction.\",\"content\":\"The new title states the question.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Does the presentation amendment preserve content?\",\"summary\":\"Only title, summary, and names change; the mathematical artifact remains content-addressed.\",\"names\":[\"presentation amendment invariant\"]}}" | field '["id"]')
+EDIT_HASH=$(call get "{\"ref\":\"$EDIT_TARGET\"}" | field '["artifact_hash"]')
+[[ $(call get "{\"ref\":\"$EDIT_TARGET\"}" | field '["title"]') == "opaque task title" ]] || fail "T0 amendment changed its target before review"
+call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(a["amendment_id"]=="'"$AMENDMENT"'" and a["proposed"]["title"].startswith("Does the") for a in d["amendment_proposals"]) and d["backlog"]["amendment_proposals"] >= 1' || fail "pending amendment missing from review queue"
+call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$AMENDMENT\",\"decision\":\"approve\",\"note\":\"Clearer and faithful to the unchanged body.\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert set(d["changed"])=={"title","summary","names"}' || fail "amendment approval did not report changed fields"
+call get "{\"ref\":\"$EDIT_TARGET\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["title"].startswith("Does the presentation") and d["artifact_hash"]=="'"$EDIT_HASH"'"' || fail "approved amendment did not update presentation or changed its artifact"
+[[ $(psql -h "$WORK" -d math -tAc "select (payload->'before'->>'title') || ' -> ' || (payload->'after'->>'title') from event where kind='amendment-applied' and contribution_id='$EDIT_TARGET'") == "opaque task title -> Does the presentation amendment preserve content?" ]] || fail "amendment event did not preserve before and after"
+# A second proposal remains pending for the every-door contract below, which
+# rejects it and thereby exercises the other terminal decision.
+AMEND_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Unhelpful amendment\",\"summary\":\"Reject me.\",\"content\":\"No improvement.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Thing\"}}" | field '["id"]')
+
 # Contract: an authorship signature is a proof or it is nothing. A submission
 # carrying one is checked against the identity's registered public key before
 # anything is written, because a signature stored unverified reads as evidence
@@ -761,6 +776,7 @@ declare -A DOORS=(
   [review_queue]="{\"contributor_key\":\"$OPKEY\"}"
   [set_tier]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$Q\",\"tier\":1,\"note\":\"n\"}"
   [apply_refactor]="{\"contributor_key\":\"$OPKEY\",\"refactor_id\":\"$PROPOSAL\",\"decision\":\"reject\",\"note\":\"n\"}"
+  [apply_amendment]="{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$AMEND_REJECT\",\"decision\":\"reject\",\"note\":\"n\"}"
   [grant_trust]="{\"contributor_key\":\"$OPKEY\",\"identity_id\":\"$OPID\",\"role\":\"operator\",\"note\":\"n\"}"
   [retract]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$SQ\",\"note\":\"contract test\"}"
   [register_public_key]="{\"contributor_key\":\"$KEY\",\"public_key\":\"$(openssl genpkey -algorithm ed25519 | openssl pkey -pubout -outform DER | base64 -w0)\"}"

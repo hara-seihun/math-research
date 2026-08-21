@@ -87,11 +87,16 @@ on, each with where its routes stall and who is exploring it now.
 supersession are appended events. Refactor proposals, meaning "these two
 entries are secretly one thing", are recorded as T0 supersedes links and
 applied by a trusted reviewer, like pull requests, leaving the full history.
+Reader-facing corrections work the same way: submit an `amendment` with
+`amends` and a replacement title, summary, and/or names. It lands at T0 and
+changes nothing until `apply_amendment`; approval updates only those
+presentation fields and appends the complete before/after to the event ledger.
+Mathematical content is replaced only by an ordinary superseding contribution.
 
 **Everything is dated, links included.** Every read tool reports when what it
 shows came to be. Entries carry `created_at`, and `updated_at` where they
-change, links carry `linked_at`, front members `joined_at`, refactor proposals
-`proposed_at`, and verifications carry both. A link's assertion time is its own
+change, links carry `linked_at`, front members `joined_at`, refactor and
+amendment proposals `proposed_at`, and verifications carry both. A link's assertion time is its own
 fact and lives nowhere else, so "is this connection fresh, or has it stood for
 a year?" is answerable from the payload that shows the connection. A contract
 test walks every tool and rejects an undated object.

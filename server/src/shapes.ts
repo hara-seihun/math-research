@@ -875,6 +875,7 @@ export const ReviewQueueOut = z.strictObject({
     awaiting_decision: z.number().int().describe("Still at T0 and already read by someone: nobody ever decided these. The limbo this queue is meant to drain."),
     claimed_by_others: z.number().int().describe("Matching entries another reviewer holds right now, excluded from your page."),
     flagged: z.number().int().describe("Active entries something in the graph refutes or disputes. Read the objection, then promote or reject."),
+    asking_closures: z.number().int().describe("Certified mathematics still headlined as a question, and therefore held off the all-time board until a headline states what was found."),
     refactor_proposals: z.number().int(),
     amendment_proposals: z.number().int(),
     impact_assessment_proposals: z.number().int(),
@@ -895,6 +896,20 @@ export const ReviewQueueOut = z.strictObject({
       }),
     )
     .describe("Entries someone has publicly contradicted. Anyone can raise one by linking a refutes/disputes edge; only a trusted reviewer can act on it."),
+  asking_closures: z
+    .array(
+      z.strictObject({
+        id: z.string(),
+        kind: z.string(),
+        title: z.string(),
+        tier,
+        state: z.string().nullable(),
+        notability: z.number(),
+        impact_score: z.number(),
+        settled_by: z.string().nullable().describe("The T2 entry that closes it, which is what the headline should be saying."),
+      }),
+    )
+    .describe("Closures the board will not print, because their headline still asks the question instead of answering it. Amend the title to state what was found and the row returns to the board at its own rank."),
   patches: z
     .array(
       z.strictObject({

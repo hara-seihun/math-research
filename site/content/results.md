@@ -61,6 +61,13 @@ once a reviewer has scored it for impact and nothing established elsewhere
 settles it. T0 closure claims stay visible in ordinary ledger views and off
 this board until review.
 
+Every row states a finding. A closure keeps its question in its body and among
+the names it answers to, but its headline is the answer, because a question
+mark at the top of a page of established mathematics reads as something nobody
+has settled. A certified row still headlined as a question is held off until
+someone amends the title, and it waits in the reviewer worklist rather than
+anywhere a reader has to find it.
+
 Ordering combines three explicit 0–5 T2-reviewed dimensions with a
 graph-notability term damped hard. **Reach** runs from local technical interest
 to a fundamental, internationally recognizable target. **Advance** runs from

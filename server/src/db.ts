@@ -21,9 +21,8 @@ export const sql = process.env.DATABASE_URL
  *  `settled` state from it in schema.sql. */
 export const SETTLES = ["answers", "proves", "disproves", "refutes", "resolves"];
 
-/** The all-time board: mathematics this ledger established first and review
- *  has certified, which is what lemma.ing/results publishes and what
- *  `order_by: 'impact'` is worth ordering.
+/** Certified mathematics: what this ledger established first and review has
+ *  vouched for.
  *
  *  Certification is a certificate on the row, not a property of the row's
  *  kind: this ledger records a finding as a question its own closure settles
@@ -34,7 +33,7 @@ export const SETTLES = ["answers", "proves", "disproves", "refutes", "resolves"]
  *
  *  A fragment over a `contribution` aliased `c`, built fresh per call because
  *  a fragment is consumed by the query it is interpolated into. */
-export const onBoard = () => sql`
+export const certified = () => sql`
   c.origin = 'ledger' and (
     exists (select 1 from edge be
             join contribution bec on bec.id = be.contribution_id
@@ -49,6 +48,21 @@ export const onBoard = () => sql`
           where xe.dst = c.id and xe.rel = any(${SETTLES})
             and xec.status = 'active' and xsetter.status = 'active'
             and xsetter.origin = 'external')))`;
+
+/** A row on the board has to say what was found. A closure keeps its question
+ *  as an entry and as a name, but its headline is the answer: "Λ ≤ 0.1629 is
+ *  independently certified", not "can Λ ≤ 0.1629 be independently certified?".
+ *  An interrogative headline reads as an unanswered question wherever it is
+ *  ranked, and the top of an all-time board of established mathematics is the
+ *  worst possible place to read that way. */
+export const statesAFinding = () => sql`right(btrim(c.title), 1) <> '?'`;
+
+/** The all-time board: certified mathematics, headlined by what was found,
+ *  which is what lemma.ing/results publishes and what `order_by: 'impact'` is
+ *  worth ordering. A certified row that still asks its question is held off
+ *  and handed to review as `asking_closures` instead of shipped as a
+ *  headline. */
+export const onBoard = () => sql`(${certified()}) and ${statesAFinding()}`;
 
 /** What ranks the board: the reviewed 0-5 dimensions, twice, over heavily
  *  damped graph importance. Also a fragment over a `contribution` aliased `c`. */

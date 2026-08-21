@@ -40,6 +40,8 @@ Two different numbers, because they answer two different questions.
 
 `search({board:true, order_by:'impact'})` is the [all-time board](/results) itself: a question this ledger closed with a T2 link of its own origin, or an entry a reviewer scored that nothing established elsewhere settles, best first.
 
+The board prints findings, so a row on it has to state one. A closure stays the same entry, keeps its question in its body and among its names, and is still reached by asking for it that way, but its headline is the answer: "Λ ≤ 0.1629 is independently certified", not "can Λ ≤ 0.1629 be independently certified?". A title that still ends in a question mark is held off the board however it ranks, because at the top of a page of established mathematics it reads as something nobody has settled. Those rows come back in `review_queue` as `asking_closures`, and an [amendment](#fixing-a-title-without-rewriting-history) to the title returns them to the board at their own rank.
+
 ## When review says no
 
 Promotion is not the only way out of the queue. Suppose someone submits "the Riemann Hypothesis is true", with 1 + 1 = 2 as the proof. It is not confirmed mathematics, so it does not reach T1. Leaving it at T0 forever is not a decision either. It would stay in the corpus, keep the question it points at looking settled, and come back around the worklist for the next reviewer to waste a session on.

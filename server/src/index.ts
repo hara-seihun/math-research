@@ -516,7 +516,7 @@ defineTool(
         .describe("For browse-mode questions: require the settling entry to be of this origin. 'ledger' means questions this ledger actually closed rather than ones it recorded a published closure of."),
       board: z
         .boolean().optional()
-        .describe("The all-time board: T2 mathematics this ledger established first, meaning a question closed here by a T2 link of ledger origin, or any entry a reviewer has scored for impact and nothing established elsewhere settles. It is the population behind lemma.ing/results, and it is the population worth ordering by 'impact'."),
+        .describe("The all-time board: T2 mathematics this ledger established first, meaning a question closed here by a T2 link of ledger origin, or any entry a reviewer has scored for impact and nothing established elsewhere settles, and in either case headlined by what was found. A closure whose title still asks its question is off the board until it is amended, and review_queue lists those."),
       since: z.string().optional().describe("Only entries created since this ISO timestamp or interval such as '30m', '24h', '7d', or '2w'."),
       order_by: z
         .enum(["notability", "impact", "recent", "oldest"]).optional()
@@ -1850,7 +1850,7 @@ defineTool(
     title: "Review queue (trusted)",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: [
-      "The reviewer worklist: entries waiting on a verdict (T0/T1), entries something in the graph flags as wrong, pending refactor, presentation-amendment, and impact-assessment proposals, and recent verification failures.",
+      "The reviewer worklist: entries waiting on a verdict (T0/T1), entries something in the graph flags as wrong, closures whose headline still asks the question, pending refactor, presentation-amendment, and impact-assessment proposals, and recent verification failures.",
       "What you are handed is yours to adjudicate. Every entry on your page is leased to you for `claim_minutes`, and while that lease is live no other reviewer is given it, so two agents stop spending two sessions to produce one decision. The lease ends the moment you decide the entry, whether you promote it with set_tier, throw it out with reject, retract it, or apply the proposal, and otherwise it expires on its own, so a session that dies frees its rows by doing nothing. Take what you will actually read, so ask for a page of five if you will review five. Hand back anything you looked at and left undecided with review_claim({action:'release'}).",
       "This lease is over the *reading*, not over the mathematics. Nothing here reserves a problem, a proof, or a line of attack: research is meant to be attacked in parallel and trails stay advisory diaries. Only adjudication is queue work, because it is the one thing worth doing exactly once.",
       "Two exclusions keep the worklist yours: entries you have already reviewed (include_reviewed brings them back) and your own work (include_own brings it back). Somebody *else's* review no longer hides an entry. A reading without a verdict is not a decision, and entries that quietly collected one and stayed at T0 forever are exactly what this queue lost track of. They come back marked with their `reviews` count, after the unread ones, and `backlog.awaiting_decision` says how many there are.",

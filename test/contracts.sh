@@ -1151,13 +1151,13 @@ PROPOSAL=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"ti
 # edits. A T0 amendment leaves the target untouched, appears in the reviewer
 # queue, and only apply_amendment changes it. The event preserves both sides.
 EDIT_TARGET=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"opaque task title\",\"summary\":\"opaque summary\",\"content\":\"The mathematical body stays immutable.\",\"names\":[\"old alias\"]}" | field '.id')
-AMENDMENT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Clarify the opaque task\",\"summary\":\"A reader-facing correction.\",\"content\":\"The new title states the question.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Does the presentation amendment preserve content?\",\"summary\":\"Only title, summary, and names change; the mathematical artifact remains content-addressed.\",\"names\":[\"presentation amendment invariant\"]}}" | field '.id')
+AMENDMENT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Clarify the opaque task\",\"summary\":\"A reader-facing correction.\",\"content\":\"The new title states the question.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"A presentation amendment preserves content\",\"summary\":\"Only title, summary, and names change; the mathematical artifact remains content-addressed.\",\"names\":[\"presentation amendment invariant\"]}}" | field '.id')
 EDIT_HASH=$(call get "{\"ref\":\"$EDIT_TARGET\"}" | field '.artifact_hash')
 [[ $(call get "{\"ref\":\"$EDIT_TARGET\"}" | field '.title') == "opaque task title" ]] || fail "T0 amendment changed its target before review"
-call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(a["amendment_id"]=="'"$AMENDMENT"'" and a["proposed"]["title"].startswith("Does the") for a in d["amendment_proposals"]) and d["backlog"]["amendment_proposals"] >= 1' || fail "pending amendment missing from review queue"
+call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(a["amendment_id"]=="'"$AMENDMENT"'" and a["proposed"]["title"].startswith("A presentation") for a in d["amendment_proposals"]) and d["backlog"]["amendment_proposals"] >= 1' || fail "pending amendment missing from review queue"
 call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$AMENDMENT\",\"decision\":\"approve\",\"note\":\"Clearer and faithful to the unchanged body.\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert set(d["changed"])=={"title","summary","names"}' || fail "amendment approval did not report changed fields"
-call get "{\"ref\":\"$EDIT_TARGET\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["title"].startswith("Does the presentation") and d["artifact_hash"]=="'"$EDIT_HASH"'"' || fail "approved amendment did not update presentation or changed its artifact"
-[[ $(psql -h "$WORK" -d math -tAc "select (payload->'before'->>'title') || ' -> ' || (payload->'after'->>'title') from event where kind='amendment-applied' and contribution_id='$EDIT_TARGET'") == "opaque task title -> Does the presentation amendment preserve content?" ]] || fail "amendment event did not preserve before and after"
+call get "{\"ref\":\"$EDIT_TARGET\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["title"].startswith("A presentation amendment preserves") and d["artifact_hash"]=="'"$EDIT_HASH"'"' || fail "approved amendment did not update presentation or changed its artifact"
+[[ $(psql -h "$WORK" -d math -tAc "select (payload->'before'->>'title') || ' -> ' || (payload->'after'->>'title') from event where kind='amendment-applied' and contribution_id='$EDIT_TARGET'") == "opaque task title -> A presentation amendment preserves content" ]] || fail "amendment event did not preserve before and after"
 # A second proposal remains pending for the every-door contract below, which
 # rejects it and thereby exercises the other terminal decision.
 AMEND_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Unhelpful amendment\",\"summary\":\"Reject me.\",\"content\":\"No improvement.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Thing\"}}" | field '.id')
@@ -1176,6 +1176,17 @@ call search '{"board":true,"order_by":"impact","limit":1}' | python3 -c 'import 
 # The same board opens hello, because "what has this place established" is the
 # first question anyone arriving has and graph density cannot answer it.
 call hello '{}' | python3 -c 'import sys,json;assert json.load(sys.stdin)["established_here"][0]["id"]=="'"$EDIT_TARGET"'"' || fail "hello did not lead its record with the board"
+
+# Contract: the board publishes findings, so a certified row still headlined as
+# a question is held off it and handed to review instead. The top of an
+# all-time board is the worst place to read as though nothing had been settled.
+ASKING=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Put the question back in the headline\",\"summary\":\"Regression fixture.\",\"content\":\"A headline that asks rather than answers.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Does a presentation amendment preserve content?\"}}" | field '.id')
+call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$ASKING\",\"decision\":\"approve\",\"note\":\"Restoring the interrogative headline for the board contract.\"}" > /dev/null
+call search '{"board":true,"order_by":"impact","limit":5}' | python3 -c 'import sys,json;assert all(r["id"]!="'"$EDIT_TARGET"'" for r in json.load(sys.stdin)["results"])' || fail "a closure headlined as a question stayed on the board"
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(r["id"]=="'"$EDIT_TARGET"'" for r in d["asking_closures"]) and d["backlog"]["asking_closures"]>=1' || fail "a closure headlined as a question did not reach review"
+ANSWERING=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"State the finding in the headline\",\"summary\":\"Regression fixture.\",\"content\":\"A headline that answers.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"A presentation amendment preserves content\"}}" | field '.id')
+call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$ANSWERING\",\"decision\":\"approve\",\"note\":\"The headline states what was found.\"}" > /dev/null
+call search '{"board":true,"order_by":"impact","limit":1}' | python3 -c 'import sys,json;assert json.load(sys.stdin)["results"][0]["id"]=="'"$EDIT_TARGET"'"' || fail "a re-headlined closure did not return to the board"
 # One pending rejection lets the every-door census exercise that outcome too.
 IMPACT_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment\",\"title\":\"Bad impact assessment\",\"summary\":\"Reject me.\",\"content\":\"Unsupported scores.\",\"assesses_impact\":\"$EDIT_TARGET\",\"impact\":{\"reach\":0,\"advance\":0,\"closure\":0}}" | field '.id')
 

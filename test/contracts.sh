@@ -58,7 +58,7 @@ mkdir -p "$PATCH_REPO_DIR/MathlibPlus" "$PATCH_BUILD_LIB"
 printf 'theorem alpha : 1 + 1 = 2 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Alpha.lean"
 printf 'import MathlibPlus.Alpha\ntheorem beta : 2 + 2 = 4 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Beta.lean"
 printf 'theorem gamma : 3 = 3 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Gamma.lean"
-printf 'theorem broken : 4 = 5 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Broken.lean"
+printf 'theorem broken : 4 = 5 := rfl\n\n' > "$PATCH_REPO_DIR/MathlibPlus/Broken.lean"
 printf '.lake/\n' > "$PATCH_REPO_DIR/.gitignore"   # as in the real repository: build output is not source
 # The build tree says what currently builds. Part of the real library does not
 # (the umbrella module cannot, and ~1-2% has bit-rotted), and a module with no
@@ -1030,7 +1030,10 @@ git -C "$PATCH_REPO_DIR" status --porcelain | grep -q . && fail "publication lef
 # Contract: a module that does not build at the base commit is the library's
 # state, not the patch's doing. Touching one must not condemn the patch, and a
 # patch that could build nothing at all verified nothing.
-BROKEN=$(printf 'diff --git a/MathlibPlus/Broken.lean b/MathlibPlus/Broken.lean\n--- a/MathlibPlus/Broken.lean\n+++ b/MathlibPlus/Broken.lean\n@@ -1 +1,2 @@\n theorem broken : 4 = 5 := rfl\n+-- a note that changes nothing\n')
+# Ending on a blank context line is the case that broke the first real patch:
+# a hunk's blank context line is a single space, and trimming trailing
+# whitespace off the diff leaves the hunk shorter than its header claims.
+BROKEN=$(printf 'diff --git a/MathlibPlus/Broken.lean b/MathlibPlus/Broken.lean\n--- a/MathlibPlus/Broken.lean\n+++ b/MathlibPlus/Broken.lean\n@@ -1,2 +1,3 @@\n theorem broken : 4 = 5 := rfl\n+-- a note that changes nothing\n \n')
 BROKEN_ID=$(patch_submit "touch a module that does not build" "$BROKEN")
 BROKEN_V=$(patch_verification "$BROKEN_ID")
 BROKEN_CHECK=$(for _ in $(seq 600); do

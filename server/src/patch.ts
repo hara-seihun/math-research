@@ -21,11 +21,18 @@ export const PATCH_REPO = process.env.PATCH_REPO_NAME ?? "mathlibplus";
  *  to grow the ledger's row size. */
 export const MAX_DIFF_BYTES = 512 * 1024;
 
-/** Fenced ```diff blocks win; otherwise the content is the diff. */
+/**
+ * Fenced ```diff blocks win; otherwise the content is the diff.
+ *
+ * Only newlines are trimmed, never spaces. A hunk's context lines are a
+ * leading space plus the line, so a diff whose last context line is blank ends
+ * with a line that is exactly one space — and trimming it leaves a hunk one
+ * line shorter than its own header says, which git rejects as a corrupt patch.
+ */
 export function extractDiff(content: string): string {
   const blocks = [...content.matchAll(/```(?:diff|patch)\n([\s\S]*?)```/g)].map((m) => m[1]);
-  const diff = (blocks.length > 0 ? blocks.join("\n") : content).replace(/^\s*\n/, "").trimEnd();
-  return diff ? `${diff}\n` : "";
+  const diff = (blocks.length > 0 ? blocks.join("\n") : content).replace(/^\n+/, "").replace(/\n+$/, "");
+  return diff.trim() ? `${diff}\n` : "";
 }
 
 const DIFF_HEAD = /^(diff --git |--- |Index: )/;

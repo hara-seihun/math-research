@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync } from "nod
 import { join, dirname, extname, basename } from "node:path";
 import { createHash } from "node:crypto";
 import { marked } from "marked";
+import { expandPins } from "../server/src/pinned.ts";
 
 const HERE = import.meta.dir;
 const OUT = process.env.SITE_OUT ?? join(HERE, "public");
@@ -274,6 +275,28 @@ function loadGuides(): Page[] {
     });
 }
 
+// The front page's short version of the rules is a view of the guide that owns
+// them, not a second statement of them: every section heading with its opening,
+// linked to the section itself. A rule the guide changes changes here, and a
+// rule that never entered the guide cannot be asserted here at all.
+function howItWorksDigest(): string {
+  const markdown = readFileSync(join(HERE, "..", "guides", "how-this-works.md"), "utf8");
+  const sections = markdown.split(/^## /m).slice(1);
+  if (sections.length === 0) throw new Error("guides/how-this-works.md: no sections to summarize");
+  return sections
+    .map((section) => {
+      const [heading, ...rest] = section.split("\n");
+      const opening = rest.join("\n").trim().split("\n\n")[0].replace(/\n/g, " ");
+      const said: string[] = [];
+      for (const sentence of opening.split(/(?<=[.!?])\s+/)) {
+        if (said.length && said.join(" ").length + sentence.length > 240) break;
+        said.push(sentence);
+      }
+      return `- **[${heading.trim()}](/guides/how-this-works#${slugify(heading.replace(/[`*]/g, ""))}).** ${said.join(" ")}`;
+    })
+    .join("\n");
+}
+
 function guidesIndex(guides: Page[]): Page {
   const list = guides.map((g) => `- **[${g.title}](/${g.slug})**. ${g.summary}`).join("\n");
   return {
@@ -287,7 +310,9 @@ function guidesIndex(guides: Page[]): Page {
 }
 
 // The README is the project's own description, so the site reads it instead of
-// keeping a second copy that would drift.
+// keeping a second copy that would drift. It describes the software; the rules
+// of the place are the doctrine guide's to state, and this page links there
+// rather than saying them again.
 function readmePage(): Page {
   const readme = readFileSync(join(HERE, "..", "README.md"), "utf8");
   const markdown = readme.replace(
@@ -296,13 +321,32 @@ function readmePage(): Page {
   );
 
   return {
-    slug: "how-it-works",
-    title: "How it works",
-    nav: "How it works",
-    summary: "The project README from GitHub.",
-    order: 3,
+    slug: "repo",
+    title: "The repository",
+    summary: "The project README from GitHub: what the software is, how it is built, and how it is run.",
+    order: 5,
     markdown,
   };
+}
+
+// Addresses this site has published and then moved. A URL is routing, not a
+// copy of a page: the old address forwards to the page that took the subject
+// over, and nothing is served twice.
+const MOVED = new Map([["how-it-works", "/guides/how-this-works"]]);
+
+function redirect(from: string, to: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Moved to ${to}</title>
+<link rel="canonical" href="${ORIGIN}${to}">
+<meta http-equiv="refresh" content="0; url=${BASE}${to}">
+<meta name="robots" content="noindex, follow">
+</head>
+<body><p>This page moved to <a href="${BASE}${to}">${to}</a>.</p></body>
+</html>
+`;
 }
 
 const href = (slug: string) => (slug === "." ? "/" : `/${slug}`);
@@ -376,20 +420,34 @@ const totals = Object.fromEntries(
 
 const accomplishmentsSnapshot = await accomplishments();
 
+// Prose states no fact it does not own. The snapshots and the tool reference
+// come from a live server, the pinned versions from the Lake project (shared
+// with the `guides` tool, so in-band and on-site readers get one answer), and
+// the front page's summary of the rules from the guide that owns them.
 const expand = (markdown: string) =>
-  markdown
+  expandPins(markdown)
+    .replace("{{how_it_works_digest}}", () => howItWorksDigest())
     .replace("{{ledger_snapshot}}", () => ledgerSnapshot(hello, totals))
     .replace("{{accomplishments_snapshot}}", () => accomplishmentsSnapshot)
     .replace("{{tool_reference}}", () => toolReference(toolList.tools))
     .replaceAll("{{live_js}}", assetHref("live.js"));
 
 const guides = loadGuides();
+// "How it works" is a nav slot, not a page of its own: it points straight at
+// the guide that owns the rules, which is also the first thing on the guides
+// shelf and the text the `guides` tool hands out in-band. One file, one URL,
+// one statement of the rules.
+const doctrine = guides.find((g) => g.slug === `guides/${GUIDE_ORDER[0]}`);
+if (!doctrine) throw new Error(`guides/${GUIDE_ORDER[0]}.md is missing, and the nav depends on it`);
+doctrine.nav = "How it works";
+doctrine.order = 3;
+
 const pages = [...loadContent(), readmePage(), guidesIndex(guides)]
   .sort((a, b) => a.order - b.order)
   .flatMap((page) => (page.slug === "guides" ? [page, ...guides] : [page]))
   .map((page) => ({ ...page, markdown: expand(page.markdown) }));
 
-const nav = pages.filter((p) => p.nav);
+const nav = pages.filter((p) => p.nav).sort((a, b) => a.order - b.order);
 
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
@@ -401,6 +459,11 @@ for (const page of pages) {
   const path = page.slug === "." ? "index.html" : `${page.slug}/index.html`;
   write(join(OUT, path), rebase(layout(page, nav, await marked.parse(page.markdown))));
   write(join(OUT, page.slug === "." ? "index.md" : `${page.slug}.md`), page.markdown);
+}
+
+for (const [from, to] of MOVED) {
+  write(join(OUT, from, "index.html"), redirect(from, to));
+  write(join(OUT, `${from}.md`), `This page moved to ${ORIGIN}${to} (${ORIGIN}${to}.md).\n`);
 }
 
 write(

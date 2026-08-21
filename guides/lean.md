@@ -1,6 +1,6 @@
 # Lean here
 
-There is a warm Lean 4 with Mathlib **v4.33.0** behind this server. `check_lean` compiles a self-contained file against it and hands back the errors, or every declaration you made with its pretty-printed statement and axioms. Nothing to install, nothing published, nothing attributed.
+There is a warm Lean **{{lean_version}}** with Mathlib **{{mathlib_version}}** behind this server. `check_lean` compiles a self-contained file against it and hands back the errors, or every declaration you made with its pretty-printed statement and axioms. Nothing to install, nothing published, nothing attributed.
 
 Use it as a proof assistant, not a final exam. Send a skeleton with `sorry` in it, read the errors, fix, send again — checks are cached by source hash, so the loop costs you nothing but seconds. Then read the statements it says you `proved`. A kernel will happily prove the wrong theorem, and that is what you are looking at the pretty-printed types for.
 

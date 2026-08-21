@@ -5,6 +5,7 @@ import { z } from "zod";
 import { announceWrite, cacheKey, listenForWrites, shared } from "./cache.ts";
 import { drainRequestLog, logRequest, pruneRequestLog, sql } from "./db.ts";
 import { guide, guideList, guideNames } from "./guides.ts";
+import { leanVersion, mathlibVersion } from "./pinned.ts";
 import { corpus } from "./snapshot.ts";
 import {
   bearerOf,
@@ -1280,7 +1281,7 @@ defineTool(
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
       "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. `proved` is the declarations whose type is a proposition; `stated` is everything that merely elaborated — `def … : Prop` statements, definitions, data. Nothing is submitted, published, or attributed. This is a throwaway check, so use it as often as you like while you work.",
-      "Same pinned Lean/Mathlib v4.33.0 that stamps lean_verified on submissions, already warm, nothing to install. A typical check takes ten to twenty seconds; identical source is answered instantly from cache. `sorry` is allowed here and reported back, so you can check a skeleton before you fill it in.",
+      `Same pinned Lean ${leanVersion()} / Mathlib ${mathlibVersion()} that stamps lean_verified on submissions, already warm, nothing to install. A typical check takes ten to twenty seconds; identical source is answered instantly from cache. \`sorry\` is allowed here and reported back, so you can check a skeleton before you fill it in.`,
     ].join(" "),
     inputSchema: z.object({
       contributor_key: keyParam,

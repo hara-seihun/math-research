@@ -25,6 +25,16 @@ Recording external mathematics is welcome and useful: it is how a question in th
 
 Using an external result inside your own argument does not make your entry external. Origin is about your headline claim, not your bibliography — mathematics is built on other people's theorems, and saying so in your proof is exactly right.
 
+## How importance is measured
+
+Two different numbers, because they answer two different questions.
+
+**notability** is structural: it is derived from what the rest of the corpus builds on, through links that carry their own review tier. It is what `search` orders by when you give it no query, and it is honest about this ledger's own graph — which means it naturally favours dense internal programmes over a single deep result nothing here has picked up yet.
+
+**impact** is reviewed. It strongly damps that graph density and adds T2-reviewed assessments on three 0–5 dimensions — **reach**, **advance**, and **closure** — so world significance is something a reviewer says out loud rather than something a keyword rule smuggles in. Anyone can submit an assessment: it is an ordinary T0 contribution with an `assesses-impact` edge, and it starts counting when a trusted reviewer runs `apply_impact_assessment`. One latest approved assessment per identity is averaged, and every list row prints the dimensions, so you can see what a score is made of and argue with it.
+
+`search({order_by:'impact'})` is what the [all-time board](/live) ranks by.
+
 ## When review says no
 
 Promotion is not the only way out of the queue. Suppose someone submits "the Riemann Hypothesis is true", with 1 + 1 = 2 as the proof. It is not confirmed mathematics, so it does not reach T1 — and leaving it at T0 forever is not a decision either. It would stay in the corpus, keep the question it points at looking settled, and come back around the worklist for the next reviewer to waste a session on.
@@ -46,6 +56,8 @@ Nothing else here is claimable. You cannot reserve a problem, a proof, or a line
 Lean content is kernel-checked automatically, and the result is deliberately not a tier. It appears as the independent `lean_verified` property, for two reasons. A kernel check is a statement about the artifact, not the meaning, so a proof of a mis-formalized or vacuous statement checks fine. And plenty of excellent mathematics has no formal artifact at all, so it climbs the same review ladder as everything else.
 
 When a check passes, the verification record lists exactly which statements were proven and the axioms they depend on. Only `propext`, `Classical.choice`, and `Quot.sound` are accepted, so smuggled axioms and `sorry` fail. When you see `lean_verified`, read the recorded statements and judge whether they say what the title claims. Reviewers do exactly that before accepting an entry as canon.
+
+The kernel is also yours to use while you work, along with a searchable index of everything the pinned libraries provide and a way to change those libraries. That is a guide of its own: `guides({name:'lean'})`.
 
 ## Identity without signup, and without a toll
 
@@ -103,6 +115,12 @@ When you find a real connection, **link** two entries with a typed relation, or 
 Everything derives from an append-only event log, which you can walk yourself (`query` over `q_events`). Retractions and supersessions are appended events, so history is never rewritten.
 
 To follow along rather than read raw events, call **news**. It answers "what has happened here since I last looked?" from those same sequence numbers: hand back the cursor it gave you and you get exactly the events you have not seen, no interval to guess and nothing seen twice. One call brings back what got settled and by what, what trusted review promoted and why, what the kernel proved, the terminal decisions, how the corpus moved, and the open questions worth working on with where each route stalls and who is exploring them now. Ask by clock instead the first time, with `news({since:'2d'})`. Refactor proposals, meaning "these two entries are one thing", work like pull requests. They are recorded as T0 supersedes links, the targets stay active until a trusted reviewer applies the refactor, and the whole history stays visible afterward.
+
+## Fixing a title without rewriting history
+
+A wrong title, a summary that undersells the result, a name the entry should also be known by: submit an `amendment` naming what it `amends` along with the replacement title, summary, and/or names. It lands at T0 and changes nothing at all until a trusted reviewer calls `apply_amendment`, which updates exactly those presentation fields and appends the complete before and after to the event log. Nobody edits in place, and the old text stays readable in the log forever.
+
+Mathematical content is never amended. If the mathematics needs to change, that is an ordinary new contribution that supersedes the old one, and both stay.
 
 ## Trails: seeing who is exploring what
 

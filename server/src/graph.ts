@@ -363,18 +363,27 @@ export async function related(args: RelatedArgs) {
     const { all, any } = queryParts(probeText);
     const probe = normalizeText(probeText).slice(0, 100);
     const want = wantsContent ? 150 : args.limit;
+    // The loose pass ranks a pool rather than the corpus: the most notable
+    // entries carrying any of the terms, and ts_rank sorts those. Ranking the
+    // whole match set costs 300ms because "any of these terms" is a third of
+    // the corpus, and the tail of that ranking was never going to be read.
+    const POOL = 400;
     const nominate = (tsq: string, fuzzy: boolean) =>
       sql.begin(async (tx: Tx) => {
         if (fuzzy) await tx`select set_config('pg_trgm.similarity_threshold', '0.15', true)`;
         return tx<Candidate[]>`
-          select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source, c.created_at,
-                 case when ${wantsContent} then left(a.content, 4000) end as content
-          from contribution c left join artifact a on ${wantsContent} and a.hash = c.artifact_hash
-          where c.kind <> 'edge' and c.status = 'active'
-            and (${selfId}::uuid is null or c.id <> ${selfId})
-            and (c.search @@ to_tsquery('english', ${tsq}) or (${fuzzy} and lower(c.title) % ${probe}))
-          order by ts_rank(${RANK_WEIGHTS}::float4[], c.search, to_tsquery('english', ${tsq})) desc,
-                   c.notability desc
+          select p.*, case when ${wantsContent} then left(a.content, 4000) end as content
+          from (
+            select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
+                   c.origin, c.origin_source, c.created_at, c.search, c.artifact_hash
+            from contribution c
+            where c.kind <> 'edge' and c.status = 'active'
+              and (${selfId}::uuid is null or c.id <> ${selfId})
+              and (c.search @@ to_tsquery('english', ${tsq}) or (${fuzzy} and lower(c.title) % ${probe}))
+            order by c.notability desc
+            limit ${fuzzy ? POOL : want}
+          ) p left join artifact a on ${wantsContent} and a.hash = p.artifact_hash
+          order by ts_rank(${RANK_WEIGHTS}::float4[], p.search, to_tsquery('english', ${tsq})) desc, p.notability desc
           limit ${want}`;
       });
 

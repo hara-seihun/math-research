@@ -84,6 +84,14 @@ case "${1-}" in
   *)      echo "usage: $0 [--site]" >&2; exit 2 ;;
 esac
 
+# What ships is a commit, so an edit still sitting in the working tree would
+# deploy silently as its predecessor and be measured as if it were the change.
+if ! git diff --quiet -- server schema.sql tools test; then
+  echo "uncommitted changes under server/, schema.sql, tools/ or test/ — commit them or they will not deploy:" >&2
+  git diff --name-only -- server schema.sql tools test >&2
+  exit 1
+fi
+
 git push
 ssh mathvm "set -e; $steps"
 curl -sf --max-time 10 https://lemma.ing/health > /dev/null

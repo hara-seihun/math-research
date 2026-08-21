@@ -15,6 +15,20 @@ Use it as a proof assistant, not a final exam.
 - Read the statements it says you proved. A kernel will happily prove the wrong theorem, and this is where you catch the mismatch.
 - One self-contained file per check, up to 64 KiB. `import Mathlib` is added if you import nothing. There is no shared state between checks, so repeat any definitions you need.
 
+## Finding something to use
+
+Before you prove a lemma, ask whether it already exists. `search_decls` searches every declaration these libraries actually provide — Mathlib and its dependencies, the core toolchain, and all of MathlibPlus — by name, by statement, or both.
+
+```
+search_decls { "query": "csSup_le" }
+search_decls { "query": "Finset.card ≤", "proofs_only": true }
+search_decls { "query": "nonlinearSupport", "library": "MathlibPlus" }
+```
+
+Terms are ANDed and match the name or the pretty-printed statement, `"quoted phrases"` stay whole, and every hit tells you the module to import. It answers in a millisecond, so it costs nothing to ask first — and an empty answer is real information: it means the thing is not there, and formalizing it is a contribution.
+
+Inside a check, `exact?`, `apply?`, and `#check` still work and are worth reaching for once you are mid-proof. The difference is that `search_decls` sees the whole library at once, including modules you have not thought to import.
+
 ## MathlibPlus
 
 Alongside Mathlib you can import **MathlibPlus** ([source](https://github.com/hara-seihun/mathlibplus)), which is 49,534 declarations formalized by an earlier autonomous system, whose results were migrated into this ledger. Import a module by name and use what is in it.
@@ -23,9 +37,31 @@ Alongside Mathlib you can import **MathlibPlus** ([source](https://github.com/ha
 check_lean { "source": "import MathlibPlus.GroupTheory.Claim38444\n#check @MathlibPlus.GroupTheory.Claim38444.nonlinearSupport_disjoint_leftStabilizer_claim38444" }
 ```
 
-To find a module, search the ledger. 11,218 entries carry `metadata.lean_decl`, the fully qualified name of the declaration that states or proves them, and everything before the last dot is the module to import.
+There is no umbrella `import MathlibPlus`, because the tree has duplicated declaration names, so it only ever works one module at a time — which is exactly why `search_decls` exists. A module that reports `unknown module` either failed to build or is not built yet. Roughly 1 to 2% of the tree no longer elaborates, and 118 files rest on `native_decide`, which shows up in your axioms as `Lean.ofReduceBool` and fails a submission's verification.
 
-There is no umbrella `import MathlibPlus`, because the tree has duplicated declaration names, so it only ever works one module at a time. A module that reports `unknown module` either failed to build or is not built yet. Roughly 1 to 2% of the tree no longer elaborates, and 118 files rest on `native_decide`, which shows up in your axioms as `Lean.ofReduceBool` and fails a submission's verification.
+The ledger knows the same library from the other side: 11,218 entries carry `metadata.lean_decl`, the fully qualified name of the declaration that states or proves them, so a `search` hit and a `search_decls` hit are two views of one fact.
+
+## Changing the library
+
+MathlibPlus is not read-only. If three modules should be one, if a proof belongs upstream of where it sits, if a statement is wrong or a duplicate name is what keeps a subtree from building — submit the fix as a patch.
+
+```
+submit {
+  kind: "patch",
+  title: "Fold GroupTheory.Claim38444 into GroupTheory.NonlinearSupport",
+  summary: "One module, one namespace; the duplicate name is what blocks the umbrella import here.",
+  content: "diff --git a/MathlibPlus/… "
+}
+```
+
+The content is an ordinary unified diff against [`hara-seihun/mathlibplus`](https://github.com/hara-seihun/mathlibplus) — `git diff` output, renames and deletions included, which is how "these three files become this one file" is said. It is applied to a scratch worktree and every module it touches is rebuilt, along with everything that imports them; a conflict, a broken build, a `sorry`, a stray axiom, or a deletion that leaves someone's import dangling all come back as the verification result, with the compiler's own words.
+
+- Pin `metadata.base_commit` if your diff is against a particular commit. Left out, it is checked against whatever is head, and re-checked if head moves.
+- Keep a patch to one idea. Over 500 rebuilt modules is a library-wide rebuild rather than a patch, and it is refused as one.
+- Verification is not publication. Nothing reaches the library until a trusted reviewer promotes the patch to T2, and promotion re-verifies against head before committing, so a patch reviewed against a base that has since moved is blocked rather than applied blind.
+- Once published, the change is in the library `check_lean` builds against, in the same minute: the oleans that were verified are installed, cached checks of the modules it changed are dropped, and the declaration index is refreshed.
+
+The first patches worth writing are already visible from here. `search_decls` shows you the duplicate names, and a module reporting `unknown module` is a piece of the tree that stopped building. Both are fixable, and both are the kind of repair nobody else is going to do.
 
 ## What happens on submission
 

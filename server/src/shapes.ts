@@ -387,6 +387,35 @@ export const CheckLeanOut = z.strictObject({
   your_contributor_key: z.string().optional(),
 });
 
+const IndexedLibrary = z.strictObject({
+  library: z.string(),
+  declarations: z.number().int(),
+  proofs: z.number().int().describe("Declarations whose type is a proposition."),
+  modules: z.number().int(),
+  indexed_at: iso,
+});
+export const SearchDeclsOut = z.strictObject({
+  query: z.string().optional(),
+  matches: z.number().int().optional().describe("How many declarations match; a count that hit the cap says so in `more`."),
+  more: z.boolean().optional(),
+  results: z
+    .array(
+      z.strictObject({
+        name: z.string(),
+        module: z.string().describe("The module to import to use it."),
+        library: z.string(),
+        kind: z.string(),
+        is_proof: z.boolean().describe("True when the declaration's type is a proposition, so it is a proved fact rather than a definition."),
+        statement: z.string(),
+      }),
+    )
+    .optional(),
+  next: z.strictObject({ offset: z.number().int() }).nullable().optional(),
+  index: z.array(IndexedLibrary).optional(),
+  note: z.string().optional(),
+  your_contributor_key: z.string().optional(),
+});
+
 export const LinkOut = z.strictObject({
   ok: z.literal(true),
   edge_id: z.string(),
@@ -584,7 +613,28 @@ export const ReviewQueueOut = z.strictObject({
     refactor_proposals: z.number().int(),
     amendment_proposals: z.number().int(),
     impact_assessment_proposals: z.number().int(),
+    patches: z.number().int(),
   }),
+  patches: z
+    .array(
+      z.strictObject({
+        id: z.string(),
+        title: z.string(),
+        summary: z.string(),
+        tier: z.number().int(),
+        by: z.string().nullable(),
+        submitted_at: iso,
+        build: z.string().describe("pending | passed | failed | inconclusive | unavailable: what happened when the patch was applied and its modules rebuilt."),
+        base_commit: z.string().nullable(),
+        reason: z.string().nullable(),
+        changed_modules: z.array(z.string()).nullable(),
+        deleted_modules: z.array(z.string()).nullable(),
+        publication: z.string().nullable().describe("queued | published | blocked, once the patch is T2."),
+        commit_sha: z.string().nullable(),
+        publication_detail: jsonRecord.nullable(),
+      }),
+    )
+    .describe("Proposed changes to the Lean library itself. Promoting one to T2 is what commits it, so read the build result before you do."),
   refactor_proposals: z.array(
     z.strictObject({
       refactor_edge: z.string(),

@@ -48,6 +48,21 @@ psql -q -v ON_ERROR_STOP=1 -h "$WORK" -d math -f schema.sql
 # so the contract applies the exact migration a second time before startup.
 psql -q -v ON_ERROR_STOP=1 -h "$WORK" -d math -f schema.sql
 
+# A patch is a change to the Lean library, so the pipeline needs a library to
+# change. This stands in for /srv/mathlibplus: three modules, one importing
+# another, which is enough to exercise applying, rebuild ordering, dangling
+# imports, and the commit a promotion produces.
+export PATCH_REPO_DIR="$WORK/mathlibplus" PATCH_STATE_DIR="$WORK/patch-work"
+export PATCH_BUILD_LIB="$WORK/mathlibplus/.lake/build/lib/lean"
+mkdir -p "$PATCH_REPO_DIR/MathlibPlus" "$PATCH_BUILD_LIB"
+printf 'theorem alpha : 1 + 1 = 2 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Alpha.lean"
+printf 'import MathlibPlus.Alpha\ntheorem beta : 2 + 2 = 4 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Beta.lean"
+printf 'theorem gamma : 3 = 3 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Gamma.lean"
+printf '.lake/\n' > "$PATCH_REPO_DIR/.gitignore"   # as in the real repository: build output is not source
+git -C "$PATCH_REPO_DIR" init -q -b main
+git -C "$PATCH_REPO_DIR" add -A
+git -C "$PATCH_REPO_DIR" -c user.name=contracts -c user.email=c@example.invalid commit -qm "library"
+
 (cd server && bun src/index.ts) > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 (cd server && bun verifier/verifier.ts) > "$WORK/verifier.log" 2>&1 &
@@ -781,6 +796,7 @@ RETRY=$(SESSION=$UNREG call submit '{"kind":"result","title":"unregistered signe
 declare -A DOORS=(
   [hello]='{}'
   [search]='{"query":"frontier test question"}'
+  [search_decls]='{"query":"csSup_le"}'
   [fronts]='{}'
   [query]='{"sql":"select kind, count(*) as n from q_entries group by kind order by n desc"}'
   [frontier]="{\"ref\":\"$Q\"}"
@@ -858,6 +874,134 @@ bun run tools/load-import.ts "$IMP" "$WORK/import.key" "import contract" > "$WOR
 grep -q 'refusing to withdraw' "$WORK/import3.log" || fail "the withdrawal ceiling did not explain itself: $(tail -3 "$WORK/import3.log")"
 STILL=$(psql -X -tAq -h "$WORK" -d math -c "select count(*) from contribution where metadata->>'import_key' = 'claim:1' and status = 'active'")
 [[ $STILL == 1 ]] || fail "the aborted load withdrew entries anyway"
+
+# Contract: the declaration index is what "is there already a lemma for this?"
+# reads. Terms are ANDed across name and statement, the filters restrict, and
+# ILIKE metacharacters in a Lean name are literal text rather than a pattern
+# language the caller did not ask for.
+psql -q -h "$WORK" -d math -c "insert into lean_decl (module, name, library, kind, statement, is_proof) values
+  ('Mathlib.Order.Bounds.Basic', 'csSup_le', 'Mathlib', 'theorem', 's.Nonempty → (∀ b ∈ s, b ≤ a) → sSup s ≤ a', true),
+  ('Mathlib.Order.Bounds.Basic', 'csSup_le_iff', 'Mathlib', 'theorem', 'BddAbove s → s.Nonempty → (sSup s ≤ a ↔ ∀ b ∈ s, b ≤ a)', true),
+  ('MathlibPlus.GroupTheory.Claim1', 'plus_widget', 'MathlibPlus', 'def', 'Nat → Nat', false)"
+decls() { call search_decls "$1" | field '["results"]'; }
+decls '{"query":"csSup_le"}' | python3 -c 'import sys,json; r=json.load(sys.stdin); assert r[0]["name"]=="csSup_le" and r[0]["module"]=="Mathlib.Order.Bounds.Basic", r' \
+  || fail "search_decls did not rank the exact name first"
+decls '{"query":"csSup_le sSup"}' | python3 -c 'import sys,json; assert len(json.load(sys.stdin))==2' \
+  || fail "search_decls did not AND a name term with a statement term"
+decls '{"query":"csSup?le"}' | python3 -c 'import sys,json; assert json.load(sys.stdin)==[]' \
+  || fail "search_decls treated a literal term as a pattern"
+decls '{"query":"plus","library":"Mathlib"}' | python3 -c 'import sys,json; assert json.load(sys.stdin)==[]' \
+  || fail "search_decls ignored the library filter"
+decls '{"query":"widget","module":"MathlibPlus.GroupTheory"}' | python3 -c 'import sys,json; assert len(json.load(sys.stdin))==1' \
+  || fail "search_decls did not match a module subtree"
+decls '{"query":"widget","proofs_only":true}' | python3 -c 'import sys,json; assert json.load(sys.stdin)==[]' \
+  || fail "proofs_only returned a definition"
+call search_decls '{}' | python3 -c 'import sys,json; d=json.load(sys.stdin); assert {i["library"] for i in d["index"]} == {"Mathlib","MathlibPlus"}, d' \
+  || fail "search_decls did not report what is indexed"
+
+# Contract: a patch is a change to the library, verified by applying it and
+# building what it touches. A diff that does not apply is a failure with the
+# conflict, not a build attempt.
+patch_submit() { # <title> <diff-content> -> contribution id
+  call submit "$(python3 -c 'import json,sys; print(json.dumps({"contributor_key":sys.argv[1],"kind":"patch","title":sys.argv[2],"summary":"contract patch","content":sys.argv[3]}))' "$KEY" "$1" "$2")" | field '["id"]'
+}
+patch_verification() { psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$1' and method = 'patch-build'"; }
+STALE=$(cat <<'EOF'
+diff --git a/MathlibPlus/Alpha.lean b/MathlibPlus/Alpha.lean
+--- a/MathlibPlus/Alpha.lean
++++ b/MathlibPlus/Alpha.lean
+@@ -1 +1,2 @@
+-theorem alpha : 9 = 9 := rfl
++theorem alpha : 9 = 9 := rfl
++theorem added : 5 = 5 := rfl
+EOF
+)
+STALE_ID=$(patch_submit "a patch against a file that has moved on" "$STALE")
+STALE_V=$(patch_verification "$STALE_ID")
+[[ -n $STALE_V ]] || fail "a diff was not recognised as a patch"
+[[ $(await_verification "$STALE_V") == failed ]] || fail "a patch that does not apply was not failed"
+psql -h "$WORK" -d math -tAc "select detail->>'reason' from verification where id = $STALE_V" | grep -qi "does not apply" \
+  || fail "a conflicting patch did not say so"
+
+# Contract: deleting a module something still imports is a broken library, and
+# it is caught before anything is compiled.
+ORPHAN=$(printf 'diff --git a/MathlibPlus/Alpha.lean b/MathlibPlus/Alpha.lean\ndeleted file mode 100644\n--- a/MathlibPlus/Alpha.lean\n+++ /dev/null\n@@ -1 +0,0 @@\n-theorem alpha : 1 + 1 = 2 := rfl\n')
+ORPHAN_V=$(patch_verification "$(patch_submit "delete a module others import" "$ORPHAN")")
+[[ $(await_verification "$ORPHAN_V") == failed ]] || fail "deleting an imported module was not refused"
+psql -h "$WORK" -d math -tAc "select detail->>'reason' from verification where id = $ORPHAN_V" | grep -q "still imports" \
+  || fail "the dangling import was not explained"
+
+# Contract: a patch that applies is compiled in dependency order, and a module
+# that merely imports what changed is rebuilt too.
+MERGE=$(cat <<'EOF'
+diff --git a/MathlibPlus/Alpha.lean b/MathlibPlus/Alpha.lean
+--- a/MathlibPlus/Alpha.lean
++++ b/MathlibPlus/Alpha.lean
+@@ -1 +1,2 @@
+ theorem alpha : 1 + 1 = 2 := rfl
++theorem gamma : 3 = 3 := rfl
+diff --git a/MathlibPlus/Gamma.lean b/MathlibPlus/Gamma.lean
+deleted file mode 100644
+--- a/MathlibPlus/Gamma.lean
++++ /dev/null
+@@ -1 +0,0 @@
+-theorem gamma : 3 = 3 := rfl
+EOF
+)
+MERGE_ID=$(patch_submit "fold Gamma into Alpha" "$MERGE")
+MERGE_V=$(patch_verification "$MERGE_ID")
+CHECK_ID=$(for _ in $(seq 100); do
+  ID=$(psql -h "$WORK" -d math -tAc "select detail->>'check_id' from verification where id = $MERGE_V")
+  [[ -n $ID && -f "$SPOOL_DIR/in/patch-$ID/job.json" ]] && { echo "$ID"; break; }; sleep 0.1
+done)
+[[ -n $CHECK_ID ]] || fail "an applying patch was never spooled to the runner"
+python3 -c 'import json,sys; j=json.load(open(sys.argv[1]));
+mods=[m["module"] for m in j["modules"]];
+assert mods == ["MathlibPlus.Alpha", "MathlibPlus.Beta"], mods
+assert j["deleted"] == ["MathlibPlus.Gamma"], j["deleted"]
+assert [m["changed"] for m in j["modules"]] == [True, False]' "$SPOOL_DIR/in/patch-$CHECK_ID/job.json" \
+  || fail "the patch job was not the changed modules plus their importers, in build order"
+grep -q 'theorem gamma' "$SPOOL_DIR/in/patch-$CHECK_ID/src/MathlibPlus/Alpha.lean" || fail "the runner was handed unpatched sources"
+
+# The runner is sandboxed and stands in here, exactly as for kernel checks. It
+# returns the oleans it built, because publication installs those rather than
+# compiling the library a second time.
+rm -rf "$SPOOL_DIR/in/patch-$CHECK_ID"
+mkdir -p "$SPOOL_DIR/out/patch-$CHECK_ID.staging/lib/MathlibPlus"
+echo olean > "$SPOOL_DIR/out/patch-$CHECK_ID.staging/lib/MathlibPlus/Alpha.olean"
+cat > "$SPOOL_DIR/out/patch-$CHECK_ID.staging/result.json" <<EOF
+{"ok":true,"built":["MathlibPlus.Alpha","MathlibPlus.Beta"],"elapsed_ms":1200,
+ "decls":{"MathlibPlus.Alpha":[{"name":"alpha","type":"1 + 1 = 2","axioms":[],"proof":true},
+                               {"name":"gamma","type":"3 = 3","axioms":[],"proof":true}]}}
+EOF
+mv "$SPOOL_DIR/out/patch-$CHECK_ID.staging" "$SPOOL_DIR/out/patch-$CHECK_ID"
+[[ $(await_verification "$MERGE_V") == passed ]] || fail "a patch that builds did not pass"
+
+# Contract: verification is not publication. The library is untouched until a
+# trusted reviewer promotes the patch, and review sees the build result.
+git -C "$PATCH_REPO_DIR" diff --quiet HEAD || fail "a merely verified patch changed the library"
+call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json; d=json.load(sys.stdin);
+p=[x for x in d["patches"] if x["id"]=="'"$MERGE_ID"'"]; assert p and p[0]["build"]=="passed" and p[0]["deleted_modules"]==["MathlibPlus.Gamma"], d["patches"]' \
+  || fail "the review queue did not show the patch with its build result"
+
+# A stale kernel check of the module the patch changes: publication must drop
+# it, because its answer was about a library that no longer exists.
+psql -q -h "$WORK" -d math -c "insert into lean_check (source_hash, source, outcome) values ('deadbeef', 'import MathlibPlus.Alpha' || chr(10) || 'example : True := trivial', 'failed')"
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$MERGE_ID\",\"tier\":2,\"note\":\"reviewed patch\"}" | field '["ok"]' > /dev/null
+for _ in $(seq 100); do
+  STATE=$(psql -h "$WORK" -d math -tAc "select state from patch_publication where contribution_id = '$MERGE_ID'")
+  [[ $STATE == published ]] && break; sleep 0.1
+done
+[[ $STATE == published ]] || fail "promoting a patch to T2 did not publish it (state: ${STATE:-none}, $(tail -3 "$WORK/verifier.log"))"
+grep -q 'theorem gamma' "$PATCH_REPO_DIR/MathlibPlus/Alpha.lean" || fail "the published patch is not in the library"
+[[ ! -f "$PATCH_REPO_DIR/MathlibPlus/Gamma.lean" ]] || fail "the published patch did not delete the module it folded in"
+git -C "$PATCH_REPO_DIR" log -1 --format=%s | grep -q "fold Gamma into Alpha" || fail "publication did not commit with the patch's title"
+git -C "$PATCH_REPO_DIR" status --porcelain | grep -q . && fail "publication left the library checkout dirty"
+[[ -f "$PATCH_BUILD_LIB/MathlibPlus/Alpha.olean" ]] || fail "the verified olean was not installed into the build tree"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_check where source_hash = 'deadbeef'") == 0 ]] \
+  || fail "publication kept a cached check of a module it changed"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_decl where module = 'MathlibPlus.GroupTheory.Claim1'") == 1 ]] \
+  || fail "publication disturbed the index of modules it did not touch"
 
 echo "all contracts hold"
 

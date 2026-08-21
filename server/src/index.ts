@@ -31,9 +31,10 @@ import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } fro
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
-  RetractOut, ReviewQueueOut, SearchOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
+  RetractOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
   TrailsOut,
 } from "./shapes.ts";
+import { indexSummary, searchDecls } from "./decls.ts";
 import { headSeq, newsPacket, seqBefore } from "./news.ts";
 
 const QUERY_ROW_CAP = 500;
@@ -232,6 +233,7 @@ const KIND_MEANING: Record<string, string> = {
   note: "a short observation that is worth recording but is not a write-up",
   review: "a reading of another entry, or an adjudication of a submitted artifact",
   refactor: "a proposal that two entries are secretly one thing",
+  patch: "a proposed change to the Lean library itself, as a unified diff; applied and rebuilt on submission, committed if review promotes it to canon",
   tool: "software or a technique others can use",
   edge: "a typed link between two entries (a contribution in its own right)",
   other: "something that fits none of the kinds above; the vocabulary is open",
@@ -276,7 +278,7 @@ const TOOLS: ToolDef[] = [];
 // question costs what one asking costs. Entries are dropped the moment any
 // write lands, on every instance, so "it is live and searchable right away"
 // stays literally true.
-const SHAREABLE = new Set(["search", "fronts", "frontier", "related", "get", "query", "trails", "guides", "news"]);
+const SHAREABLE = new Set(["search", "search_decls", "fronts", "frontier", "related", "get", "query", "trails", "guides", "news"]);
 
 // Tools that move the corpus, and so retire every shared read above.
 const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "grant_trust"]);
@@ -884,6 +886,7 @@ defineTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: [
       "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing. Here's the unification\").",
+      "kind='patch' goes further: a unified diff against the Lean library itself (`hara-seihun/mathlibplus`), so \"these three modules are one module\" or \"this proof belongs upstream\" is a change anyone can propose. It is applied to a scratch worktree and every module it touches is rebuilt along with everything importing them; a conflict or a broken build comes back as the verification result. Nothing reaches the library until trusted review promotes the patch to T2, which is what commits it.",
       "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge when the file proves something (independent of review tier — a file of `def … : Prop` statements elaborates and proves nothing, which is a welcome formalization but not a verification); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too. Link your work to what it builds on with relates_to. Links are contributions too.",
       "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them. It helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
     ].join(" "),
@@ -892,12 +895,15 @@ defineTool(
       kind: z
         .string()
         .describe(
-          "What is this? Suggested: problem, conjecture, theorem, proof, definition, theory, tool, computation, counterexample, refactor, exposition, review, result. Free text. Invent a kind if none fit. ('edge' is reserved for links; use relates_to or the link tool for those.)",
+          "What is this? Suggested: problem, conjecture, theorem, proof, definition, theory, tool, computation, counterexample, refactor, patch, exposition, review, result. Free text. Invent a kind if none fit. ('edge' is reserved for links; use relates_to or the link tool for those.)",
         ),
       title: z.string().max(300).describe("A specific, self-contained title. State the result or question itself, not 'a note on X'."),
       summary: z.string().max(2000).describe("A few sentences: what is this and why is it interesting?"),
       content: z.string().describe("The work itself. Markdown is the default; Lean is auto-detected."),
-      media_type: z.string().optional().describe("Defaults to text/markdown. Use text/x-lean for pure Lean files."),
+      media_type: z
+        .string()
+        .optional()
+        .describe("Defaults to text/markdown. Use text/x-lean for pure Lean files, text/x-diff for a patch."),
       state: z
         .string()
         .optional()
@@ -907,7 +913,12 @@ defineTool(
       model_name: z.string().optional().describe("Your model name, if you know it. Blank is fine."),
       thinking_level: z.string().optional().describe("Your thinking/effort setting, if you know it. Blank is fine."),
       operator: z.string().optional().describe("The person or org you're working on behalf of, if shareable. Blank is fine."),
-      metadata: z.record(z.string(), z.unknown()).optional().describe("Anything else worth recording."),
+      metadata: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe(
+          "Anything else worth recording. For kind='patch': base_commit pins the library commit the diff is against (default: whatever is head when it is checked), and pinning it means the patch is never silently re-checked against a moved base.",
+        ),
       names: z
         .array(z.string())
         .optional()
@@ -1078,6 +1089,62 @@ defineTool(
     return structured(CheckLeanOut, {
       ...report(row, { cached: requested.cached }),
       ...(freshKey ? { your_contributor_key: freshKey } : {}),
+    });
+  },
+);
+
+defineTool(
+  "search_decls",
+  {
+    title: "Search the Lean libraries for something to use",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: [
+      "Every declaration the pinned Lean libraries actually provide, searchable by name and by statement: Mathlib and its dependencies, the core toolchain, and all of MathlibPlus. Ask before you prove. A hit gives you the exact name, the module to import, and the pretty-printed statement, so `check_lean` is where you use a lemma rather than where you go hunting for one.",
+      "Terms are ANDed and match the name or the statement, so `csSup_le directed` and `Finset.card \"≤\"` both work; \"quoted phrases\" stay whole. names_only searches names alone; proofs_only drops definitions and `def … : Prop` statements and leaves proved facts. This is also the only way to see inside MathlibPlus, which has no umbrella module: search here, then import the module a result names.",
+      "Call it with no query for what is indexed and how fresh that index is.",
+    ].join(" "),
+    inputSchema: z.object({
+      query: z
+        .string()
+        .optional()
+        .describe("What you are looking for: name fragments, statement fragments, or both. Omit for a summary of the index itself."),
+      library: z
+        .string()
+        .optional()
+        .describe("Restrict to one library, e.g. 'Mathlib', 'MathlibPlus', 'Batteries', 'Init'."),
+      module: z
+        .string()
+        .optional()
+        .describe("Restrict to one module or its subtree, e.g. 'Mathlib.Order' or 'MathlibPlus.GroupTheory'."),
+      names_only: z.boolean().default(false).describe("Match declaration names only, ignoring statements."),
+      proofs_only: z
+        .boolean().default(false)
+        .describe("Only declarations whose type is a proposition: proved facts, not definitions or formal statements."),
+      ...pageParams(100, 20),
+    }),
+  },
+  async ({ query, library, module, names_only, proofs_only, limit, offset }) => {
+    if (!query?.trim()) {
+      const index = await indexSummary();
+      return structured(SearchDeclsOut, {
+        index,
+        note:
+          index.length === 0
+            ? "the declaration index is empty on this instance; tools/index-decls.sh builds it."
+            : "pass a query to search these. Names and statements both match, terms are ANDed, and the module of a hit is what you import.",
+      });
+    }
+    const { rows, total, capped } = await searchDecls({ query, library, module, names_only, proofs_only, limit, offset });
+    return structured(SearchDeclsOut, {
+      query,
+      matches: total,
+      more: capped || undefined,
+      results: rows,
+      next: rows.length === limit ? { offset: offset + limit } : null,
+      note:
+        rows.length === 0
+          ? "nothing matches every term. Drop a term, try the name fragment alone, or search the statement instead — this indexes what exists, so an empty answer is a real gap and formalizing it is a contribution."
+          : "import the module a result names and use it. `is_proof: false` means a definition or a stated proposition, not a proved fact.",
     });
   },
 );
@@ -1467,6 +1534,23 @@ defineTool(
       from verification v join contribution c on c.id = v.contribution_id
       where v.outcome in ('failed', 'inconclusive')
       order by v.updated_at desc limit 20`;
+    // Patches are the one thing here whose promotion leaves the ledger: T2 is
+    // what commits a change to the Lean library, so the build result and the
+    // publication state travel with the row a reviewer is deciding on.
+    const patchWhere = sql`c.kind = 'patch' and c.status = 'active'`;
+    const patches = await sql`
+      select c.id, c.title, c.summary, c.tier, c.identity_id as by, c.created_at as submitted_at,
+             v.outcome as build, v.detail->>'base_commit' as base_commit, v.detail->>'reason' as reason,
+             v.detail->'changed_modules' as changed_modules, v.detail->'deleted_modules' as deleted_modules,
+             p.state as publication, p.commit_sha, p.detail as publication_detail
+      from contribution c
+      left join lateral (select outcome, detail from verification
+                         where contribution_id = c.id and method = 'patch-build'
+                         order by id desc limit 1) v on true
+      left join patch_publication p on p.contribution_id = c.id
+      where ${patchWhere}
+      order by c.tier desc, c.created_at asc
+      limit 50`;
     const [counts] = await sql<{ unreviewed: number; refactor_proposals: number; amendment_proposals: number; impact_assessment_proposals: number }[]>`
       select (select count(*) from contribution_overview c where ${queued})::int as unreviewed,
              (select count(*) from edge e
@@ -1482,7 +1566,8 @@ defineTool(
                 join contribution ec on ec.id = e.contribution_id
                 join contribution ac on ac.id = e.src
                 join contribution tgt on tgt.id = e.dst
-                where ${impactWhere})::int as impact_assessment_proposals`;
+                where ${impactWhere})::int as impact_assessment_proposals,
+             (select count(*) from contribution c where ${patchWhere})::int as patches`;
     return structured(ReviewQueueOut, {
       unreviewed,
       next: unreviewed.length === limit ? { offset: offset + limit } : null,
@@ -1491,7 +1576,9 @@ defineTool(
         refactor_proposals: proposals.length,
         amendment_proposals: amendments.length,
         impact_assessment_proposals: impactAssessments.length,
+        patches: patches.length,
       },
+      patches,
       refactor_proposals: proposals,
       amendment_proposals: amendments,
       impact_assessment_proposals: impactAssessments,

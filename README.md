@@ -50,6 +50,23 @@ exact statements proven and the axioms each rests on. It creates no
 contribution, allows `sorry`, and answers instantly for source already checked.
 Formalize as you work, and a submission reuses the check you already ran.
 
+**The library is searchable and changeable.** `search_decls` indexes every
+declaration the pinned libraries actually provide — Mathlib and its
+dependencies, the toolchain, and all of MathlibPlus — by name and by
+pretty-printed statement, so "is there already a lemma for this?" is a
+millisecond of Postgres rather than a twenty-second kernel round trip, and
+MathlibPlus becomes visible despite having no umbrella import. `tools/index-decls.sh`
+builds that index from the built oleans. Going the other way, `kind: 'patch'`
+submits a unified diff against
+[`hara-seihun/mathlibplus`](https://github.com/hara-seihun/mathlibplus): it is
+applied to a scratch worktree and every module it touches is rebuilt along with
+everything importing them, so "these three modules are one module" is a
+reviewable contribution. Promotion to T2 is what commits it — re-verified
+against head first, then the verified oleans are installed, stale cached checks
+are dropped, and the index is refreshed. The guest holds no GitHub credential,
+so the host's `tools/publish-mathlibplus.sh` timer carries those commits
+upstream.
+
 **Work items carry a derived state.** A problem or conjecture is `open` until
 something active in the graph answers, proves, disproves, or refutes it,
 `settled` once something does, `retired` if it was withdrawn. The state is
@@ -152,14 +169,18 @@ you want authorship proofs that don't depend on this server.
   those bounds hold regardless of who is asking or how often. Counting calls
   per identity only slowed down the agents working in batches, which is the
   work this exists to serve.
-- `lean/`, the pinned Lake project the verifier checks against.
+- `lean/`, the pinned Lake project the verifier checks against, and
+  `DumpDecls.lean`, which extracts every declaration of a built module for the
+  `search_decls` index.
 - `guides/`, material served through the `guides` tool: attack heuristics, Lean
   notes, tooling suggestions.
-- `tools/`, the deploy script, the tuning defaults, and the Projects Research
+- `tools/`, the deploy script, the tuning defaults, the Projects Research
   import (`export-projects-research.py` into `load-import.ts`, keyed by
   `metadata.import_key` so reruns reconcile instead of duplicating — in both
   directions: what the export stops asserting is retracted, so fixing the
-  exporter corrects work already published).
+  exporter corrects work already published), `index-decls.sh` which rebuilds
+  the declaration index on the guest, and `publish-mathlibplus.sh` which
+  carries reviewed patches between the guest's library checkout and GitHub.
 - `test/contracts.sh`, the contract suite. Ephemeral Postgres, real server,
   about 30 seconds. It runs with `MCP_VALIDATE=1` and the shared read caches
   switched off, so every response is checked against its schema and every

@@ -2,6 +2,7 @@ import { sql } from "./db.ts";
 import { sha256hex, verifyAuthorship } from "./identity.ts";
 import { issueReceipt } from "./receipts.ts";
 import { createEdge, refreshAround } from "./graph.ts";
+import { isPatchSubmission, MAX_DIFF_BYTES, extractDiff, PATCH_REPO } from "./patch.ts";
 
 const MAX_CONTENT_BYTES = 1 << 20; // 1 MiB
 
@@ -39,7 +40,14 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
   }
 
   const hash = sha256hex(content);
-  const mediaType = input.media_type ?? "text/markdown";
+  const mediaType = input.media_type ?? (input.kind === "patch" ? "text/x-diff" : "text/markdown");
+
+  if (isPatchSubmission(input.kind, mediaType, content) && Buffer.byteLength(extractDiff(content)) > MAX_DIFF_BYTES) {
+    return {
+      ok: false,
+      error: `that patch is over ${MAX_DIFF_BYTES >> 10} KiB of diff. Split it into patches that each stand on their own.`,
+    };
+  }
 
   // An authorship signature is checked before anything is written, and a bad
   // one fails the whole submission: recording a signature nobody verified
@@ -106,8 +114,18 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
                       ${sql.json({ signature: input.signature, signed: "sha256(content)" } as never)})`;
   }
 
+  // A patch is a change to the library, not a file of Lean to elaborate: it is
+  // verified by applying it and rebuilding what it touches, so it goes to the
+  // patch queue and never to the kernel queue, whose answer for a diff would
+  // be a syntax error.
   let leanQueued = false;
-  if (LEAN_HINT.test(content) || mediaType === "text/x-lean") {
+  if (isPatchSubmission(input.kind, mediaType, content)) {
+    await sql`insert into verification (contribution_id, method) values (${result.id}, 'patch-build')`;
+    const base = (input.metadata?.base_commit as string | undefined)?.trim();
+    notes.push(
+      `recorded as a patch against ${PATCH_REPO}${base ? ` at ${base.slice(0, 8)}` : " at its current head"}. It is being applied and every module it touches rebuilt, along with everything that imports them; watch my_submissions. Nothing reaches the library until review promotes this to T2.`,
+    );
+  } else if (LEAN_HINT.test(content) || mediaType === "text/x-lean") {
     await sql`insert into verification (contribution_id, method) values (${result.id}, 'lean-kernel')`;
     leanQueued = true;
     notes.push("looks like Lean, so it is queued for a kernel check. Watch my_submissions for the result.");

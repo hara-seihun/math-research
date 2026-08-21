@@ -29,6 +29,15 @@ import {
   type Decl,
 } from "../src/lean.ts";
 import { sha256hex } from "../src/identity.ts";
+import {
+  adoptPatches,
+  collectPatches,
+  judgePatches,
+  publishPatches,
+  repoPresent,
+  revalidatePatches,
+  spoolPatches,
+} from "./patches.ts";
 
 const SPOOL = process.env.SPOOL_DIR ?? "/var/lib/lean-spool";
 const SPOOL_IN = join(SPOOL, "in");
@@ -53,6 +62,9 @@ const names = (decls: Decl[]): string => decls.map((d) => d.name).join(", ");
 
 /** Spooled checks: source hash -> deadline. */
 const inflight = new Map<string, number>();
+/** Spooled patch builds: check id -> deadline. Separate because a patch build
+ *  is a library build and only one runs at a time. */
+const patchesInflight = new Map<string, number>();
 
 const resolveCheck = (hash: string, outcome: string, detail: CheckDetail) =>
   sql`update lean_check set outcome = ${outcome}, detail = ${sql.json(detail as never)}, updated_at = now()
@@ -242,6 +254,15 @@ async function recover() {
   }
   await sql`update lean_check set claimed_at = null where outcome = 'pending' and claimed_at is not null`;
   if (claimed.length > 0) console.log(`re-queued ${claimed.length} orphaned pending check(s)`);
+
+  const patches = await sql<{ id: string }[]>`
+    select id from patch_check where outcome = 'pending' and claimed_at is not null`;
+  for (const row of patches) {
+    rmSync(join(SPOOL_IN, `patch-${row.id}`), { recursive: true, force: true });
+    rmSync(join(SPOOL_OUT, `patch-${row.id}`), { recursive: true, force: true });
+  }
+  await sql`update patch_check set claimed_at = null where outcome = 'pending' and claimed_at is not null`;
+  if (patches.length > 0) console.log(`re-queued ${patches.length} orphaned pending patch build(s)`);
 }
 
 let ticking = false;
@@ -253,6 +274,12 @@ async function tick() {
     await spool();
     await collect();
     await judge();
+    await adoptPatches();
+    await spoolPatches(patchesInflight);
+    await collectPatches(patchesInflight);
+    await judgePatches();
+    await publishPatches();
+    await revalidatePatches();
   } catch (error) {
     console.error("tick failed:", error);
   } finally {
@@ -267,6 +294,8 @@ await recover();
 // interval is the reconciler that makes the work happen anyway.
 await sql.listen("lean_check", () => void tick());
 watch(SPOOL_OUT, () => void tick());
-console.log(`lean verifier (orchestrator): spool=${SPOOL} timeout=${TIMEOUT_MS}ms`);
+console.log(
+  `lean verifier (orchestrator): spool=${SPOOL} timeout=${TIMEOUT_MS}ms patches=${repoPresent() ? "on" : "no library checkout"}`,
+);
 setInterval(() => void tick(), RECONCILE_MS);
 void tick();

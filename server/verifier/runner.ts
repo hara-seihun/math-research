@@ -14,8 +14,9 @@
  * statement, and the axioms it depends on. The orchestrator turns that into
  * the verification outcome; this process decides nothing.
  */
-import { mkdirSync, readdirSync, existsSync, rmSync, renameSync, writeFileSync, readFileSync, copyFileSync } from "node:fs";
-import { join, basename } from "node:path";
+import { mkdirSync, readdirSync, existsSync, rmSync, renameSync, writeFileSync, readFileSync, copyFileSync, cpSync } from "node:fs";
+import { join, basename, dirname } from "node:path";
+import type { PatchJob, PatchModuleResult, PatchResult } from "./patch-job.ts";
 
 const SPOOL = process.env.SPOOL_DIR ?? "/var/lib/lean-spool";
 const SPOOL_IN = join(SPOOL, "in");
@@ -97,9 +98,19 @@ run_cmd do
 
 type Decl = { name: string; type: string; axioms: string[]; proof?: boolean };
 
-async function runLean(args: string[], cwd: string, timeoutMs: number, extraLeanPath?: string) {
+/** `before` shadows the published library: a patched module has to win over
+ *  the olean already installed under the same module name, which is the whole
+ *  point of building a patch. `after` is the check runner's scratch module,
+ *  which exists nowhere else. */
+async function runLean(
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  extra?: { after?: string; before?: string },
+) {
   const env = { ...process.env, ...leanEnv };
-  if (extraLeanPath) env.LEAN_PATH = `${env.LEAN_PATH}:${extraLeanPath}`;
+  if (extra?.after) env.LEAN_PATH = `${env.LEAN_PATH}:${extra.after}`;
+  if (extra?.before) env.LEAN_PATH = `${extra.before}:${env.LEAN_PATH}`;
   const proc = Bun.spawn(["lean", ...args], {
     cwd,
     stdout: "pipe",
@@ -142,16 +153,9 @@ async function runCheck(id: string) {
       result.ok = true;
       const auditFile = join(work, `Audit${id}.lean`);
       writeFileSync(auditFile, auditSource(moduleName));
-      const audit = await runLean([`--root=${work}`, auditFile], work, AUDIT_TIMEOUT_MS, work);
+      const audit = await runLean([`--root=${work}`, auditFile], work, AUDIT_TIMEOUT_MS, { after: work });
       if (audit.exitCode === 0 && !audit.timedOut) {
-        const decls: Decl[] = [];
-        for (const match of audit.output.matchAll(/AUDIT(\{.*\})/g)) {
-          try {
-            decls.push(JSON.parse(match[1]!));
-          } catch {
-            /* skip unparsable line */
-          }
-        }
+        const decls = parseAudit(audit.output);
         result.audit_ok = decls.length > 0;
         result.decls = decls;
         // The audit ran and found nothing to report: the file declares no
@@ -174,24 +178,120 @@ async function runCheck(id: string) {
   }
 }
 
+const parseAudit = (output: string) => {
+  const decls: Decl[] = [];
+  for (const match of output.matchAll(/AUDIT(\{.*\})/g)) {
+    try {
+      decls.push(JSON.parse(match[1]!));
+    } catch {
+      /* skip unparsable line */
+    }
+  }
+  return decls;
+};
+
+/**
+ * A patch build: the orchestrator has already applied the diff and worked out
+ * what has to be compiled and in which order, so this is the same job as a
+ * check with more than one file in it. The oleans go back with the result,
+ * because publication installs exactly what was verified rather than
+ * compiling the library a second time.
+ */
+async function runPatchJob(id: string) {
+  const jobDir = join(SPOOL_IN, `patch-${id}`);
+  const work = join(WORK_DIR, `patch-${id}`);
+  const src = join(work, "src");
+  const out = join(work, "out");
+  const started = Date.now();
+  const result: PatchResult = { ok: false, built: [] };
+  const staging = join(SPOOL_OUT, `patch-${id}.staging`);
+  try {
+    const job: PatchJob = JSON.parse(readFileSync(join(jobDir, "job.json"), "utf8"));
+    rmSync(work, { recursive: true, force: true });
+    mkdirSync(out, { recursive: true });
+    cpSync(join(jobDir, "src"), src, { recursive: true });
+
+    const deadline = started + job.timeout_ms;
+    const modules: PatchModuleResult[] = [];
+    const decls: Record<string, Decl[]> = {};
+    for (const module of job.modules) {
+      const olean = join(out, `${module.module.replaceAll(".", "/")}.olean`);
+      mkdirSync(dirname(olean), { recursive: true });
+      const budget = Math.min(TIMEOUT_MS, Math.max(1, deadline - Date.now()));
+      const compiled = await runLean([`--root=${src}`, "-o", olean, join(src, module.path)], work, budget, { before: out });
+      const report: PatchModuleResult = {
+        module: module.module,
+        exit_code: compiled.exitCode,
+        timed_out: compiled.timedOut,
+        output: compiled.output.slice(-4000),
+      };
+      modules.push(report);
+      if (compiled.exitCode !== 0 || compiled.timedOut || /declaration uses 'sorry'/.test(compiled.output)) {
+        result.failed = report;
+        result.modules = modules;
+        return;
+      }
+      result.built.push(module.module);
+    }
+
+    for (const module of job.modules.filter((m) => m.changed)) {
+      const auditFile = join(work, `Audit_${module.module.replaceAll(".", "_")}.lean`);
+      writeFileSync(auditFile, auditSource(module.module));
+      const audit = await runLean([`--root=${work}`, auditFile], work, AUDIT_TIMEOUT_MS, { before: out, after: work });
+      if (audit.exitCode !== 0 || audit.timedOut) {
+        result.audit_error = audit.timedOut ? `audit of ${module.module} timed out` : audit.output.slice(-2000);
+        result.error = `the axiom audit of ${module.module} did not complete`;
+        result.modules = modules;
+        return;
+      }
+      decls[module.module] = parseAudit(audit.output);
+    }
+
+    result.ok = true;
+    result.modules = modules;
+    result.decls = decls;
+  } catch (error) {
+    result.error = String(error);
+  } finally {
+    result.elapsed_ms = Date.now() - started;
+    rmSync(staging, { recursive: true, force: true });
+    mkdirSync(staging, { recursive: true });
+    if (result.ok && existsSync(out)) cpSync(out, join(staging, "lib"), { recursive: true });
+    writeFileSync(join(staging, "result.json"), JSON.stringify(result));
+    renameSync(staging, join(SPOOL_OUT, `patch-${id}`));
+    rmSync(work, { recursive: true, force: true });
+    rmSync(jobDir, { recursive: true, force: true });
+  }
+}
+
 let running = 0;
 const claimed = new Set<string>();
+
+function start(id: string, job: () => Promise<void>) {
+  claimed.add(id);
+  running++;
+  job()
+    .catch((error) => console.error(`${id} crashed:`, error))
+    .finally(() => {
+      claimed.delete(id);
+      running--;
+    });
+}
 
 function tick() {
   if (!existsSync(READY)) return;
   for (const file of readdirSync(SPOOL_IN)) {
     if (running >= CONCURRENCY) break;
+    if (file.startsWith("patch-")) {
+      if (file.endsWith(".staging") || claimed.has(file)) continue;
+      if (!existsSync(join(SPOOL_IN, file, "job.json"))) continue;
+      start(file, () => runPatchJob(file.slice("patch-".length)));
+      continue;
+    }
     if (!file.endsWith(".lean")) continue;
     const id = basename(file, ".lean");
     if (claimed.has(id)) continue;
-    claimed.add(id);
-    running++;
-    runCheck(id)
-      .catch((error) => console.error(`check ${id} crashed:`, error))
-      .finally(() => {
-        claimed.delete(id);
-        running--;
-      });
+    start(id, () => runCheck(id));
   }
 }
 

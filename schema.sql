@@ -337,6 +337,64 @@ create table if not exists lean_check (
 );
 create index if not exists lean_check_pending_idx on lean_check (created_at) where outcome = 'pending';
 
+-- Every declaration the pinned libraries actually provide, so "what can I use
+-- here?" is a millisecond of Postgres instead of a twenty-second kernel round
+-- trip. Written by tools/index-decls.sh (lean/DumpDecls.lean imports the built
+-- oleans and reports each declaration's module, pretty-printed type, and
+-- whether that type is a proposition); read by the `search_decls` tool and the
+-- q_decls view. A library with duplicated declaration names across modules —
+-- MathlibPlus has them, which is why it has no umbrella import — is why the
+-- key is (module, name) rather than the name alone.
+create table if not exists lean_decl (
+  module     text not null,
+  name       text not null,
+  library    text not null,
+  kind       text not null,
+  statement  text not null,
+  is_proof   boolean not null,
+  indexed_at timestamptz not null default now(),
+  primary key (module, name)
+);
+create index if not exists lean_decl_name_trgm_idx on lean_decl using gin (name gin_trgm_ops);
+create index if not exists lean_decl_statement_trgm_idx on lean_decl using gin (statement gin_trgm_ops);
+create index if not exists lean_decl_library_idx on lean_decl (library, is_proof);
+create index if not exists lean_decl_module_idx on lean_decl (module);
+
+-- A proposed change to the library source, verified the same way a check is:
+-- content-addressed by (repo, base commit, diff) so an identical proposal is
+-- never applied and compiled twice. Rows record what happened when the patch
+-- was applied and its modules rebuilt; whether that is worth publishing is
+-- review's decision, exactly as with lean_check.
+create table if not exists patch_check (
+  id          text primary key,       -- sha256(repo \n base_commit \n diff)
+  repo        text not null,
+  base_commit text not null,
+  diff        text not null,
+  outcome     text not null default 'pending'
+              check (outcome in ('pending', 'passed', 'failed', 'inconclusive')),
+  detail      jsonb not null default '{}'::jsonb,
+  claimed_at  timestamptz,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists patch_check_pending_idx on patch_check (created_at) where outcome = 'pending';
+
+-- What happened to a patch after review promoted it to canon. The publisher
+-- re-verifies against the repository's current head before it commits, so a
+-- patch that was reviewed against a base that has since moved is blocked here
+-- with its reason rather than applied blind.
+create table if not exists patch_publication (
+  contribution_id uuid primary key references contribution(id),
+  repo            text not null,
+  state           text not null check (state in ('queued', 'published', 'blocked')),
+  check_id        text,
+  commit_sha      text,
+  detail          jsonb not null default '{}'::jsonb,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+create index if not exists patch_publication_state_idx on patch_publication (state, updated_at);
+
 -- Server-signed submission receipts: an Ed25519 signature over the canonical
 -- receipt payload, so a contributor can prove to anyone that this server
 -- accepted exactly this artifact from exactly this identity at this time.
@@ -695,6 +753,14 @@ create or replace view q_trail_entries as
 create or replace view q_identities as
   select id, display_name, role, created_at from identity;
 
+create or replace view q_decls as
+  select module, name, library, kind, statement, is_proof, indexed_at from lean_decl;
+
+create or replace view q_patches as
+  select p.contribution_id, p.repo, p.state, p.commit_sha, p.detail, p.updated_at,
+         k.base_commit, k.outcome as check_outcome, k.detail as check_detail
+  from patch_publication p left join patch_check k on k.id = p.check_id;
+
 create or replace view q_config as select key, value, updated_at from config;
 create or replace view q_topic_rules as select topic, pattern, ord from topic_rule;
 
@@ -711,7 +777,7 @@ end $$;
 grant usage on schema public to math_reader;
 grant select on q_entries, q_links, q_front_members, q_events, q_verifications,
                 q_artifacts, q_trails, q_trail_entries, q_identities, q_config,
-                q_topic_rules to math_reader;
+                q_topic_rules, q_decls, q_patches to math_reader;
 -- The server's own connection switches into this role per query statement.
 -- Conditional for the same reason as the role itself: granting membership a
 -- second time needs ADMIN on the role, which the owning user does not have,

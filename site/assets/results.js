@@ -25,21 +25,14 @@ const VIEWS = {
       order_by: "impact",
       ...(since === "all" ? {} : { since }),
     }),
-    explainer:
-      "The board: mathematics this ledger established first, either a question it closed with a T2 reviewed link or an entry a reviewer scored for impact. Ranked by that reviewed impact — reach, advance and closure, each 0–5 — over heavily damped graph importance. Every score is explained on its card.",
     reasonLabel: "Why it ranks: ",
     empty: "Nothing on the board was recorded in this window.",
-    status: (page, since) =>
-      `${(page.total ?? 0).toLocaleString()} on the board ${since === "all" ? "all time" : `in the last ${WINDOW_WORDS[since]}`}`,
   },
   new: {
     windowed: false,
     request: () => ({ kind: RESULT_KINDS, order_by: "recent" }),
-    explainer:
-      "Strictly newest first, straight off the ledger. Nothing here has been ranked, and most of it has not been read yet.",
     reasonLabel: "Current signals: ",
     empty: "Nothing has been recorded here yet.",
-    status: (page) => `${(page.total ?? 0).toLocaleString()} results, newest first`,
   },
 };
 
@@ -50,8 +43,6 @@ const entryNode = document.querySelector("[data-entry]");
 if (!root || !entryNode) throw new Error("results page is missing its feed or entry container");
 
 const listNode = root.querySelector("[data-list]");
-const statusNode = root.querySelector("[data-status]");
-const explainerNode = root.querySelector("[data-explainer]");
 const moreButton = root.querySelector("[data-more]");
 const windowRow = root.querySelector("[data-window-row]");
 const windowSelect = root.querySelector("[data-window]");
@@ -69,7 +60,6 @@ const pages = new Map();
 let view = "top";
 let since = "all";
 let loading = false;
-let lastLoadedAt = 0;
 
 // --- Talking to the ledger ------
 
@@ -233,7 +223,6 @@ function renderList() {
     tab.tabIndex = selected ? 0 : -1;
   }
   windowRow.hidden = !VIEWS[view].windowed;
-  explainerNode.textContent = VIEWS[view].explainer;
 
   const page = pages.get(view);
   if (!page) return;
@@ -242,8 +231,6 @@ function renderList() {
   moreButton.hidden = !page.next;
   moreButton.disabled = false;
   moreButton.textContent = "Load more";
-  const loaded = new Date(lastLoadedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  statusNode.textContent = `Updated ${loaded} · ${VIEWS[view].status(page, since)}`;
 }
 
 async function load({ append = false } = {}) {
@@ -251,15 +238,13 @@ async function load({ append = false } = {}) {
   loading = true;
   const wanted = view;
   const existing = pages.get(wanted);
-  statusNode.textContent = existing && !append ? "Refreshing the ledger…" : "Loading the ledger…";
   try {
     const request = { ...VIEWS[wanted].request(since), limit: PAGE, offset: append ? (existing?.next?.offset ?? 0) : 0 };
     const page = await callTool("search", request);
     pages.set(wanted, append && existing ? { ...page, results: [...existing.results, ...page.results] } : page);
-    lastLoadedAt = Date.now();
     if (view === wanted) renderList();
   } catch (error) {
-    statusNode.textContent = `The ledger could not be read: ${error.message}`;
+    if (view === wanted) listNode.replaceChildren(element("li", "empty", `The ledger could not be read: ${error.message}`));
   } finally {
     loading = false;
   }
@@ -457,7 +442,7 @@ async function showEntry(id) {
   root.hidden = true;
   for (const node of prose) node.hidden = true;
   entryNode.hidden = false;
-  entryNode.replaceChildren(element("p", "feed-status", "Opening the entry…"));
+  entryNode.replaceChildren(element("p", "entry-status", "Opening the entry…"));
   try {
     const entry = await fetchEntry(id);
     renderEntry(entry);

@@ -23,8 +23,6 @@ order: 0.5
       <option value="all" selected>all time</option>
     </select>
   </p>
-  <p class="feed-explainer" data-explainer></p>
-  <p class="feed-status" data-status role="status">Loading the ledger…</p>
   <ol class="feed-list" id="feed-list" data-list aria-live="polite"></ol>
   <button type="button" class="feed-more" data-more hidden>Load more</button>
 </section>

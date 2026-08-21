@@ -222,14 +222,7 @@ td:nth-child(2) { color: var(--muted); white-space: nowrap; }
   font: inherit;
 }
 
-.feed-explainer {
-  margin: 0.8rem 0 0.25rem;
-  color: var(--muted);
-  font: 0.82rem/1.5 system-ui, sans-serif;
-}
-
-.feed-status {
-  margin-bottom: 1.3rem;
+.entry-status {
   color: var(--muted);
   font: 0.74rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
 }

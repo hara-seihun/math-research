@@ -38,7 +38,26 @@ export function extractLean(content: string): string {
   return `${source.includes("import ") ? source : `import Mathlib\n\n${source}`}\n`;
 }
 
-export type Decl = { name: string; type: string; axioms: string[] };
+/**
+ * One declaration the module added. `proof` is the kernel's own answer to
+ * "is this declaration's type a proposition?" — true for `theorem foo : P`,
+ * false for `def Q : Prop := …` and for ordinary data. Older checks predate
+ * the question and leave it undefined.
+ */
+export type Decl = { name: string; type: string; axioms: string[]; proof?: boolean };
+
+/**
+ * A kernel pass is worth exactly what it proved. A file of `def … : Prop`
+ * statements elaborates cleanly and proves nothing, which is why `lean_decl`
+ * and `lean_statement` are different keys here and why `lean_verified` asks
+ * this question before it is granted.
+ */
+export const provedDecls = (decls: Decl[]): Decl[] => decls.filter((d) => d.proof === true);
+export const statedDecls = (decls: Decl[]): Decl[] => decls.filter((d) => d.proof !== true);
+/** Undefined `proof` means the check ran before the audit asked; judge those the old way. */
+export const classifiesProofs = (decls: Decl[]): boolean => decls.some((d) => d.proof !== undefined);
+export const provesNothing = (decls: Decl[]): boolean =>
+  classifiesProofs(decls) && provedDecls(decls).length === 0;
 
 export type CheckDetail = {
   exit_code?: number;
@@ -141,17 +160,25 @@ export function report(row: CheckRow, extras: { cached: boolean; queued?: boolea
       note: "still compiling. Call check_lean again with the same source to pick the result up. The check keeps running and the answer is cached.",
     };
   }
-  const proved = decls.map((d) => ({ name: d.name, statement: d.type, axioms: d.axioms }));
+  const shape = (d: Decl) => ({ name: d.name, statement: d.type, axioms: d.axioms });
+  const split = classifiesProofs(decls)
+    ? { proved: provedDecls(decls).map(shape), stated: statedDecls(decls).map(shape) }
+    : { proved: decls.map(shape), stated: [] };
+  const proved = split.proved;
+  const stated = split.stated.length > 0 ? split.stated : undefined;
   if (row.outcome === "passed") {
     return {
       ...base,
       proved,
+      stated,
       foreign_axioms: foreign.length > 0 ? foreign : undefined,
       note: incomplete
         ? "it elaborates, but the declarations resting on sorryAx are holes, not proofs. Fill them and check again."
         : foreign.length > 0
           ? "the kernel accepted it, but it rests on axioms outside {propext, Classical.choice, Quot.sound}, so submitting it would not earn lean_verified."
-          : "kernel-checked against the pinned Lean/Mathlib. `proved` is exactly what was proven. Read the statements, not the names.",
+          : proved.length === 0
+            ? "it elaborates and every declaration in it is a definition or a statement, so nothing here is proved. That is a fine formalization and it will not earn lean_verified; prove something about it — a witness, a special case, an equivalence — and the badge follows."
+            : "kernel-checked against the pinned Lean/Mathlib. `proved` is exactly what was proven, `stated` is what was only defined. Read the statements, not the names.",
     };
   }
   // Lean's own output for a file that declares nothing is `#check` and
@@ -170,5 +197,6 @@ export function report(row: CheckRow, extras: { cached: boolean; queued?: boolea
     sorry: detail.sorry || undefined,
     errors: scrubPaths(detail.output),
     proved: proved.length > 0 ? proved : undefined,
+    stated,
   };
 }

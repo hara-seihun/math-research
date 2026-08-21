@@ -61,6 +61,13 @@ async function loadLeanEnv() {
   }
 }
 
+// The audit reports every declaration the module added, and for each one the
+// single fact that decides what a kernel pass is worth: is this declaration's
+// *type* a proposition? `theorem foo : P` has type `P : Prop`, so the kernel
+// checked a proof of P. `def Q : Prop := …` has type `Prop : Type`: it
+// elaborates, it is a perfectly good formal statement, and it proves nothing.
+// Only the kernel can tell those apart, so it is asked here rather than
+// guessed later from a pretty-printed string.
 function auditSource(moduleName: string): string {
   return `import ${moduleName}
 open Lean Meta Elab Command in
@@ -73,20 +80,22 @@ run_cmd do
     if env.getModuleIdxFor? name == some modIdx \u2227 !name.isInternal then
       if count \u2265 200 then break
       count := count + 1
-      let (typeStr, axioms) \u2190 liftTermElabM do
+      let (typeStr, axioms, isProof) \u2190 liftTermElabM do
         let fmt \u2190 Meta.ppExpr info.type
         let axs \u2190 collectAxioms name
-        return (fmt.pretty, axs)
+        let prf \u2190 try Meta.isProp info.type catch _ => pure false
+        return (fmt.pretty, axs, prf)
       let json := Json.mkObj [
         ("name", Json.str name.toString),
         ("type", Json.str typeStr),
+        ("proof", Json.bool isProof),
         ("axioms", Json.arr (axioms.map (Json.str \u00b7.toString)))
       ]
       logInfo s!"AUDIT{json.compress}"
 `;
 }
 
-type Decl = { name: string; type: string; axioms: string[] };
+type Decl = { name: string; type: string; axioms: string[]; proof?: boolean };
 
 async function runLean(args: string[], cwd: string, timeoutMs: number, extraLeanPath?: string) {
   const env = { ...process.env, ...leanEnv };

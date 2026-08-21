@@ -135,16 +135,17 @@ export async function newsPacket(from: number, head: number, questions: number, 
 
   // --- Machine verification, which is not a tier.
   const [verificationCounts] = await sql<{ passed: number; failed: number }[]>`
-    select count(*) filter (where payload ? 'decls')::int as passed,
-           count(*) filter (where not (payload ? 'decls'))::int as failed
+    select count(*) filter (where payload->>'outcome' = 'passed')::int as passed,
+           count(*) filter (where payload->>'outcome' <> 'passed')::int as failed
     from event where ${window} and kind = 'verification'`;
 
   const verified = await sql`
     select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
            c.names, c.created_at, event.created_at as at,
-           (select coalesce(array_agg(d->>'name'), '{}') from jsonb_array_elements(event.payload->'decls') d) as decls
+           (select coalesce(array_agg(d->>'name') filter (where d->>'proof' is distinct from 'false'), '{}')
+              from jsonb_array_elements(event.payload->'decls') d) as decls
     from event join contribution_overview c on c.id = event.contribution_id
-    where ${window} and event.kind = 'verification' and event.payload ? 'decls'
+    where ${window} and event.kind = 'verification' and event.payload->>'outcome' = 'passed'
     order by event.seq desc limit ${limit}`;
 
   const terminal = await sql`

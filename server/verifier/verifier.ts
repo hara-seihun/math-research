@@ -19,7 +19,15 @@
 import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, renameSync, watch } from "node:fs";
 import { join } from "node:path";
 import { sql } from "../src/db.ts";
-import { extractLean, foreignAxioms, unsoundTokens, type CheckDetail, type Decl } from "../src/lean.ts";
+import {
+  extractLean,
+  foreignAxioms,
+  provesNothing,
+  statedDecls,
+  unsoundTokens,
+  type CheckDetail,
+  type Decl,
+} from "../src/lean.ts";
 import { sha256hex } from "../src/identity.ts";
 
 const SPOOL = process.env.SPOOL_DIR ?? "/var/lib/lean-spool";
@@ -40,6 +48,8 @@ type RunnerResult = {
   audit_error?: string;
   declares_nothing?: boolean;
 };
+
+const names = (decls: Decl[]): string => decls.map((d) => d.name).join(", ");
 
 /** Spooled checks: source hash -> deadline. */
 const inflight = new Map<string, number>();
@@ -189,16 +199,27 @@ async function judge() {
 
   for (const row of rows) {
     if (row.outcome === "passed") {
-      const foreign = foreignAxioms(row.detail.decls ?? []);
+      const decls = row.detail.decls ?? [];
+      const foreign = foreignAxioms(decls);
       if (foreign.length > 0) {
         await record(row.id, row.contribution_id, "failed", {
           reason: `depends on axioms outside {propext, Classical.choice, Quot.sound}: ${foreign.join(", ")}`,
-          decls: row.detail.decls,
+          decls,
+        });
+      } else if (provesNothing(decls)) {
+        // It compiled, so the source is good Lean and the check row says so.
+        // But every declaration is a definition or a `def … : Prop` statement,
+        // and lean_verified means the kernel checked a *proof*. Granting it
+        // here would put the badge on open problems merely because someone
+        // stated them well. Inconclusive, not failed: nothing is wrong.
+        await record(row.id, row.contribution_id, "inconclusive", {
+          reason: `compiles, but proves nothing: ${statedDecls(decls).length} declaration(s) — ${names(statedDecls(decls))} — are definitions or statements, not proofs`,
+          decls,
         });
       } else {
         await record(row.id, row.contribution_id, "passed", {
-          decls: row.detail.decls,
-          note: "kernel-checked; the statements listed in decls are exactly what was proven",
+          decls,
+          note: "kernel-checked; the declarations marked proof:true are exactly what was proven, the rest are definitions and statements",
         });
       }
     } else {

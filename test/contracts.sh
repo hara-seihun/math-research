@@ -207,6 +207,40 @@ await_spool "$HASH2"
 runner_says "$HASH2" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"u","type":"True","axioms":["sneakyAxiom"]}]}'
 [[ $(await_verification "$VID2") == failed ]] || fail "disallowed axiom was not rejected"
 
+# Contract: a statement is not a proof. `def Q : Prop := …` elaborates cleanly
+# and proves nothing, so it is a welcome formalization of an open problem and
+# it must not earn lean_verified. check_lean says the same thing by putting it
+# under `stated` rather than `proved`.
+STATE_SRC='def Q0001 : Prop := ∀ n : ℕ, n + 0 = n'
+STHASH=$(printf 'import Mathlib\n\n%s\n' "$STATE_SRC" | lean_hash)
+call check_lean "{\"contributor_key\":\"$KEY\",\"source\":\"$STATE_SRC\"}" > "$WORK/stated.out" &
+STATE_JOB=$!
+await_spool "$STHASH"
+runner_says "$STHASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"Q0001","type":"Prop","proof":false,"axioms":[]}]}'
+wait $STATE_JOB
+STATED=$(cat "$WORK/stated.out")
+[[ $(echo "$STATED" | field '["stated"][0]["name"]') == Q0001 ]] || fail "a statement was not reported as stated: $STATED"
+[[ $(echo "$STATED" | field '["proved"]') == "[]" ]] || fail "a statement was reported as proved: $STATED"
+SUB5=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"formalization\",\"title\":\"statement only\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\n$STATE_SRC\n\`\`\`\"}")
+CID5=$(echo "$SUB5" | field '["id"]')
+VID5=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$CID5'")
+[[ $(await_verification "$VID5") == inconclusive ]] || fail "a statement-only submission was judged as a proof"
+GOT5=$(call get "{\"ref\":\"$CID5\"}")
+[[ $(echo "$GOT5" | field '["lean_verified"]') == False ]] || fail "a statement-only submission earned lean_verified: $GOT5"
+echo "$GOT5" | field '["verifications"][0]["detail"]["reason"]' | grep -q "proves nothing" || fail "the reason did not say what was missing: $GOT5"
+
+# ... while the same file with one thing proved about the statement does earn
+# it, and the badge then names only what was actually proven.
+BOTH_SRC='def Q0002 : Prop := ∀ n : ℕ, n + 0 = n\ntheorem q0002_holds : Q0002 := fun n => rfl'
+SUB6=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"formalization\",\"title\":\"statement and proof\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\nimport Mathlib\n$BOTH_SRC\n\`\`\`\"}")
+CID6=$(echo "$SUB6" | field '["id"]')
+BHASH=$(printf 'import Mathlib\ndef Q0002 : Prop := ∀ n : ℕ, n + 0 = n\ntheorem q0002_holds : Q0002 := fun n => rfl\n' | lean_hash)
+VID6=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$CID6'")
+await_spool "$BHASH"
+runner_says "$BHASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"Q0002","type":"Prop","proof":false,"axioms":[]},{"name":"q0002_holds","type":"Q0002","proof":true,"axioms":[]}]}'
+[[ $(await_verification "$VID6") == passed ]] || fail "a statement with a proof about it did not pass"
+[[ $(call get "{\"ref\":\"$CID6\"}" | field '["lean_verified"]') == True ]] || fail "a proved statement did not earn lean_verified"
+
 # Contract: tier changes are trusted-only and land in the event ledger.
 DENIED=$(call set_tier "{\"contributor_key\":\"$KEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"x\"}")
 echo "$DENIED" | field '["error"]' | grep -qi trusted || fail "non-trusted was allowed to set tier"

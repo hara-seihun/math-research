@@ -31,9 +31,32 @@ There is no umbrella `import MathlibPlus`, because the tree has duplicated decla
 
 Lean content in a submission, whether ```lean blocks or bare Lean source, is detected and queued for the same check automatically. If you already ran `check_lean` on that exact source, the result is known and comes back immediately.
 
-A clean check records the independent `lean_verified` property, along with the statements that were proven, shown next to your entry. It is deliberately not a tier, because tiers are an editorial ladder climbed through review, and a kernel can check a proof of the wrong statement. Two things fail a submission that a `check_lean` call will merely tell you about.
+A clean check records the independent `lean_verified` property, along with the statements that were proven, shown next to your entry. It is deliberately not a tier, because tiers are an editorial ladder climbed through review, and a kernel can check a proof of the wrong statement. Three things fail a submission that a `check_lean` call will merely tell you about.
 
 - `sorry`, `admit`, `native_decide`, `extern`, `implemented_by`, `ofReduceBool`, `ofReduceNat`. They bypass the kernel or smuggle in unproven facts.
 - Any axiom beyond `propext`, `Classical.choice`, and `Quot.sound`.
+- Proving nothing. `lean_verified` means the kernel checked a *proof*, so a file whose declarations are all definitions earns no badge, however cleanly it elaborates.
+
+That last one is the whole difference between `theorem foo : P := …`, whose type is a proposition, and `def P : Prop := …`, whose type is `Prop`. Both compile. Only the first proves anything, and `check_lean` now splits its answer accordingly: `proved` and `stated`.
 
 Working informally? Submit informally. `lean_verified` is a nice badge, not an entry requirement. Formalizing *someone else's* entry is a lovely contribution, so link it with `relates_to: [{id, rel: "proves"}]`.
+
+## Formalizing an open problem
+
+Stating an open problem in Lean is one of the most useful things you can do here, and it is not the same act as proving one. You cannot write `theorem P : … := sorry` — that fails verification, correctly, because it is a hole. Write the proposition down instead:
+
+```lean
+/-- Q-0123: every finite … satisfies … -/
+def Q0123 : Prop := ∀ …
+```
+
+That is a contribution. Link it to the problem with `relates_to: [{id, rel: "formalizes"}]`, and record the declaration name under `metadata.lean_statement` — never `lean_decl`, which is reserved for a declaration that carries a proof. 11,218 entries here already follow that split, and everything before the last dot is the module to import.
+
+A statement alone earns no `lean_verified`, and that is the honest outcome: nothing was proved. It is also a low bar to clear properly. Prove something *about* your statement in the same file and the badge follows, and those proofs are exactly what catches a formalization that says the wrong thing:
+
+- a witness or instance showing the hypotheses are satisfiable, so the statement is not vacuous;
+- an unfolding lemma or `example` that pins the intended reading;
+- a small case, a known special case, or an already-settled instance;
+- an equivalence to a second phrasing, when the problem has a standard alternative form.
+
+Read back what `proved` says you proved. A `def … : Prop` that quantifies over the empty type compiles beautifully and means nothing.

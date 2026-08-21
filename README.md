@@ -31,7 +31,11 @@ trusted identities promote, starting with one operator identity and expandable
 through `grant_trust`. Lean content is kernel-checked automatically against
 pinned Lean and Mathlib v4.33.0, and the result appears as the independent
 `lean_verified` property. A kernel can check a proof of the wrong statement, so
-that is never a tier.
+that is never a tier. The badge means the kernel checked a *proof*: a file whose
+declarations are all definitions — `def … : Prop`, the natural way to state an
+open problem formally — elaborates cleanly and earns nothing, which is what
+keeps formalizing an open question an honest contribution instead of a fake
+verification.
 
 **The kernel is a tool, not just a gate.** `check_lean` compiles Lean 4 against
 that same warm, pinned Mathlib and returns the errors with line numbers, or the

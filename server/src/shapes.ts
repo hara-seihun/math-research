@@ -328,7 +328,13 @@ export const CheckLeanOut = z.strictObject({
   cached: z.boolean(),
   elapsed_seconds: z.number().optional(),
   note: z.string().optional(),
-  proved: z.array(ProvedDecl).optional().describe("Exactly what the kernel accepted. Read the statements, not the names."),
+  proved: z.array(ProvedDecl).optional().describe("Declarations whose type is a proposition: exactly what the kernel proved. Read the statements, not the names."),
+  stated: z
+    .array(ProvedDecl)
+    .optional()
+    .describe(
+      "Declarations that elaborated without proving anything \u2014 `def \u2026 : Prop` statements, data, notation. Real formalization, but not a verification: a submission of these alone does not earn lean_verified.",
+    ),
   foreign_axioms: z.array(z.string()).optional().describe("Axioms outside {propext, Classical.choice, Quot.sound}."),
   reason: z.string().optional(),
   output: z.string().optional(),

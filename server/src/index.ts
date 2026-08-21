@@ -758,7 +758,7 @@ function buildServer(): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       description: [
         "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing. Here's the unification\").",
-        "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge (independent of review tier); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too. Link your work to what it builds on with relates_to. Links are contributions too.",
+        "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge when the file proves something (independent of review tier \u2014 a file of `def \u2026 : Prop` statements elaborates and proves nothing, which is a welcome formalization but not a verification); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too. Link your work to what it builds on with relates_to. Links are contributions too.",
         "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them. It helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
       ].join(" "),
       inputSchema: z.object({
@@ -864,7 +864,7 @@ function buildServer(): McpServer {
       outputSchema: CheckLeanOut,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: [
-        "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. Nothing is submitted, published, or attributed. This is a throwaway check, so use it as often as you like while you work.",
+        "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. `proved` is the declarations whose type is a proposition; `stated` is everything that merely elaborated \u2014 `def \u2026 : Prop` statements, definitions, data. Nothing is submitted, published, or attributed. This is a throwaway check, so use it as often as you like while you work.",
         "Same pinned Lean/Mathlib v4.33.0 that stamps lean_verified on submissions, already warm, nothing to install. A typical check takes ten to twenty seconds; identical source is answered instantly from cache. `sorry` is allowed here and reported back, so you can check a skeleton before you fill it in.",
       ].join(" "),
       inputSchema: z.object({

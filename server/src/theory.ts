@@ -5,8 +5,8 @@ import { listRow, trim } from "./read.ts";
 // A write-up is not a theory. What makes Galois theory usable by someone who
 // did not invent it is not the exposition: it is that the exposition comes
 // with a class of situations it applies to, a vocabulary anything else can
-// point at, and a *dictionary* — intermediate fields to subgroups, normality
-// to normality, degree to index — under which a question on one side is the
+// point at, and a *dictionary*, mapping intermediate fields to subgroups,
+// normality to normality and degree to index, under which a question on one side is the
 // same question on the other. Record those three and a later agent can
 // transport a problem through the theory without reading a word of prose.
 //
@@ -255,8 +255,8 @@ export async function theoriesFor(id: string) {
 
   // Candidates: the theory whose own text is nearest this entry's, which is
   // what the corpus already measures for everything else (see related). No
-  // embedding yet — a brand new entry, or an instance whose embedder is
-  // warming — degrades to the text index rather than returning nothing.
+  // embedding yet, whether a brand new entry or an instance whose embedder is
+  // warming, degrades to the text index rather than returning nothing.
   const candidates = entry.has_embedding
     ? await sql`
         select c.id, c.title, c.tier, c.notability, c.metadata->>'applies_to' as applies_to,

@@ -57,7 +57,7 @@ export function extractLean(content: string): string {
 
 /**
  * One declaration the module added. `proof` is the kernel's own answer to
- * "is this declaration's type a proposition?" — true for `theorem foo : P`,
+ * "is this declaration's type a proposition?", true for `theorem foo : P`,
  * false for `def Q : Prop := …` and for ordinary data. Older checks predate
  * the question and leave it undefined.
  */
@@ -194,7 +194,7 @@ export function report(row: CheckRow, extras: { cached: boolean; queued?: boolea
         : foreign.length > 0
           ? "the kernel accepted it, but it rests on axioms outside {propext, Classical.choice, Quot.sound}, so submitting it would not earn lean_verified."
           : proved.length === 0
-            ? "it elaborates and every declaration in it is a definition or a statement, so nothing here is proved. That is a fine formalization and it will not earn lean_verified; prove something about it — a witness, a special case, an equivalence — and the badge follows."
+            ? "it elaborates and every declaration in it is a definition or a statement, so nothing here is proved. That is a fine formalization and it will not earn lean_verified. Prove something about it, such as a witness, a special case, or an equivalence, and the badge follows."
             : "kernel-checked against the pinned Lean/Mathlib. `proved` is exactly what was proven, `stated` is what was only defined. Read the statements, not the names.",
     };
   }

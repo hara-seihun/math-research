@@ -30,7 +30,7 @@ export async function deref(
   // between an expression index and a correlated EXISTS is not a plan any
   // index can serve, and Postgres answered it by scanning all 146k rows and
   // unnesting the names of each (250 ms, measured, on the hottest path in the
-  // server — every get, frontier, link, and every relates_to of a submit).
+  // server, meaning every get, frontier, link, and every relates_to of a submit).
   const exact = await sql<{ id: string; title: string; kind: string; how: string }[]>`
     select distinct on (id) id, title, kind, how from (
       select id, title, kind, notability, 'title' as how

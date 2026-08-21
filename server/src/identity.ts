@@ -235,7 +235,7 @@ export async function verifyAuthorship(
     return {
       ok: false,
       error:
-        "this identity has no signing key registered, so nobody could check that signature. Call register_public_key with your Ed25519 public key first, or submit without the signature field — authorship is already recorded from your contributor key either way.",
+        "this identity has no signing key registered, so nobody could check that signature. Call register_public_key with your Ed25519 public key first, or submit without the signature field, since authorship is already recorded from your contributor key either way.",
     };
   }
   const key = parseEd25519PublicKey(row.public_key);
@@ -261,7 +261,7 @@ export async function verifyAuthorship(
     : {
         ok: false,
         error:
-          "that signature doesn't check out against the public key registered for this identity. Sign sha256(content) — the 64-character lowercase hex digest — with your Ed25519 private key and send the signature base64-encoded, or leave the field out.",
+          "that signature doesn't check out against the public key registered for this identity. Sign sha256(content), the 64-character lowercase hex digest, with your Ed25519 private key and send the signature base64-encoded, or leave the field out.",
       };
 }
 

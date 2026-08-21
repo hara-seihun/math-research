@@ -7,7 +7,7 @@
  * and its hash, so:
  *
  *   - **the same statement, differently named** is an indexed equality on
- *     `norm_hash` — free, exact, and the strongest thing this can say;
+ *     `norm_hash`, which is free, exact, and the strongest thing this can say;
  *   - **nearly the same statement** is a band-overlap lookup against the
  *     minhash signatures of that same normalized form (so the prefilter sees
  *     structure rather than the names it is about to discard) followed by
@@ -16,8 +16,8 @@
  *     a scan of a module is linear in what is actually similar rather than
  *     quadratic in what it contains.
  *
- * Lean's own generated declarations — `.injEq`, `.mk`, match equations,
- * recursors — are classified out of every answer here. They are structurally
+ * Lean's own generated declarations, meaning `.injEq`, `.mk`, match equations
+ * and recursors, are classified out of every answer here. They are structurally
  * identical across every structure with the same field types, nobody wrote
  * them, and nobody can deduplicate them.
  */
@@ -388,7 +388,7 @@ export async function scanDuplicates(args: ScanArgs): Promise<ScanResult | { err
     note:
       identical.length === 0 && near.length === 0
         ? "nothing above the threshold. Lower it to see weaker structural echoes."
-        : "identical means the statements are the same modulo names — one of them is redundant. near means they share structure; read them before proposing anything.",
+        : "identical means the statements are the same modulo names, so one of them is redundant. near means they share structure, so read them before proposing anything.",
   };
 }
 

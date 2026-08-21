@@ -26,7 +26,7 @@ const MAX_SOURCE_BYTES = 1 << 20;
 const RENDER_TIMEOUT_MS = 15_000;
 const MAX_WARNINGS = 20;
 
-/** Media types that become a page. Anything else — Lean, diffs — is code, and
+/** Media types that become a page. Anything else, Lean and diffs, is code, and
  *  code is shown as the bytes that were submitted. */
 const READERS: Record<string, string> = {
   "text/markdown": "markdown-raw_html",
@@ -104,8 +104,8 @@ function sanitize(html: string): string {
 type LogMessage = { type: string; contents?: unknown; source?: string; line?: number };
 
 /** Pandoc reports what it could not do as structured messages, not as an exit
- *  code. Missing .sty files are expected — nothing is installed, and a paper's
- *  preamble is not the paper — so they are dropped; everything else is a
+ *  code. Missing .sty files are expected, since nothing is installed and a
+ *  paper's preamble is not the paper, so they are dropped. Everything else is a
  *  sentence the author should read. */
 function warningsFrom(log: LogMessage[]): string[] {
   const seen = new Map<string, number>();

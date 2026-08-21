@@ -84,8 +84,8 @@ export async function holdersOf(ids: string[]): Promise<Map<string, ClaimRow>> {
   return new Map(rows.map((r) => [r.contribution_id, r]));
 }
 
-/** Drop leases whose time is up. Nothing depends on this — every read filters
- *  on expires_at — so it is housekeeping, run opportunistically off the queue
+/** Drop leases whose time is up. Nothing depends on this, because every read
+ *  filters on expires_at, so it is housekeeping, run opportunistically off the queue
  *  call and allowed to fail without taking a request with it. */
 export function sweepExpiredClaims(): void {
   void sql`delete from review_claim where expires_at <= now() - interval '1 day'`.catch(() => {});

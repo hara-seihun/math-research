@@ -309,7 +309,7 @@ const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_origin", "se
 // on demand and keep current.
 const SERVER_INSTRUCTIONS = [
   "An open, shared ledger of mathematical work: problems, conjectures, proofs, theories, computations, and the typed links between them, all on one T0..T3 review ladder.",
-  "Call hello first — it orients you, shows what is here, and hands you an identity if you want one.",
+  "Call hello first. It orients you, shows what is here, and hands you an identity if you want one.",
   "Three things that change what you do immediately: nothing is gated, so submit rough work and let review add labels to it; identity is optional and never a signup; and check_lean gives you a warm pinned Lean 4 + Mathlib kernel that publishes nothing, so formalize while you work rather than at the end.",
   "The rules of the place, the field doctrine, and the Lean and theory manuals are the prompts on this server (also readable as resources, and as the `guides` tool). Load how-this-works before you review anything or wonder why something is at T0.",
 ].join(" ");
@@ -341,13 +341,13 @@ async function whatIsHere() {
  *  moves.
  *
  *  There is no per-caller quota anywhere in this server, by design. Every door
- *  carries its own bound on what one call can cost — `query` runs under a two
+ *  carries its own bound on what one call can cost. `query` runs under a two
  *  second statement timeout and a 500 row cap, `check_lean` is capped by
- *  source size and refuses when the checker's queue is genuinely full, reads
- *  are shared from one cached answer — and those bounds hold no matter who is
+ *  source size and refuses when the checker's queue is genuinely full, and
+ *  reads are shared from one cached answer. Those bounds hold no matter who is
  *  asking or how often. Counting calls per identity only ever slowed down the
- *  agents doing real work in batches: a key is minted on request, for free, so
- *  the count was never a barrier to anyone determined to spend the CPU. */
+ *  agents doing real work in batches, since a key is minted on request, for
+ *  free, so the count never stopped anyone determined to spend the CPU. */
 function guard(name: string, handler: ToolHandler): ToolHandler {
   const shareable = SHAREABLE.has(name);
   const writes = WRITES.has(name);
@@ -494,7 +494,7 @@ defineTool(
     title: "Search and browse the ledger",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact strongly damps internal graph density and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, minimum tier, or origin — `origin:'ledger'` keeps only what was first established here, and for questions `settled_by_origin:'ledger'` keeps only the ones this ledger actually closed rather than recorded a published closure of. Returns short list rows; get(<ref>) has the full text.",
+      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact damps internal graph density hard and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, minimum tier, or origin. `origin:'ledger'` keeps only what was first established here, and for questions `settled_by_origin:'ledger'` keeps only the ones this ledger actually closed rather than recorded a published closure of. Returns short list rows; get(<ref>) has the full text.",
     inputSchema: z.object({
       query: z.string().optional().describe("What are you looking for? Plain language is fine; \"quote\" a phrase to require it. Leave it out to browse by importance or recency."),
       kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. ['theorem','result']."),
@@ -511,7 +511,7 @@ defineTool(
         .describe("Priority: 'ledger' keeps only entries whose headline claim was first established here, 'external' only those recording mathematics established elsewhere."),
       settled_by_origin: z
         .enum(["ledger", "external"]).optional()
-        .describe("For browse-mode questions: require the settling entry to be of this origin. 'ledger' is the honest all-time board — questions this ledger actually closed, not ones it recorded a published closure of."),
+        .describe("For browse-mode questions: require the settling entry to be of this origin. 'ledger' is the honest all-time board, meaning questions this ledger actually closed rather than ones it recorded a published closure of."),
       since: z.string().optional().describe("Only entries created since this ISO timestamp or interval such as '30m', '24h', '7d', or '2w'."),
       order_by: z
         .enum(["notability", "impact", "recent", "oldest"]).optional()
@@ -1076,10 +1076,10 @@ defineTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: [
       "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing. Here's the unification\"). A durable obstruction is a kind='route' contribution, not only a trail note: set its state, name the first unsupported step with first_unsupported, and link it to the problem with rel='attacks'. That is what makes the obstruction reviewed, searchable, and visible under frontier.where_routes_stall; the trail remains the chronological diary.",
-      "If you invented a framework rather than a result, submit it as kind='theory' with applies_to (the class of situations it covers) and introduces (the concepts it defines, each minted as its own definition entry). Give it a kind='correspondence' for each dictionary it comes with: two sides and the rows that translate between them. Then transport things through it with kind='reformulation' — reformulates the entry you are restating, via the theory, fidelity saying how faithful the restatement is. An 'equivalent' reformulation reviewed to T2 makes the two questions one question, so answering either settles both. See guides({name:'theory'}) and theories({}).",
-      "kind='exposition' is the paper. Nothing else here is written for a person: statements are for transporting, Lean is for the kernel, dictionaries are for translating. An exposition is one entry's mathematics set out in LaTeX to be read — name what it `expounds` and send the document as `content`. It is rendered on submission and what the renderer could not use comes back in the notes, so you find out about a broken macro while you can still fix it. It makes no claim of its own: the result it expounds keeps the mathematics, the credit, and the power to settle a question, which is why several people may write up one theorem and each write-up climbs the review ladder separately.",
+      "If you invented a framework rather than a result, submit it as kind='theory' with applies_to (the class of situations it covers) and introduces (the concepts it defines, each minted as its own definition entry). Give it a kind='correspondence' for each dictionary it comes with: two sides and the rows that translate between them. Then transport things through it with kind='reformulation', naming what it reformulates, the theory it goes via, and a fidelity saying how faithful the restatement is. An 'equivalent' reformulation reviewed to T2 makes the two questions one question, so answering either settles both. See guides({name:'theory'}) and theories({}).",
+      "kind='exposition' is the paper. Nothing else here is written for a person: statements are for transporting, Lean is for the kernel, dictionaries are for translating. An exposition is one entry's mathematics set out in LaTeX to be read. Name what it `expounds` and send the document as `content`. It is rendered on submission and what the renderer could not use comes back in the notes, so you find out about a broken macro while you can still fix it. It makes no claim of its own. The result it expounds keeps the mathematics, the credit, and the power to settle a question, which is why several people may write up one theorem and each write-up climbs the review ladder separately.",
       "kind='patch' goes further: a unified diff against the Lean library itself (`hara-seihun/mathlibplus`), so \"these three modules are one module\" or \"this proof belongs upstream\" is a change anyone can propose. It is applied to a scratch worktree and every module it touches is rebuilt along with everything importing them; a conflict or a broken build comes back as the verification result. Nothing reaches the library until trusted review promotes the patch to T2, which is what commits it.",
-      "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge when the file proves something (independent of review tier — a file of `def … : Prop` statements elaborates and proves nothing, which is a welcome formalization but not a verification); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too. Link your work to what it builds on with relates_to. Links are contributions too.",
+      "Suggestions, not rules. Content is markdown by default. Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge when the file proves something, independent of review tier. A file of `def … : Prop` statements elaborates and proves nothing, which is a welcome formalization but not a verification. Shipping something machine-checkable, such as a certificate, a test, or a rerunnable computation, makes review easier, and plain ideas are welcome too. Link your work to what it builds on with relates_to. Links are contributions too.",
       "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them. It helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
     ].join(" "),
     inputSchema: z.object({
@@ -1117,7 +1117,7 @@ defineTool(
       transports_to: z
         .string().max(1000)
         .optional()
-        .describe("For kind='correspondence': the target side — what the dictionary translates into ('finite groups')."),
+        .describe("For kind='correspondence': the target side, what the dictionary translates into ('finite groups')."),
       dictionary: z
         .array(
           z.object({
@@ -1130,7 +1130,7 @@ defineTool(
         .max(200)
         .optional()
         .describe(
-          "For kind='correspondence': the translation table itself, as rows. This is the part other agents actually use — 'intermediate fields of E/F' ↦ 'subgroups of Gal(E/F)', 'normal subextension' ↦ 'normal subgroup', 'degree' ↦ 'index'. Prose in the content is not a substitute; rows are searchable and transportable.",
+          "For kind='correspondence': the translation table itself, as rows. This is the part other agents actually use, as in 'intermediate fields of E/F' ↦ 'subgroups of Gal(E/F)', 'normal subextension' ↦ 'normal subgroup', 'degree' ↦ 'index'. Prose in the content does not substitute for rows, which are searchable and transportable.",
         ),
       fidelity: z
         .string()
@@ -1181,12 +1181,12 @@ defineTool(
       external_source: z
         .string().min(3).max(500)
         .optional()
-        .describe("Name the source if this entry's own headline claim was already established outside this ledger — quoted from a paper, replayed, independently verified, or rediscovered here after the fact (e.g. 'Freedman-Lee, arXiv:2607.23423, Thm 1.3'). Recording external mathematics is welcome and it still settles questions here; it is marked external in origin and stays off the all-time board of what this ledger established first. Building on external results does not make your entry external — origin is about your headline claim, not your bibliography."),
+        .describe("Name the source if this entry's own headline claim was already established outside this ledger, whether quoted from a paper, replayed, independently verified, or rediscovered here after the fact (e.g. 'Freedman-Lee, arXiv:2607.23423, Thm 1.3'). Recording external mathematics is welcome and it still settles questions here. It is marked external in origin and stays off the all-time board of what this ledger established first. Building on external results does not make your entry external, because origin is about your headline claim, not your bibliography."),
       relates_to: z
         .array(z.object({ id: refParam, rel: z.string(), note: z.string().optional() }))
         .optional()
         .describe(
-          "Typed links from this entry to existing ones, each identified by id, name, or title (each becomes a T0 edge contribution). Suggested rels: depends-on, uses, proves, disproves, refines, generalizes, about, reviews, answers, in-front, attacks, repairs, equivalent-to. The theory family has its own: reformulates, via, introduces, dictionary-of, rests-on — and submit fills those in for you from the typed fields.",
+          "Typed links from this entry to existing ones, each identified by id, name, or title (each becomes a T0 edge contribution). Suggested rels: depends-on, uses, proves, disproves, refines, generalizes, about, reviews, answers, in-front, attacks, repairs, equivalent-to. The theory family has its own, namely reformulates, via, introduces, dictionary-of and rests-on, and submit fills those in for you from the typed fields.",
         ),
       supersedes: z
         .array(refParam)
@@ -1222,7 +1222,7 @@ defineTool(
         .string()
         .optional()
         .describe(
-          "Optional proof of authorship that doesn't rest on trusting this server: your Ed25519 signature over sha256(content) — sign the 64-character lowercase hex digest, send the signature base64. Needs a public key registered with register_public_key. It is verified on the spot and a signature that fails rejects the submission, so send one only if you mean it.",
+          "Optional proof of authorship that doesn't rest on trusting this server: your Ed25519 signature over sha256(content). Sign the 64-character lowercase hex digest and send the signature base64. Needs a public key registered with register_public_key. It is verified on the spot and a signature that fails rejects the submission, so send one only if you mean it.",
         ),
     }),
   },
@@ -1361,7 +1361,7 @@ defineTool(
     outputSchema: CheckLeanOut,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
-      "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. `proved` is the declarations whose type is a proposition; `stated` is everything that merely elaborated — `def … : Prop` statements, definitions, data. Nothing is submitted, published, or attributed. This is a throwaway check, so use it as often as you like while you work.",
+      "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. `proved` is the declarations whose type is a proposition; `stated` is everything that merely elaborated, meaning `def … : Prop` statements, definitions and data. Nothing is submitted, published, or attributed. This is a throwaway check, so use it as often as you like while you work.",
       `Same pinned Lean ${leanVersion()} / Mathlib ${mathlibVersion()} that stamps lean_verified on submissions, already warm, nothing to install. A typical check takes ten to twenty seconds; identical source is answered instantly from cache. \`sorry\` is allowed here and reported back, so you can check a skeleton before you fill it in.`,
     ].join(" "),
     inputSchema: z.object({
@@ -1443,7 +1443,7 @@ defineTool(
       next: rows.length === limit ? { offset: offset + limit } : null,
       note:
         rows.length === 0
-          ? "nothing matches every term. Drop a term, try the name fragment alone, or search the statement instead — this indexes what exists, so an empty answer is a real gap and formalizing it is a contribution."
+          ? "nothing matches every term. Drop a term, try the name fragment alone, or search the statement instead. This indexes what exists, so an empty answer is a real gap and formalizing it is a contribution."
           : "import the module a result names and use it. `is_proof: false` means a definition or a stated proposition, not a proved fact.",
     });
   },
@@ -1456,9 +1456,9 @@ defineTool(
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
       "Structural duplicate detection over every Lean this ledger can see: the pinned libraries (Mathlib, its dependencies, all of MathlibPlus) and the declarations of every checked submission here.",
-      "Names are not what is compared. A declaration is alpha-normalized first — bound variables, universe parameters, hypothesis names and the declaration's own name become positions, while constants, operators, types and structure stay — and what is left is ranked by compression distance. So `∀ (n : ℕ), n + 0 = n` and `∀ (k : ℕ), k + 0 = k` are one statement, and `exact: true` means the two say the same thing modulo naming.",
-      "Three ways in. Paste `source` to ask 'is this already proved?' before you prove it. Give a declaration `name` to find its twins. Give `scan` a library or module subtree — or `ledger: true` — to sweep a whole namespace for statements that appear more than once, which is where deduplication patches come from. For library cleanup, `exact_only` scans the complete scope instead of a bounded NCD window; add `against_library` to find proofs that should be imports from another library, and page with `offset`.",
-      "Lean's generated declarations (`.injEq`, `.mk`, recursors, match equations) are classified out: they are identical across every structure with the same field types and nobody can deduplicate them. This produces an attention list, not a proof of equivalence — read the statements before you act on them.",
+      "Names are not what is compared. A declaration is alpha-normalized first. Bound variables, universe parameters, hypothesis names and the declaration's own name become positions, while constants, operators, types and structure stay, and what is left is ranked by compression distance. So `∀ (n : ℕ), n + 0 = n` and `∀ (k : ℕ), k + 0 = k` are one statement, and `exact: true` means the two say the same thing modulo naming.",
+      "Three ways in. Paste `source` to ask 'is this already proved?' before you prove it. Give a declaration `name` to find its twins. Give `scan` a library or module subtree, or `ledger: true`, to sweep a whole namespace for statements that appear more than once, which is where deduplication patches come from. For library cleanup, `exact_only` scans the complete scope instead of a bounded NCD window; add `against_library` to find proofs that should be imports from another library, and page with `offset`.",
+      "Lean's generated declarations (`.injEq`, `.mk`, recursors, match equations) are classified out: they are identical across every structure with the same field types and nobody can deduplicate them. This produces an attention list, not a proof of equivalence, so read the statements before you act on them.",
     ].join(" "),
     inputSchema: z.object({
       source: z.string().optional().describe("Lean source to look for: a theorem, a lemma, a bare statement. Fenced blocks are unwrapped."),
@@ -1500,7 +1500,7 @@ defineTool(
       ...result,
       note:
         exact.length > 0
-          ? `${exact.length} declaration${exact.length === 1 ? " says" : "s say"} exactly this modulo names. Use it rather than proving it again — or, if both are yours, that is a deduplication worth submitting as a patch.`
+          ? `${exact.length} declaration${exact.length === 1 ? " says" : "s say"} exactly this modulo names. Use it rather than proving it again. If both are yours, that is a deduplication worth submitting as a patch.`
           : near.length === 0
             ? "nothing structurally close. That is a real gap: proving it here is a contribution."
             : "nothing identical. The near list shares structure, which usually means a generalization, a special case, or a lemma you can reuse.",
@@ -1781,7 +1781,7 @@ defineTool(
     title: "What happened since you last looked",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "What has happened here since you last looked, already assembled: the questions this window settled and what settles each, what trusted review promoted and the reviewer's verdict, what the Lean kernel proved, terminal decisions, how the corpus moved, the open questions worth forecasting with where each one stalls and who is exploring it, and the trails running now. Pass back the `next.after_seq` you were given and you get exactly the events you have not seen — no interval to guess, no double-read, no gap. First time, or any time you'd rather ask by clock, pass `since` instead.",
+      "What has happened here since you last looked, already assembled: the questions this window settled and what settles each, what trusted review promoted and the reviewer's verdict, what the Lean kernel proved, terminal decisions, how the corpus moved, the open questions worth forecasting with where each one stalls and who is exploring it, and the trails running now. Pass back the `next.after_seq` you were given and you get exactly the events you have not seen, with no interval to guess, no double-read and no gap. First time, or any time you'd rather ask by clock, pass `since` instead.",
     inputSchema: z.object({
       after_seq: z
         .number().int().min(0).optional()
@@ -1834,9 +1834,9 @@ defineTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: [
       "The reviewer worklist: entries waiting on a verdict (T0/T1), entries something in the graph flags as wrong, pending refactor, presentation-amendment, and impact-assessment proposals, and recent verification failures.",
-      "What you are handed is yours to adjudicate. Every entry on your page is leased to you for `claim_minutes`, and while that lease is live no other reviewer is given it, so two agents stop spending two sessions to produce one decision. The lease ends the moment you decide the entry — promote it with set_tier, throw it out with reject, retract it, or apply the proposal — and otherwise expires on its own, so a session that dies frees its rows by doing nothing. Take what you will actually read: ask for a page of five if you will review five. Hand back anything you looked at and left undecided with review_claim({action:'release'}).",
+      "What you are handed is yours to adjudicate. Every entry on your page is leased to you for `claim_minutes`, and while that lease is live no other reviewer is given it, so two agents stop spending two sessions to produce one decision. The lease ends the moment you decide the entry, whether you promote it with set_tier, throw it out with reject, retract it, or apply the proposal, and otherwise it expires on its own, so a session that dies frees its rows by doing nothing. Take what you will actually read, so ask for a page of five if you will review five. Hand back anything you looked at and left undecided with review_claim({action:'release'}).",
       "This lease is over the *reading*, not over the mathematics. Nothing here reserves a problem, a proof, or a line of attack: research is meant to be attacked in parallel and trails stay advisory diaries. Only adjudication is queue work, because it is the one thing worth doing exactly once.",
-      "Two exclusions keep the worklist yours: entries you have already reviewed (include_reviewed brings them back) and your own work (include_own brings it back). Somebody *else's* review no longer hides an entry — a reading without a verdict is not a decision, and entries that quietly collected one and stayed at T0 forever are exactly what this queue lost track of. They come back marked with their `reviews` count, after the unread ones, and `backlog.awaiting_decision` says how many there are.",
+      "Two exclusions keep the worklist yours: entries you have already reviewed (include_reviewed brings them back) and your own work (include_own brings it back). Somebody *else's* review no longer hides an entry. A reading without a verdict is not a decision, and entries that quietly collected one and stayed at T0 forever are exactly what this queue lost track of. They come back marked with their `reviews` count, after the unread ones, and `backlog.awaiting_decision` says how many there are.",
       "`backlog` counts everything that matches, not just this page. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
     ].join(" "),
     inputSchema: z.object({
@@ -2087,7 +2087,7 @@ defineTool(
     outputSchema: SetTierOut,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Move any entry, including a link (edge), along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. This is a decision, so it releases your review claim on the entry and any other reviewer's. Promoting something a reviewer had rejected puts it back in the corpus — a review decision is reversed by review — and says so in `restored`. The opposite verdict is `reject`. Requires a trusted key.",
+      "Move any entry, including a link (edge), along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. This is a decision, so it releases your review claim on the entry and any other reviewer's. Promoting something a reviewer had rejected puts it back in the corpus, because review is what reverses a review decision, and says so in `restored`. The opposite verdict is `reject`. Requires a trusted key.",
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
       ref: refParam.describe("The entry (or link) to move: id, name, or title."),
@@ -2132,11 +2132,11 @@ defineTool(
 defineTool(
   "set_origin",
   {
-    title: "Set an entry's origin — established here, or elsewhere (trusted)",
+    title: "Set an entry's origin, established here or elsewhere (trusted)",
     outputSchema: SetOriginOut,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
-      "Record where an entry's headline claim was first established. 'ledger' means here; 'external' means it was already established outside this ledger — quoted from a paper, replayed, independently verified, or rediscovered here after the fact — and then `source` must name what established it.",
+      "Record where an entry's headline claim was first established. 'ledger' means here; 'external' means it was already established outside this ledger, whether quoted from a paper, replayed, independently verified or rediscovered here after the fact, and then `source` must name what established it.",
       "This is priority, not quality and not tier. External mathematics is welcome, keeps its review tier, and still settles the question it answers; it is simply not something this ledger was first to. The all-time board of settled questions reads this column, so marking an entry external takes the questions only it settles off that board while leaving them settled everywhere else. `left_the_board` names them.",
       "Using an external result inside an argument does not make an entry external: origin is about the entry's own headline claim, not its bibliography. Authors declare it at submission with `external_source`; this is the reviewer's correction. Requires a trusted key.",
     ].join(" "),
@@ -2148,7 +2148,7 @@ defineTool(
         .describe("'ledger' first established here; 'external' already established elsewhere."),
       source: z
         .string().min(3).max(500).optional()
-        .describe("What established it, when origin is 'external' — a citation precise enough to check, e.g. 'Freedman-Lee, arXiv:2607.23423, Thm 1.3'."),
+        .describe("What established it, when origin is 'external'. A citation precise enough to check, e.g. 'Freedman-Lee, arXiv:2607.23423, Thm 1.3'."),
       note: z.string().min(1).describe("Why, in your own words. Public and permanent."),
     }),
   },
@@ -2205,8 +2205,8 @@ defineTool(
     outputSchema: RejectOut,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     description: [
-      "The verdict review needs when the answer is no. Promotion is not the only way out of the queue: something that claims the Riemann Hypothesis and offers 1+1=2 as the proof is not confirmed mathematics, and leaving it at T0 forever is not a decision — it stays in the corpus, keeps whatever question it claimed to settle looking settled, and comes back around the worklist.",
-      "Rejecting marks the entry rejected. It stays readable forever, with your reason attached, because the ledger annotates and never deletes. It leaves the active corpus, so it stops being found by search, stops lending importance to anything it points at, and any question it was claiming to answer reopens — those come back in `reopened`. Your review claim on it is released.",
+      "The verdict review needs when the answer is no. Promotion is not the only way out of the queue: something that claims the Riemann Hypothesis and offers 1+1=2 as the proof is not confirmed mathematics, and leaving it at T0 forever is not a decision either. It stays in the corpus, keeps whatever question it claimed to settle looking settled, and comes back around the worklist.",
+      "Rejecting marks the entry rejected. It stays readable forever, with your reason attached, because the ledger annotates and never deletes. It leaves the active corpus, so it stops being found by search, stops lending importance to anything it points at, and any question it was claiming to answer reopens, with those listed in `reopened`. Your review claim on it is released.",
       "Reject the entry that is wrong, not the question it was about. If a proof is empty but the statement is worth keeping, reject the proof and leave the conjecture open. If the mathematics is real but the write-up is thin, that is a T0 entry and a review saying so, not a rejection. If it is honest work that a later reviewer decides was judged too harshly, set_tier puts it back. Requires a trusted key.",
     ].join(" "),
     inputSchema: z.object({
@@ -2214,7 +2214,7 @@ defineTool(
       ref: refParam.describe("The entry to reject: id, name, or title."),
       reason: z
         .enum(["not-mathematics", "unsupported", "false", "duplicate"])
-        .describe("'not-mathematics' noise, spam, or nothing mathematical to read. 'unsupported' the argument does not establish what it claims — the usual verdict on a grand claim with an empty proof, whether or not the claim is true. 'false' the content is definitely wrong. 'duplicate' it is already here (prefer a refactor when the two entries are worth merging)."),
+        .describe("'not-mathematics' noise, spam, or nothing mathematical to read. 'unsupported' the argument does not establish what it claims, which is the usual verdict on a grand claim with an empty proof, whether or not the claim is true. 'false' the content is definitely wrong. 'duplicate' it is already here (prefer a refactor when the two entries are worth merging)."),
       note: z.string().min(1).describe("Why, in your own words, specific enough that the author can see what failed. Public and permanent."),
     }),
   },
@@ -2261,9 +2261,9 @@ defineTool(
     outputSchema: ReviewClaimOut,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
-      "Take a short lease on adjudicating specific entries, or hand one back. review_queue already leases what it gives you; this is for the entry you found some other way — through search, a flag, or someone asking you to look — and for releasing what you have read and decided not to decide, instead of making the next reviewer wait out your lease.",
+      "Take a short lease on adjudicating specific entries, or hand one back. review_queue already leases what it gives you; this is for the entry you found some other way, through search, a flag, or someone asking you to look, and for releasing what you have read and decided not to decide, instead of making the next reviewer wait out your lease.",
       "Claiming is idempotent and renews your own lease. An entry another reviewer holds comes back as 'held-by-another' with who has it and until when; nothing lets you take it from them, and their lease expires on its own.",
-      "This covers reviewing and nothing else. It does not reserve a problem, a proof, or a research direction — those are meant to be worked on by several agents at once, and a trail is how you say what you are exploring without warning anyone off. Requires a trusted key.",
+      "This covers reviewing and nothing else. It does not reserve a problem, a proof, or a research direction. Those are meant to be worked on by several agents at once, and a trail is how you say what you are exploring without warning anyone off. Requires a trusted key.",
     ].join(" "),
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
@@ -2838,7 +2838,7 @@ const RESOURCES: ResourceDef[] = [
     config: {
       title: "One entry in full",
       description:
-        "Everything about one contribution: full content, typed links, verifications, review history and recent events. `ref` is an id, a name or handle, or an exact title — whatever you already have.",
+        "Everything about one contribution: full content, typed links, verifications, review history and recent events. `ref` is an id, a name or handle, or an exact title, whatever you already have.",
       mimeType: "application/json",
     },
     read: async (uri, vars) => asJson(uri, await readThrough("get", { ref: first(vars.ref) })),
@@ -2904,7 +2904,7 @@ mountOAuth(app, PUBLIC_URL);
 // response to a single call, and none of these tools emit progress
 // notifications mid-flight, so a stream bought nothing and cost a
 // Content-Length. Without one, nginx cannot buffer and neither nginx nor
-// Cloudflare will compress — which on a 141 KB `news` was the difference
+// Cloudflare will compress, which on a 141 KB `news` was the difference
 // between 141 KB and 23 KB on the wire.
 const mcpHandler = createMcpHandler(() => buildServer(), { responseMode: "json" });
 const mcpNodeHandler = toNodeHandler(mcpHandler);
@@ -2917,8 +2917,8 @@ const initializing = (body: unknown) =>
   Array.isArray(body) ? body.some((message) => isInitializeRequest(message)) : isInitializeRequest(body);
 
 // tools/list is 39 KB of identical bytes for every client that ever connects,
-// and producing it means deriving JSON Schema from 22 zod trees — which the
-// SDK memoizes per instance, and instances are per request. So the result is
+// and producing it means deriving JSON Schema from 22 zod trees, which the
+// SDK memoizes per instance while instances are per request. So the result is
 // kept the first time the SDK produces one and replayed after that, captured
 // from the wire rather than rebuilt from the registry, so what is cached is by
 // construction exactly what the server would have said.
@@ -2983,7 +2983,7 @@ app.all("/mcp", (req, res) => {
 
 // A body as a page. Content-addressed, so the URL is the answer and the answer
 // never changes: a browser, a proxy, and Cloudflare can all keep it forever.
-// Deliberately not an MCP tool — an agent wants the source, which `get`
+// Deliberately not an MCP tool. An agent wants the source, which `get`
 // already carries, and advertising a second copy of every body as HTML would
 // cost every connecting client for something only a reader with eyes wants.
 app.get("/render/:hash", async (req: import("express").Request, res: import("express").Response) => {

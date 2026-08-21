@@ -14,6 +14,13 @@
 #      nowhere else. The server may describe its own tools (those descriptions
 #      are generated, not copied), and the guides may teach; the README and the
 #      site pages link instead.
+#   3. Every guide carries intact `when:` front matter. A guide whose
+#      delimiters get reformatted still renders as a page, so nothing looks
+#      broken, but its `when:` line silently becomes body text and the MCP
+#      prompt it backs advertises no trigger at all. That shipped once: a
+#      markdown formatter turned attack.md's opening `---` into `***` and its
+#      closing `---` into a setext underline, and the guide agents most need
+#      went out with an empty description.
 # Plus a typo guard: every {{placeholder}} in published prose is one something
 # actually fills in.
 #
@@ -80,6 +87,23 @@ for page in "${links_rather_than_tells[@]}"; do
     [[ -z $line ]] || fail \
       "$page states a rule guides/how-this-works.md owns ('$phrase'). Link the section instead:" "$line"
   done
+done
+
+# Front matter, checked with the server's own reader so this test and the
+# shelf cannot disagree about what counts as intact.
+readarray -t SHELF < <(bun -e '
+  const { guides } = await import("./server/src/guides.ts");
+  for (const g of guides()) console.log(`${g.name}\t${g.when}\t${g.about}`);
+')
+[[ ${#SHELF[@]} -gt 0 ]] || { echo "doc-ssot: the guide shelf is empty" >&2; exit 1; }
+for entry in "${SHELF[@]}"; do
+  IFS=$'\t' read -r name when about <<< "$entry"
+  [[ -n $when ]] || fail \
+    "guides/$name.md has no when: front matter, so its prompt would advertise no trigger:" \
+    "$(head -3 "guides/$name.md")"
+  [[ -n $about && $about != '#'* ]] || fail \
+    "guides/$name.md does not open with its H1, so the shelf has no title for it:" \
+    "$(head -1 "guides/$name.md")"
 done
 
 # Holes something fills in. `guides` expands the pinned ones as it serves a

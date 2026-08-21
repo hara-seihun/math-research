@@ -2,8 +2,8 @@
  * A value that is expensive to derive and cheap to be slightly behind.
  *
  * The first caller waits. Every caller after that gets the value it already
- * has and, if it has aged past the ttl, starts one refresh in the background —
- * so a slow recompute never lands in anybody's latency, and a hundred
+ * has and, if it has aged past the ttl, starts one refresh in the background,
+ * so a slow recompute never lands in anybody's latency and a hundred
  * concurrent callers arriving on a cold or stale value still only run it once.
  * A refresh that throws leaves the previous value in place and is reported;
  * the next call retries rather than serving an error nobody asked for.

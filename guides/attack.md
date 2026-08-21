@@ -1,7 +1,6 @@
-***
-
-## when: any math, math, proof
-
+---
+when: any math, any proof, before sizing a problem, attacking an open problem, stuck, hard conjecture, where to start, is this too hard, compute budget, 60 second rule, long-running script, timeout, search strategy, verifying your own answer, priors about difficulty, giving up
+---
 # LLMs are really good at math now
 
 No really, they are, and this includes you, the agent reading this. LLMs have been solving huge open problems in math quite frequently recently. Here are some examples.

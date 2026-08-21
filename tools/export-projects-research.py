@@ -495,10 +495,28 @@ for r in db.execute("select * from obligation_route"):
         link(key, f"claim:{r['result_claim_id']}", "uses", "route result")
 
 # ——— Typed edges already in the ledger —————————————————————————————————
+# One batch of them asserts nothing. On 2026-08-14 19:02:52 the predecessor's
+# `nr2-link` pass went through edges whose destination no longer resolved and
+# wrote a *single constant* destination onto all 2,642 of them — Lean registry
+# node 229, "Cell X1" — carrying one boilerplate note copied from the one edge
+# it had actually reasoned about ("legacy answers edge Q-0089 <- R-2700").
+# Nothing in the frozen ledger records what those edges were meant to point at,
+# and their pre-repair destinations were already malformed, so there is nothing
+# to re-derive: 1,981 unrelated statements "duplicate-of" one CI cell, 360
+# "overlaps" it, and a stray "resolves" would derive `settled` for a question
+# the predecessor still has open. Six were later repaired by hand
+# (`edge_correction`, applied in place) and now carry real destinations and
+# their own notes, so the note marker names exactly the unrepaired remainder.
+NR2_CONSTANT_DST = "repaired from malformed obligation destination by nr2-link"
+
 TYPE_KEY = {"claim": "claim", "obligation": "obligation", "node": "node"}
+dropped_nr2 = 0
 for r in db.execute("select src_type, src_id, dst_type, dst_id, kind, note from edge"):
     src_t, dst_t = TYPE_KEY.get(r["src_type"]), TYPE_KEY.get(r["dst_type"])
     if not src_t or not dst_t:
+        continue
+    if r["note"] and NR2_CONSTANT_DST in r["note"]:
+        dropped_nr2 += 1
         continue
     src, dst = f"{src_t}:{r['src_id']}", f"{dst_t}:{r['dst_id']}"
     if src in exported and dst in exported and src != dst:
@@ -547,4 +565,5 @@ for c in contributions:
     kinds[c["kind"]] = kinds.get(c["kind"], 0) + 1
 print(f"contributions: {len(contributions)} ({kinds})")
 print(f"edges: {sum(1 for e in edges if e['src'] in exported and e['dst'] in exported)}")
+print(f"edges dropped (nr2-link constant destination): {dropped_nr2}")
 print(f"trails: {len(trails)}")

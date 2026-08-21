@@ -8,15 +8,36 @@
  * load is a handful of set operations, so 60k contributions and 85k links land
  * in well under a minute.
  *
- * Usage: bun run tools/load-import.ts EXPORTDIR IDENTITY_KEY_FILE "Display Name"
+ * The export is a full snapshot, so reconciling includes taking things *out*:
+ * anything this identity imported that the export no longer asserts is
+ * retracted (appended, never deleted). Without that, fixing the exporter could
+ * only ever add, and a bad batch would stay in the corpus forever.
+ *
+ * Usage: bun run tools/load-import.ts [--withdraw-limit=FRACTION]
+ *          EXPORTDIR IDENTITY_KEY_FILE "Display Name"
  */
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { sql } from "../server/src/db.ts";
 
-const [dir, keyFile, displayName] = process.argv.slice(2);
-if (!dir || !keyFile) {
-  console.error('usage: load-import.ts EXPORTDIR IDENTITY_KEY_FILE "Display Name"');
+const argv = process.argv.slice(2);
+const flags = new Map(
+  argv
+    .filter((a) => a.startsWith("--"))
+    .map((a) => {
+      const [k, v = ""] = a.slice(2).split("=", 2);
+      return [k, v] as const;
+    }),
+);
+const [dir, keyFile, displayName] = argv.filter((a) => !a.startsWith("--"));
+// A truncated or mis-generated export must not be able to empty the corpus, so
+// a withdrawal bigger than this fraction of what is currently imported aborts
+// the load and says so instead.
+const withdrawLimit = Number(flags.get("withdraw-limit") ?? 0.1);
+if (!dir || !keyFile || !(withdrawLimit >= 0 && withdrawLimit <= 1)) {
+  console.error(
+    'usage: load-import.ts [--withdraw-limit=FRACTION] EXPORTDIR IDENTITY_KEY_FILE "Display Name"',
+  );
   process.exit(2);
 }
 
@@ -178,6 +199,7 @@ await db`
   from imp_contribution s, imp_contribution d
   where e.src_key = s.import_key and e.dst_key = d.import_key`;
 await db`delete from imp_edge where src is null or dst is null or src = dst`;
+await db`create index imp_edge_endpoint_idx on imp_edge (src, dst, rel)`;
 await db`
   update imp_edge i set id = e.contribution_id
   from edge e join contribution ec on ec.id = e.contribution_id
@@ -215,6 +237,76 @@ await db`
   where c.identity_id = ${identityId}
     and not exists (select 1 from event ev where ev.contribution_id = c.id)`;
 console.log(`links: ${links} new`);
+
+// ——— Withdrawal: what the export no longer asserts ————————————————————
+// Reconciling a full snapshot has to be able to remove, or an exporter fix can
+// never correct what a previous run already published. Removal here means what
+// it means everywhere else in this ledger: status 'retracted' plus a
+// 'retracted' event. The rows stay readable, the reads and refresh_state stop
+// counting them, and the decision is in the public event log.
+const [{ edges_gone, links_live, entries_gone, entries_live }] = await db<
+  { edges_gone: number; links_live: number; entries_gone: number; entries_live: number }[]
+>`
+  with mine as (
+    select c.id, c.kind = 'edge' as is_edge,
+           case when c.kind = 'edge'
+                then not exists (
+                  select 1 from edge e join imp_edge i
+                    on i.src = e.src and i.dst = e.dst and i.rel = e.rel
+                   where e.contribution_id = c.id)
+                else not exists (
+                  select 1 from imp_contribution i
+                   where i.import_key = c.metadata->>'import_key') end as gone
+      from contribution c
+     where c.identity_id = ${identityId} and c.status = 'active'
+       and (case when c.kind = 'edge' then c.metadata->>'imported_from' = 'projects-research'
+                 else c.metadata ? 'import_key' end)
+  )
+  select count(*) filter (where is_edge and gone)::int      as edges_gone,
+         count(*) filter (where is_edge)::int               as links_live,
+         count(*) filter (where not is_edge and gone)::int  as entries_gone,
+         count(*) filter (where not is_edge)::int           as entries_live
+    from mine`;
+
+const overLimit = (gone: number, live: number) => live > 0 && gone > live * withdrawLimit;
+if (overLimit(edges_gone, links_live) || overLimit(entries_gone, entries_live)) {
+  console.error(
+    `refusing to withdraw ${entries_gone}/${entries_live} entries and ${edges_gone}/${links_live} links: ` +
+      `more than ${(withdrawLimit * 100).toFixed(0)}% of what is imported. ` +
+      `Check the export is complete, or rerun with --withdraw-limit=<fraction> if it really did shrink that much.`,
+  );
+  db.release();
+  await sql.end();
+  process.exit(1);
+}
+
+const withdrawn = (
+  await db`
+    with gone as (
+      select c.id, c.kind
+        from contribution c
+       where c.identity_id = ${identityId} and c.status = 'active'
+         and (case when c.kind = 'edge'
+                   then c.metadata->>'imported_from' = 'projects-research'
+                     and not exists (
+                       select 1 from edge e join imp_edge i
+                         on i.src = e.src and i.dst = e.dst and i.rel = e.rel
+                        where e.contribution_id = c.id)
+                   else c.metadata ? 'import_key'
+                     and not exists (
+                       select 1 from imp_contribution i
+                        where i.import_key = c.metadata->>'import_key') end)
+    ), retracted as (
+      update contribution c set status = 'retracted', updated_at = now()
+       where c.id in (select id from gone) returning c.id, c.kind
+    )
+    insert into event (kind, contribution_id, identity_id, payload)
+    select 'retracted', r.id, ${identityId},
+           jsonb_build_object('note', 'withdrawn: the Projects Research export no longer asserts this',
+                              'kind', r.kind, 'source', 'load-import')
+      from retracted r`
+).count;
+console.log(`withdrawn: ${withdrawn} (${entries_gone} entries, ${edges_gone} links)`);
 
 // ——— Kernel verifications ————————————————————————————————————————————
 const [{ verified }] = await db<{ verified: number }[]>`

@@ -1185,6 +1185,12 @@ while read -r pattern; do
     || fail "resource template $pattern did not read ${TEMPLATES[$pattern]}"
 done < <(rpc resources/templates/list '{}' | jq -r '.resourceTemplates[].uriTemplate')
 
+# A title is the ref most people have, and a title has spaces in it, so the
+# variable arrives percent-encoded and has to be read as what the caller meant.
+TITLE_URI="ledger://entry/$(jq -rn --arg t 'frontier test question' '$t|@uri')"
+[[ $(rpc resources/read "{\"uri\":\"$TITLE_URI\"}" | field '.contents[0].text' | field '.title') == "frontier test question" ]] \
+  || fail "an entry resource addressed by title did not resolve: $TITLE_URI"
+
 # A ref that is not here is a resource that is not here, and the tool's own
 # sentence explains it rather than an empty document pretending to exist.
 MISSING=$(curl -sf --max-time 10 -X POST "$MCP" -H 'Content-Type: application/json' \

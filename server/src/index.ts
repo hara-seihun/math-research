@@ -2734,7 +2734,22 @@ type ResourceDef = {
   read: (uri: URL, vars: Record<string, string | string[]>) => Promise<unknown>;
 };
 
-const first = (value: string | string[]) => (Array.isArray(value) ? value[0] : value);
+/**
+ * The one variable a template carries, as the caller meant it.
+ *
+ * A ref here is usually an exact title, so a URI carrying one is full of
+ * percent-encoded spaces and commas by the time it arrives. Reading it raw
+ * looks up `generalized%20quaternion%20CI`, which matches nothing and answers
+ * with a puzzling ambiguity list.
+ */
+const first = (value: string | string[]): string => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw; // a stray % is the caller's, not ours to guess at
+  }
+};
 
 const template = (pattern: string) => new ResourceTemplate(pattern, { list: undefined });
 

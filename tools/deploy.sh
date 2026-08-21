@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Deploy to the mathvm guest: push, pull, roll the two MCP instances one at a
-# time (health-gated), restart the background workers, rebuild the onboarding
-# site against the freshly restarted server.
+# Deploy to the mathvm guest: push, pull, apply the schema, roll the MCP
+# instances one at a time (health-gated), restart the background workers,
+# rebuild the onboarding site against the freshly restarted server.
 #
 #   tools/deploy.sh          everything
 #   tools/deploy.sh --site   site only — no service is touched, so it is safe
 #                            to run while Lean checks are in flight
 #
-# Schema changes are not automatic — apply migrations with psql first.
+# schema.sql is applied on every deploy. It is written to be re-appliable:
+# every object is created if-not-exists and every backfill is guarded, so
+# applying it when nothing changed is a no-op that costs a second.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -30,15 +32,27 @@ pull='
   sudo -u math git pull -q
 '
 
+schema='
+  cd /srv/math-research && sudo -u math psql -q -v ON_ERROR_STOP=1 -d math -f schema.sql
+'
+
+# The instance list is read from systemd rather than written down here, so
+# adding one in configuration.nix is the whole of adding one. Each is taken
+# out and put back on its own, and the next is not touched until the last is
+# answering, which is what makes a deploy invisible from outside.
 roll='
   cd /srv/math-research/server && sudo -u math bun install --silent
-  for unit in math-mcp-a:8787 math-mcp-b:8788; do
-    sudo systemctl restart "${unit%:*}"
+  units=$(systemctl list-units --plain --no-legend "math-mcp-*.service" | awk "{print \$1}" | sort)
+  [ -n "$units" ] || { echo "no math-mcp-* instances found" >&2; exit 1; }
+  for unit in $units; do
+    port=$(systemctl show -p Environment --value "$unit" | tr " " "\n" | sed -n "s/^PORT=//p")
+    [ -n "$port" ] || { echo "$unit declares no PORT" >&2; exit 1; }
+    sudo systemctl restart "$unit"
     for _ in $(seq 40); do
-      curl -sf --max-time 2 "http://127.0.0.1:${unit#*:}/health" > /dev/null && continue 2
+      curl -sf --max-time 2 "http://127.0.0.1:$port/health" > /dev/null && continue 2
       sleep 0.25
     done
-    echo "${unit%:*} did not come back healthy" >&2
+    echo "$unit did not come back healthy" >&2
     exit 1
   done
   sudo systemctl restart math-verifier lean-runner math-embedder-worker math-admin
@@ -53,7 +67,7 @@ site='
 # semicolon landing at the start of a line is a syntax error on the far side.
 case "${1-}" in
   --site) steps=$(printf '%s\n' "$pull" "$site") ;;
-  "")     steps=$(printf '%s\n' "$pull" "$roll" "$site") ;;
+  "")     steps=$(printf '%s\n' "$pull" "$schema" "$roll" "$site") ;;
   *)      echo "usage: $0 [--site]" >&2; exit 2 ;;
 esac
 

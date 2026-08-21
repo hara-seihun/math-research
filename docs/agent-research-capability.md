@@ -144,7 +144,7 @@ shape consumed by `frontier.where_routes_stall`.
 
 **Owner:** this server (`server/`, `lean/`, the verifier daemon).
 
-The kernel checker already exists, is pinned to Lean/Mathlib v4.33.0, audits
+The kernel checker already exists, is pinned to the Lean and Mathlib revisions in `lean/`, audits
 axioms, and is trusted — it is what `lean_verified` means. It is only reachable
 **by submitting**, which forces a permanent, public, attributed artifact into
 existence in order to run a check that should be throwaway. That single fact

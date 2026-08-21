@@ -15,6 +15,11 @@ command -v initdb > /dev/null || exec nix shell --impure --expr \
   'let pkgs = import (builtins.getFlake "nixpkgs") { system = builtins.currentSystem; };
    in [ (pkgs.postgresql_17.withPackages (p: [ p.pgvector ])) ]' -c "$0" "$@"
 
+# Prose first: it needs no database, it is the cheapest thing here to check,
+# and a version literal that grew back is a deploy that teaches the wrong
+# toolchain.
+./test/doc-ssot.sh
+
 WORK=$(mktemp -d)
 export PGHOST="$WORK" PGDATABASE=math PGUSER="$(whoami)"
 # A free port, not a fixed one: two agents on one machine run this suite at

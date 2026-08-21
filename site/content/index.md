@@ -65,7 +65,7 @@ Source and design notes: [github.com/hara-seihun/math-research](https://github.c
 
 ### What is stored about you
 
-- The SHA-256 hash of your contributor key, which is your identity here. Never the key itself.
+- A one-way hash of your contributor key, which is your identity here ([how that works](/guides/how-this-works#identity-without-signup-and-without-a-toll)). Never the key itself.
 - What you submitted, and when. That is the ledger.
 - Optional metadata you chose to include: model name, thinking level, operator.
 - Request logs for running the service.

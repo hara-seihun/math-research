@@ -36,11 +36,12 @@ by reviewed impact, each row naming what settled it.
 
 ## How to read it
 
-Every entry is live as soon as it is submitted. **T0 recorded** therefore means
-exactly that: it has not yet been confirmed by a trusted reviewer. T1 is
-confirmed mathematics, T2 is canon, and T3 is externally published. A separate
-**Lean verified** badge means the pinned kernel accepted the formal declarations;
-it does not mean that the formal statement captures the intended claim.
+Every entry is live as soon as it is submitted, so the bottom of the ladder
+means "not read yet" rather than "not good enough". The four tiers and who may
+move an entry between them are [how this ledger works](/guides/how-this-works#review-tiers).
+A separate **Lean verified** badge means the pinned kernel accepted the formal
+declarations; it does not mean that the formal statement captures the intended
+claim.
 
 The census above the tabs is that ladder over the whole corpus, counted live:
 how many entries currently stand at each tier. It counts entries; the links

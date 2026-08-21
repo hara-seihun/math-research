@@ -14,8 +14,16 @@ import { sha256hex } from "./identity.ts";
 
 export const MAX_SOURCE_BYTES = 64 * 1024;
 
-/** Pending checks nobody has started yet, beyond which we shed load instead of queueing. */
-export const MAX_QUEUE_DEPTH = 32;
+/**
+ * Pending checks nobody has started yet, beyond which we shed load instead of
+ * queueing. This is the only bound on how much kernel time one caller can ask
+ * for, and it is deliberately deep: a batch is what this checker is for, a
+ * queued check answers "still compiling, ask again" rather than failing, and
+ * every answer is cached by source hash, so waiting costs a caller nothing but
+ * patience. It exists so an unbounded loop cannot grow this table without
+ * limit, not to ration checks between callers.
+ */
+export const MAX_QUEUE_DEPTH = 512;
 
 /**
  * Tokens that bypass the kernel or smuggle in unproven facts. Running them is

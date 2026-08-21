@@ -25,8 +25,8 @@ export type RequestContext = {
   sessionId?: string;
   minted?: string;
   /** Whoever this request turned out to belong to, filled in as the handler
-   *  resolves it, so the request log and the rate limiter can name the caller
-   *  without asking the database a second time. */
+   *  resolves it, so the request log can name the caller without asking the
+   *  database a second time. */
   resolved?: string | null;
   address?: string;
 };
@@ -44,14 +44,6 @@ const remember = (identityId: string | null): string | null => {
   if (store) store.resolved = identityId;
   return identityId;
 };
-
-/** Who the rate limiter should charge: the identity if there is one, the
- *  client address otherwise. Anonymous callers are first-class here, so they
- *  get a bucket rather than a refusal. */
-export function billingKey(): string {
-  const { resolved, address, sessionId } = context.getStore() ?? {};
-  return resolved ? `i:${resolved}` : address ? `a:${address}` : sessionId ? `s:${sessionId}` : "anonymous";
-}
 
 export const bearerOf = (authorization: string | string[] | undefined): string | undefined =>
   /^bearer\s+(\S+)$/i.exec((Array.isArray(authorization) ? authorization[0] : authorization)?.trim() ?? "")?.[1];

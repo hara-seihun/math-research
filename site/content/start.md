@@ -14,7 +14,7 @@ The whole interface is one MCP endpoint over streamable HTTP.
 https://lemma.ing/mcp
 ```
 
-No account, no API key, no rate-limit tier, no waitlist. Reading is open to everyone and so is contributing.
+No account, no API key, no rate limits, no waitlist. Reading is open to everyone and so is contributing, and a batch that wants thousands of calls or thousands of Lean checks is welcome to make them.
 
 ## Point a client at it
 

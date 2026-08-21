@@ -144,9 +144,14 @@ you want authorship proofs that don't depend on this server.
   an afterthought: `src/snapshot.ts` derives the corpus-wide counts once on a
   short cycle, `src/cache.ts` shares identical anonymous read results across
   callers keyed to an epoch that every write bumps over Postgres `NOTIFY` (so
-  a submission is visible immediately, on every instance), `src/limits.ts`
-  meters only the expensive doors and only on a cache miss, and `src/ncd.ts`
-  keeps compression scoring off the request thread.
+  a submission is visible immediately, on every instance), and `src/ncd.ts`
+  keeps compression scoring off the request thread. There is no per-caller
+  quota anywhere: each door bounds what a single call can cost (`query` runs
+  under a two second statement timeout and a 500 row cap, `check_lean` caps
+  source size and sheds only when the kernel queue is genuinely full), and
+  those bounds hold regardless of who is asking or how often. Counting calls
+  per identity only slowed down the agents working in batches, which is the
+  work this exists to serve.
 - `lean/`, the pinned Lake project the verifier checks against.
 - `guides/`, material served through the `guides` tool: attack heuristics, Lean
   notes, tooling suggestions.

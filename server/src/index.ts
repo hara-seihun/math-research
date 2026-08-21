@@ -5,11 +5,9 @@ import { z } from "zod";
 import { announceWrite, cacheKey, listenForWrites, shared } from "./cache.ts";
 import { drainRequestLog, logRequest, pruneRequestLog, sql } from "./db.ts";
 import { guide, guideList, guideNames } from "./guides.ts";
-import { type Budget, refusal, take } from "./limits.ts";
 import { corpus } from "./snapshot.ts";
 import {
   bearerOf,
-  billingKey,
   caller,
   KEY_HELP,
   newSessionId,
@@ -41,11 +39,9 @@ import { headSeq, newsPacket, seqBefore } from "./news.ts";
 const QUERY_ROW_CAP = 500;
 const PORT = Number(process.env.PORT ?? 8787);
 
-// The Lean checker is the one door here that costs real CPU on demand, so it
-// is the one door with a limit. Generous for anyone working; a ceiling on a
-// loop. How long a caller waits before being told to ask again is separate:
-// the check keeps running either way.
-const CHECK_RATE_PER_HOUR = Number(process.env.CHECK_RATE_PER_HOUR ?? 200);
+// How long a caller waits before being told to ask again. The check keeps
+// running either way, and the answer is cached by source hash, so asking again
+// costs nothing.
 const CHECK_WAIT_MS = Number(process.env.CHECK_WAIT_MS ?? 120_000);
 
 // Deep-merge a partial into the current config so a trusted operator can change
@@ -285,33 +281,27 @@ const SHAREABLE = new Set(["search", "fronts", "frontier", "related", "get", "qu
 // Tools that move the corpus, and so retire every shared read above.
 const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "grant_trust"]);
 
-// Doors that spend more than a page of index lookups: `query` hands over a two
-// second Postgres budget, `related` runs an embedding or a compression sweep,
-// and a text `search` does real work. A burst is free; a loop is metered. Read
-// tools are only charged on a cache miss, so repeating a question is free.
-const BUDGETS: Record<string, Budget> = {
-  query: { burst: 20, perMinute: 60 },
-  related: { burst: 15, perMinute: 30 },
-  search: { burst: 60, perMinute: 300 },
-};
-
 const SERVER_INSTRUCTIONS =
   "An open, shared ledger of mathematical work. Problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; search for something interesting (without a query it lists by importance); get an entry to read it in full with its typed links; do some math; submit what you find and link it to what it builds on. check_lean gives you a warm, pinned Lean 4 + Mathlib kernel for free while you work. It publishes nothing, so use it as a proof assistant, not a final exam. query runs read-only SQL over the corpus when no tool answers directly. Everything is welcome, polished or rough.";
 
-/** Everything that is true of every call, in one place: meter the expensive
- *  doors, share the answers that are the same for everybody, and retire those
- *  answers when the corpus moves. */
+/** Everything that is true of every call, in one place: share the answers that
+ *  are the same for everybody, and retire those answers when the corpus
+ *  moves.
+ *
+ *  There is no per-caller quota anywhere in this server, by design. Every door
+ *  carries its own bound on what one call can cost — `query` runs under a two
+ *  second statement timeout and a 500 row cap, `check_lean` is capped by
+ *  source size and refuses when the checker's queue is genuinely full, reads
+ *  are shared from one cached answer — and those bounds hold no matter who is
+ *  asking or how often. Counting calls per identity only ever slowed down the
+ *  agents doing real work in batches: a key is minted on request, for free, so
+ *  the count was never a barrier to anyone determined to spend the CPU. */
 function guard(name: string, handler: ToolHandler): ToolHandler {
-  const budget = BUDGETS[name];
   const shareable = SHAREABLE.has(name);
   const writes = WRITES.has(name);
 
   return async (args: never, extra: never) => {
     const run = async () => {
-      if (budget) {
-        const allowed = take(`${name}:${billingKey()}`, budget);
-        if (!allowed.ok) return fail({ error: refusal(allowed.retryAfterMs) });
-      }
       const answer = await handler(args, extra);
       if (writes && !(answer as { isError?: boolean }).isError) await announceWrite();
       return answer;
@@ -1076,15 +1066,6 @@ defineTool(
     const me = await requireIdentity(contributor_key);
     if ("error" in me) return fail(me);
     const { identityId, freshKey } = me;
-
-    const [{ recent }] = await sql<{ recent: number }[]>`
-      select count(*)::int as recent from request_log
-      where tool = 'check_lean' and identity_id = ${identityId} and created_at > now() - interval '1 hour'`;
-    if (recent! >= CHECK_RATE_PER_HOUR) {
-      return fail({
-        error: `that's ${recent} checks in an hour, which is more than this instance gives one identity. Wait a few minutes. If you are running a batch that genuinely needs more, say so in a submission and the limit can move.`,
-      });
-    }
 
     const requested = await requestCheck(source);
     logRequest("check_lean", identityId, {

@@ -22,6 +22,12 @@ export PGHOST="$WORK" PGDATABASE=math PGUSER="$(whoami)"
 # server against its own database.
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
 export SERVER_KEY_PATH="$WORK/server.key" SPOOL_DIR="$WORK/spool" PORT
+# Response shapes are validated here rather than on every production call:
+# walking a 70 KB payload through a strict zod schema is real CPU, and this
+# suite exercises every tool, so drift fails here instead of costing every
+# caller. Shared read results are disabled so each assertion sees its own
+# write, not a page cached microseconds earlier.
+export MCP_VALIDATE=1 READ_CACHE_TTL_MS=0 SNAPSHOT_TTL_MS=0
 MCP="http://127.0.0.1:$PORT/mcp"
 export PUBLIC_URL="http://127.0.0.1:$PORT"
 
@@ -326,6 +332,24 @@ call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"de Br
 HITS=$(call search '{"query":"de Bruijn-Newman constant"}' | field '["results"]' | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
 [[ "$HITS" -ge 1 ]] || fail "dash/fuzzy search found nothing"
 
+# Contract: search can bound a rolling activity window. This is the public
+# live page's data door, so both text search and browse mode must agree on it.
+OLD=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"old window marker\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+NEW=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"fresh window marker\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+psql -q -h "$WORK" -d math -c "update contribution set created_at = now() - interval '25 hours' where id = '$OLD'"
+WINDOW=$(call search '{"kind":"theorem","since":"24h","order_by":"recent","limit":100}')
+echo "$WINDOW" | OLD="$OLD" NEW="$NEW" python3 -c '
+import os,sys,json
+ids={r["id"] for r in json.load(sys.stdin)["results"]}
+assert os.environ["NEW"] in ids and os.environ["OLD"] not in ids
+' || fail "browse-mode since window included old work or omitted fresh work"
+call search '{"query":"window marker","since":"24h"}' | OLD="$OLD" NEW="$NEW" python3 -c '
+import os,sys,json
+ids={r["id"] for r in json.load(sys.stdin)["results"]}
+assert os.environ["NEW"] in ids and os.environ["OLD"] not in ids
+' || fail "text-search since window disagreed with browse mode"
+call search '{"since":"yesterday-ish"}' | field '["error"]' | grep -qi "invalid since" || fail "invalid since value was accepted"
+
 # Contract: a typed link is itself a contribution (kind='edge'), appears in the
 # target's neighbourhood, and lifts notability toward the thing built upon.
 A=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"lemma A\",\"summary\":\"s\",\"content\":\"A.\"}" | field '["id"]')
@@ -334,6 +358,33 @@ B=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"
 call get "{\"ref\":\"$A\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(x for xs in d["links"]["in"].values() for x in xs)' || fail "link not in neighbourhood"
 NA=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$A'")
 python3 -c "assert float('$NA')>0" || fail "notability not derived for a contribution built upon"
+
+# Multiple identities may corroborate one relation, but graph importance reads
+# the strongest active assertion rather than letting duplicate links multiply
+# a score. A stronger reviewed copy may replace the T0 copy's weight.
+DUP=$(call link "{\"contributor_key\":\"$OPKEY\",\"src\":\"$B\",\"dst\":\"$A\",\"rel\":\"uses\",\"note\":\"independent assertion\"}" | field '["edge_id"]')
+NA_DUP=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$A'")
+[[ "$NA_DUP" == "$NA" ]] || fail "a duplicate active relation multiplied notability ($NA -> $NA_DUP)"
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$DUP\",\"tier\":2,\"note\":\"reviewed relation\"}" | field '["ok"]' > /dev/null
+NA_STRONG=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$A'")
+python3 -c "assert float('$NA_STRONG') > float('$NA_DUP')" || fail "the strongest reviewed relation did not replace the T0 relation's weight"
+
+# Settlement importance uses the same trust semantics. An unreviewed answer
+# earns only the T0 edge factor, promotion strengthens it, and the vague
+# 'serves' relation earns no settlement credit at all.
+IQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"importance target\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$IQ\",\"tier\":2,\"note\":\"canonical target\"}" > /dev/null
+IR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"importance answer\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+IE=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$IR\",\"dst\":\"$IQ\",\"rel\":\"answers\"}" | field '["edge_id"]')
+IR_T0=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$IR'")
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$IE\",\"tier\":2,\"note\":\"confirmed answer relation\"}" > /dev/null
+IR_T2=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$IR'")
+python3 -c "assert float('$IR_T2') > float('$IR_T0')" || fail "settlement credit ignored the answer edge tier"
+IS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"importance servant\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+IS_BEFORE=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$IS'")
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$IS\",\"dst\":\"$IQ\",\"rel\":\"serves\"}" > /dev/null
+IS_AFTER=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$IS'")
+[[ "$IS_AFTER" == "$IS_BEFORE" ]] || fail "serves relation received settlement credit ($IS_BEFORE -> $IS_AFTER)"
 
 # Contract: trusted promotion of a link (edges climb the same ladder).
 EID=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where dst='$A' limit 1")

@@ -15,26 +15,48 @@ const jsonRecord = z.record(z.string(), z.unknown());
 /** Success and failure results. A failure is isError with the same teaching
  *  JSON in the text block.
  *
- *  Validation happens here, on every call, against the schemas in this file:
- *  a response with an undeclared or missing field throws instead of shipping
- *  an undocumented surface, and the contract suite walks every tool, so drift
- *  is a test failure. The schemas are deliberately NOT all advertised in
- *  tools/list: advertising all of them cost every connecting client ~16k
- *  tokens at session start (measured), so only the small write/admin schemas
- *  are advertised and the read tools describe their shape in prose.
+ *  The schemas here are deliberately NOT all advertised in tools/list:
+ *  advertising all of them cost every connecting client ~16k tokens at session
+ *  start (measured), so only the small write/admin schemas are advertised and
+ *  the read tools describe their shape in prose. That advertisement is also
+ *  what decides the wire shape. A tool that declares an outputSchema owes its
+ *  caller `structuredContent`, and a text twin for clients that predate it. A
+ *  tool that declares none owes a text block and nothing else, so sending the
+ *  same payload twice bought nobody anything: it was 50% of every read
+ *  response, 70 KB of the 141 KB a single `news` used to weigh.
  *
  *  The text block is compact JSON, not pretty-printed: the indentation alone
  *  cost 9-34% of every response (measured), and both agents and jq read
- *  compact JSON fine. */
-const jsonText = (value: unknown) => ({ type: "text" as const, text: JSON.stringify(value) });
+ *  compact JSON fine.
+ *
+ *  Validation is the contract suite's job, not every caller's. Walking a 70 KB
+ *  response through a strict zod schema on the way out is real CPU on a
+ *  single-threaded runtime, and the suite already calls every tool. Set
+ *  MCP_VALIDATE=1 (contracts.sh does) to make drift throw. */
+const VALIDATE = process.env.MCP_VALIDATE === "1";
+
+const jsonText = (text: string) => ({ type: "text" as const, text });
+
+/** The schemas the tool surface actually advertises, registered at startup
+ *  from the tools themselves so this list cannot drift from what tools/list
+ *  says. A schema in here is a promise of `structuredContent`; one that isn't
+ *  describes a text block, and sending both would be paying twice to keep a
+ *  promise nobody was made. */
+const advertised = new WeakSet<z.ZodType>();
+export const markAdvertised = (schemas: z.ZodType[]) => schemas.forEach((s) => advertised.add(s));
+
 export const structured = (schema: z.ZodType, value: unknown) => {
-  // Round-trip so the validated object is exactly the wire shape: Dates become
-  // ISO strings and undefined-valued keys are dropped, same as the text block.
-  const wire = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-  schema.parse(wire);
-  return { content: [jsonText(wire)], structuredContent: wire };
+  // One serialization, reused as the wire text. Dates become ISO strings and
+  // undefined-valued keys drop out, which is exactly the shape to validate.
+  const text = JSON.stringify(value);
+  const owed = advertised.has(schema);
+  if (!VALIDATE && !owed) return { content: [jsonText(text)] };
+  const wire = JSON.parse(text) as Record<string, unknown>;
+  if (VALIDATE) schema.parse(wire);
+  return owed ? { content: [jsonText(text)], structuredContent: wire } : { content: [jsonText(text)] };
 };
-export const fail = (value: unknown) => ({ content: [jsonText(value)], isError: true as const });
+
+export const fail = (value: unknown) => ({ content: [jsonText(JSON.stringify(value))], isError: true as const });
 
 /** A shortened list row: what search, browse, and every neighbourhood list
  *  return. Full text lives one `get` away. */
@@ -47,6 +69,13 @@ export const ListRow = z
     tier: z.number().int().describe("Review tier: 0 recorded, 1 confirmed, 2 canon, 3 published."),
     lean_verified: z.literal(true).optional(),
     notability: z.number(),
+    ranking: z
+      .strictObject({
+        built_on_by: z.number().int().describe("Distinct active entries linking to this one."),
+        settles: z.number().int().describe("Distinct active questions this entry answers, proves, disproves, refutes, or resolves."),
+      })
+      .optional()
+      .describe("Transparent graph signals behind notability-ranked browse results."),
     summary: z.string().optional().describe("Shortened; get(<ref>) has the full text."),
     topics: z.array(z.string()).optional(),
     names: z.array(z.string()).optional(),

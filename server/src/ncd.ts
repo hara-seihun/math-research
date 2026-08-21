@@ -1,0 +1,65 @@
+import { Worker } from "node:worker_threads";
+import type { NcdDone, NcdJob } from "./ncd-worker.ts";
+
+const WORKERS = Number(process.env.NCD_WORKERS ?? 2);
+const JOB_TIMEOUT_MS = Number(process.env.NCD_TIMEOUT_MS ?? 10_000);
+
+type Pending = { resolve: (scored: NcdDone["scored"]) => void; reject: (error: Error) => void; timer: Timer };
+
+class NcdPool {
+  private readonly workers: Worker[] = [];
+  private readonly pending = new Map<number, Pending>();
+  private next = 0;
+  private jobId = 0;
+
+  private spawn(index: number): Worker {
+    const worker = new Worker(new URL("./ncd-worker.ts", import.meta.url));
+    worker.on("message", (done: NcdDone) => {
+      const waiter = this.pending.get(done.id);
+      if (!waiter) return;
+      this.pending.delete(done.id);
+      clearTimeout(waiter.timer);
+      waiter.resolve(done.scored);
+    });
+    // A worker that dies takes its in-flight job with it. Fail those callers
+    // rather than leaving them hanging, and stand a replacement back up: the
+    // next request must not find an empty pool.
+    worker.on("error", (error: unknown) => this.replace(index, error instanceof Error ? error : new Error(String(error))));
+    worker.on("exit", (code) => {
+      if (code !== 0) this.replace(index, new Error(`ncd worker exited with ${code}`));
+    });
+    worker.unref();
+    this.workers[index] = worker;
+    return worker;
+  }
+
+  private replace(index: number, error: Error): void {
+    console.error("ncd worker failed", error);
+    for (const [id, waiter] of this.pending) {
+      this.pending.delete(id);
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    this.spawn(index);
+  }
+
+  score(query: string, candidates: { id: string; content: string }[]): Promise<NcdDone["scored"]> {
+    if (candidates.length === 0) return Promise.resolve([]);
+    if (this.workers.length < WORKERS) this.spawn(this.workers.length);
+    const worker = this.workers[this.next++ % this.workers.length]!;
+    const id = ++this.jobId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error("ncd scoring timed out"));
+      }, JOB_TIMEOUT_MS);
+      this.pending.set(id, { resolve, reject, timer });
+      worker.postMessage({ id, query, candidates } satisfies NcdJob);
+    });
+  }
+}
+
+const pool = new NcdPool();
+
+export const scoreByCompression = (query: string, candidates: { id: string; content: string }[]) =>
+  pool.score(query, candidates);

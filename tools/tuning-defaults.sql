@@ -18,9 +18,9 @@ insert into config (key, value) values
     "tier": {"0":0.0,"1":1.0,"2":3.0,"3":6.0},
     "edge_tier": {"0":0.25,"1":0.5,"2":1.0,"3":1.0},
     "edge_scale": 2.0,
-    "settle_rels": ["answers","proves","disproves","refutes","serves"],
+    "settle_rels": ["answers","proves","disproves","refutes","resolves"],
     "settle": 0.5,
-    "lean": 2.0
+    "lean": 0.75
   }'::jsonb)
 on conflict (key) do nothing;
 

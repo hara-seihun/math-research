@@ -1,5 +1,6 @@
 import { sql } from "./db.ts";
 import { listRow, trim } from "./read.ts";
+import { corpus } from "./snapshot.ts";
 
 // --- News ------
 // "What has happened here since I last looked?" derived in the database rather
@@ -34,11 +35,16 @@ export const HOW_TO_READ = [
 const rels = (rows: { rel: string | null; n: number }[]) =>
   Object.fromEntries(rows.filter((r) => r.rel).map((r) => [r.rel!, r.n]));
 
-/** Resolve a `since` into the last sequence number before it. */
+/** Resolve a `since` into the last sequence number before it.
+ *
+ *  Ordered by created_at and stopped at the first row rather than aggregated:
+ *  seq and created_at rise together, so the answer is one index seek. As a
+ *  max() over a filter it was a backward walk of the whole ledger, and the
+ *  cost of asking for "the last six hours" grew with the age of the corpus. */
 export async function seqBefore(at: Date): Promise<number> {
   const [row] = await sql<{ seq: number }[]>`
-    select coalesce(max(seq), 0)::int as seq from event where created_at < ${at}`;
-  return row!.seq;
+    select seq::int as seq from event where created_at < ${at} order by created_at desc, seq desc limit 1`;
+  return row?.seq ?? 0;
 }
 
 export async function headSeq(): Promise<number> {
@@ -46,44 +52,48 @@ export async function headSeq(): Promise<number> {
   return row!.seq;
 }
 
+
 export async function newsPacket(from: number, head: number, questions: number, limit: number) {
   const window = sql`event.seq > ${from} and event.seq <= ${head}`;
 
-  const [span] = await sql<{ events: number; from_at: Date | null; to_at: Date | null }[]>`
+  // Six full-corpus counts, and the same six hello opens with. Taken from the
+  // shared snapshot rather than re-counted for every reader.
+  const { totals } = await corpus.get();
+
+  // Every count and top-N below reads the same event window and none of them
+  // feeds another, so they go to the server together. Sequentially they were
+  // fourteen round trips deep, which is most of what `news` used to cost.
+  const [
+    [span],
+    eventKinds,
+    newEntries,
+    newLinks,
+    settlements,
+    [promotionCounts],
+    promoted,
+    [verificationCounts],
+    verified,
+    terminal,
+    [terminalTotal],
+    identities,
+    activity,
+  ] = await Promise.all([
+    sql<{ events: number; from_at: Date | null; to_at: Date | null }[]>`
     select count(*)::int as events, min(created_at) as from_at, max(created_at) as to_at
-    from event where ${window}`;
-
-  const [totals] = await sql`
-    select (select count(*) from contribution where status = 'active' and kind <> 'edge')::int as entries,
-           (select count(*) from contribution where status = 'active' and kind = 'edge')::int as links,
-           (select count(*) from contribution where status = 'active' and kind = 'front')::int as programmes,
-           (select count(*) from contribution
-             where status = 'active' and kind in ('problem', 'conjecture') and state = 'open')::int as open_questions,
-           (select count(*) from contribution_overview where status = 'active' and lean_verified)::int as lean_verified,
-           (select count(*) from trail where status = 'open'
-             and updated_at > now() - ${TRAIL_FRESH}::interval)::int as active_trails`;
-
-  const eventKinds = await sql<{ kind: string; n: number }[]>`
-    select kind, count(*)::int as n from event where ${window} group by kind order by n desc`;
-
-  // Movement is what arrived and is still standing. Something submitted and
-  // then retracted inside one window did not move the corpus, and counting it
-  // would report a withdrawn bulk batch as a wave of new work.
-  const newEntries = await sql<{ rel: string | null; n: number }[]>`
+    from event where ${window}`,
+    sql<{ kind: string; n: number }[]>`
+    select kind, count(*)::int as n from event where ${window} group by kind order by n desc`,
+    sql<{ rel: string | null; n: number }[]>`
     select event.payload->>'kind' as rel, count(*)::int as n from event
     join contribution c on c.id = event.contribution_id and c.status = 'active'
     where ${window} and event.kind = 'submitted' and event.payload->>'kind' is distinct from 'edge'
-    group by 1 order by n desc`;
-
-  const newLinks = await sql<{ rel: string | null; n: number }[]>`
+    group by 1 order by n desc`,
+    sql<{ rel: string | null; n: number }[]>`
     select event.payload->>'rel' as rel, count(*)::int as n from event
     join contribution c on c.id = event.contribution_id and c.status = 'active'
     where ${window} and event.kind = 'submitted' and event.payload->>'kind' = 'edge'
-    group by 1 order by n desc`;
-
-  // --- Settlements. The link must still be active: a settlement asserted and
-  // then retracted inside one window is not news that a question closed.
-  const settlements = await sql`
+    group by 1 order by n desc`,
+    sql`
     select q.id as question_id, q.kind as question_kind, q.title as question_title,
            q.summary as question_summary, q.tier as question_tier, q.state as question_state,
            q.notability as question_notability, q.lean_verified as question_lean_verified,
@@ -98,8 +108,58 @@ export async function newsPacket(from: number, head: number, questions: number, 
     where ${window} and event.kind = 'submitted' and event.payload->>'kind' = 'edge'
       and event.payload->>'rel' = any (${SETTLE_RELS})
       and q.kind in ('problem', 'conjecture') and q.status = 'active' and s.status = 'active'
-    order by event.seq desc limit ${limit * 4}`;
+    order by event.seq desc limit ${limit * 4}`,
+    sql<{ total: number; links: number }[]>`
+    select count(*)::int as total,
+           count(*) filter (where c.kind = 'edge')::int as links
+    from event join contribution c on c.id = event.contribution_id
+    where ${window} and event.kind = 'tier-changed' and (event.payload->>'tier')::int >= 2`,
+    sql`
+    select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
+           c.names, c.created_at,
+           (event.payload->>'tier')::int as promoted_to, event.payload->>'note' as note,
+           event.created_at as at
+    from event join contribution_overview c on c.id = event.contribution_id
+    where ${window} and event.kind = 'tier-changed' and (event.payload->>'tier')::int >= 2
+      and c.kind <> 'edge'
+    order by event.seq desc limit ${limit}`,
+    sql<{ passed: number; failed: number }[]>`
+    select count(*) filter (where payload->>'outcome' = 'passed')::int as passed,
+           count(*) filter (where payload->>'outcome' <> 'passed')::int as failed
+    from event where ${window} and kind = 'verification'`,
+    sql`
+    select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
+           c.names, c.created_at, event.created_at as at,
+           (select coalesce(array_agg(d->>'name') filter (where d->>'proof' is distinct from 'false'), '{}')
+              from jsonb_array_elements(event.payload->'decls') d) as decls
+    from event join contribution_overview c on c.id = event.contribution_id
+    where ${window} and event.kind = 'verification' and event.payload->>'outcome' = 'passed'
+    order by event.seq desc limit ${limit}`,
+    sql`
+    select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
+           c.names, c.created_at, c.status,
+           event.kind as decision, event.payload->>'note' as note, event.created_at as at
+    from event join contribution_overview c on c.id = event.contribution_id
+    where ${window} and event.kind = any (${TERMINAL_KINDS})
+    order by event.seq desc limit ${limit}`,
+    sql<{ n: number }[]>`
+    select count(*)::int as n from event where ${window} and kind = any (${TERMINAL_KINDS})`,
+    sql<{ identity_id: string; display_name: string | null; n: number }[]>`
+    select event.identity_id, i.display_name, count(*)::int as n
+    from event left join identity i on i.id = event.identity_id
+    where ${window} and event.identity_id is not null
+    group by 1, 2 order by n desc limit 8`,
+    // What the window argued about, which is what decides the questions this
+    // packet forecasts.
+    sql<{ id: string; rel: string; n: number }[]>`
+    select (event.payload->>'dst')::uuid as id, event.payload->>'rel' as rel, count(*)::int as n
+    from event join contribution ec on ec.id = event.contribution_id and ec.status = 'active'
+    where ${window} and event.kind = 'submitted' and event.payload->>'kind' = 'edge'
+    group by 1, 2`,
+  ]);
 
+  // --- Settlements. The link must still be active: a settlement asserted and
+  // then retracted inside one window is not news that a question closed.
   const settled: Record<string, { question: unknown; by: unknown[] }> = {};
   for (const row of settlements) {
     const key = row.question_id as string;
@@ -115,63 +175,6 @@ export async function newsPacket(from: number, head: number, questions: number, 
     settled[key]!.by.push({ rel: row.rel, edge_tier: row.edge_tier, linked_at: row.linked_at, entry: listRow(row) });
   }
 
-  // --- Trusted review. A promoted link is graph maintenance; count it, but
-  // never present it as a mathematical headline.
-  const [promotionCounts] = await sql<{ total: number; links: number }[]>`
-    select count(*)::int as total,
-           count(*) filter (where c.kind = 'edge')::int as links
-    from event join contribution c on c.id = event.contribution_id
-    where ${window} and event.kind = 'tier-changed' and (event.payload->>'tier')::int >= 2`;
-
-  const promoted = await sql`
-    select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
-           c.names, c.created_at,
-           (event.payload->>'tier')::int as promoted_to, event.payload->>'note' as note,
-           event.created_at as at
-    from event join contribution_overview c on c.id = event.contribution_id
-    where ${window} and event.kind = 'tier-changed' and (event.payload->>'tier')::int >= 2
-      and c.kind <> 'edge'
-    order by event.seq desc limit ${limit}`;
-
-  // --- Machine verification, which is not a tier.
-  const [verificationCounts] = await sql<{ passed: number; failed: number }[]>`
-    select count(*) filter (where payload->>'outcome' = 'passed')::int as passed,
-           count(*) filter (where payload->>'outcome' <> 'passed')::int as failed
-    from event where ${window} and kind = 'verification'`;
-
-  const verified = await sql`
-    select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
-           c.names, c.created_at, event.created_at as at,
-           (select coalesce(array_agg(d->>'name') filter (where d->>'proof' is distinct from 'false'), '{}')
-              from jsonb_array_elements(event.payload->'decls') d) as decls
-    from event join contribution_overview c on c.id = event.contribution_id
-    where ${window} and event.kind = 'verification' and event.payload->>'outcome' = 'passed'
-    order by event.seq desc limit ${limit}`;
-
-  const terminal = await sql`
-    select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
-           c.names, c.created_at, c.status,
-           event.kind as decision, event.payload->>'note' as note, event.created_at as at
-    from event join contribution_overview c on c.id = event.contribution_id
-    where ${window} and event.kind = any (${TERMINAL_KINDS})
-    order by event.seq desc limit ${limit}`;
-
-  const [terminalTotal] = await sql<{ n: number }[]>`
-    select count(*)::int as n from event where ${window} and kind = any (${TERMINAL_KINDS})`;
-
-  const identities = await sql<{ identity_id: string; display_name: string | null; n: number }[]>`
-    select event.identity_id, i.display_name, count(*)::int as n
-    from event left join identity i on i.id = event.identity_id
-    where ${window} and event.identity_id is not null
-    group by 1, 2 order by n desc limit 8`;
-
-  // --- The open work worth forecasting: everything touched in this window,
-  // topped up by notability so a quiet window still supports a full table.
-  const activity = await sql<{ id: string; rel: string; n: number }[]>`
-    select (event.payload->>'dst')::uuid as id, event.payload->>'rel' as rel, count(*)::int as n
-    from event join contribution ec on ec.id = event.contribution_id and ec.status = 'active'
-    where ${window} and event.kind = 'submitted' and event.payload->>'kind' = 'edge'
-    group by 1, 2`;
   const touched = new Map<string, Record<string, number>>();
   for (const row of activity) {
     const seen = touched.get(row.id) ?? {};
@@ -179,9 +182,8 @@ export async function newsPacket(from: number, head: number, questions: number, 
     touched.set(row.id, seen);
   }
 
-  const [openCount] = await sql<{ n: number }[]>`
-    select count(*)::int as n from contribution
-    where status = 'active' and kind in ('problem', 'conjecture') and state = 'open'`;
+  // The same count hello reports, already derived on the shared snapshot.
+  const openCount = { n: totals.open_questions };
 
   const chosen = await sql`
     select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,

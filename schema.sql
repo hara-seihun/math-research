@@ -47,15 +47,22 @@ create table if not exists identity (
 );
 
 -- Content-addressed immutable artifacts. All submission bodies live here.
+--
+-- Bodies are searched through `contribution.search`, which carries the body
+-- text at weight D alongside title/summary at weight A. A tsvector here too
+-- would be unreachable: a search predicate that ORs a column of this table
+-- against a column of `contribution` spans two tables, which no index can
+-- satisfy, so the planner hash-joins the whole corpus and filters. That plan
+-- was measured at 1.06 s and 1.3 GB of buffer traffic per query.
 create table if not exists artifact (
   hash       text primary key,            -- sha256(content), hex
   media_type text not null default 'text/markdown',
   content    text not null,
   size_bytes integer not null,
-  created_at timestamptz not null default now(),
-  search     tsvector generated always as (to_tsvector('english', left(content, 200000))) stored
+  created_at timestamptz not null default now()
 );
-create index if not exists artifact_search_idx on artifact using gin (search);
+drop index if exists artifact_search_idx;
+alter table artifact drop column if exists search;
 
 -- The append-only event ledger.
 create table if not exists event (
@@ -68,6 +75,15 @@ create table if not exists event (
 );
 create index if not exists event_contribution_idx on event (contribution_id, seq);
 create index if not exists event_identity_idx on event (identity_id, seq);
+-- news({since}) resolves a clock time to a sequence number. Without this the
+-- planner walks the ledger backwards from the head filtering every row it
+-- passes, so the cost of asking for "the last 6 hours" grows with the age of
+-- the corpus rather than the size of the answer.
+create index if not exists event_created_at_idx on event (created_at, seq);
+-- Every panel of a news packet asks the same shape of question: one kind of
+-- event, inside one window of the ledger. Indexed the other way round from
+-- the sequence alone, each panel was a parallel scan of the whole ledger.
+create index if not exists event_kind_seq_idx on event (kind, seq desc);
 
 create or replace function forbid_mutation() returns trigger language plpgsql as $$
 begin
@@ -130,19 +146,72 @@ create table if not exists contribution (
   embedding         vector(384),                    -- semantic vector (bge-small); see server/embedder/
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
-  search            tsvector generated always as
-                    (to_tsvector('english', title || ' ' || summary)) stored
+  -- The whole searchable document, title/summary at weight A and the artifact
+  -- body at weight D, so one index answers "does this entry match?" and one
+  -- ts_rank ranks a title hit above a body hit. Maintained by trigger rather
+  -- than GENERATED because it reads the artifact row.
+  search            tsvector,
+  -- names as normalize_ref folds them, so resolving an entry by an alias is
+  -- an index lookup instead of an unnest per row: `names_norm` for the exact
+  -- lookup, the same names joined for the trigram one.
+  names_norm        text[] not null default '{}',
+  names_text        text not null default '',
+  -- Derived from `verification`, kept by trigger. As a subquery in the public
+  -- view this was re-evaluated per row on every read path, sometimes hoisted
+  -- by the planner and sometimes not (5.9 ms vs 96 ms for one count).
+  lean_verified     boolean not null default false
 );
+alter table contribution add column if not exists state text;
+alter table contribution add column if not exists names_norm text[] not null default '{}';
+alter table contribution add column if not exists names_text text not null default '';
+alter table contribution add column if not exists lean_verified boolean not null default false;
+alter table contribution alter column search drop expression if exists;
+
+-- Everything derived from a contribution's own columns, in one place, so the
+-- search document and the folded names cannot drift from the row they
+-- describe. The artifact is content-addressed and immutable, so the body only
+-- has to be re-read when the hash changes.
+create or replace function contribution_search_doc(p_title text, p_summary text, p_hash text)
+  returns tsvector language sql stable as $$
+  select setweight(to_tsvector('english', coalesce(p_title, '') || ' ' || coalesce(p_summary, '')), 'A')
+      || setweight(to_tsvector('english',
+           left(coalesce((select a.content from artifact a where a.hash = p_hash), ''), 200000)), 'D')
+$$;
+
+create or replace function contribution_derived() returns trigger language plpgsql as $$
+begin
+  new.search := contribution_search_doc(new.title, new.summary, new.artifact_hash);
+  new.names_norm := coalesce(array(select normalize_ref(n) from unnest(new.names) n), '{}');
+  new.names_text := coalesce(array_to_string(new.names_norm, ' | '), '');
+  return new;
+end $$;
+drop trigger if exists contribution_derived_trg on contribution;
+create trigger contribution_derived_trg
+  before insert or update of title, summary, artifact_hash, names on contribution
+  for each row execute function contribution_derived();
+
 create index if not exists contribution_search_idx on contribution using gin (search);
-create index if not exists contribution_trgm_idx on contribution using gin ((title || ' ' || summary) gin_trgm_ops);
+-- Titles, lowered, because that is exactly what search's fuzzy fallback asks
+-- for. The index this replaces covered `title || ' ' || summary` without the
+-- lower() the server actually wrote, so it matched no query ever issued: 159
+-- MB carrying zero lifetime scans while every text search sequentially
+-- scanned the corpus. Over the summary too it is worse than useless even when
+-- it does match — trigram similarity across a whole summary nominates a
+-- quarter of the corpus and rechecks every candidate, 2.1 s to return two
+-- rows. A misspelling is a misremembered name, so titles are the surface
+-- worth searching that way.
+drop index if exists contribution_trgm_idx;
+create index if not exists contribution_title_trgm_idx
+  on contribution using gin (lower(title) gin_trgm_ops);
 create index if not exists contribution_kind_idx on contribution (kind, status, tier);
 create index if not exists contribution_notability_idx on contribution (status, notability desc);
 create index if not exists contribution_tags_idx on contribution using gin (tags);
-create index if not exists contribution_names_idx on contribution using gin (names);
+create index if not exists contribution_names_norm_idx on contribution using gin (names_norm);
+create index if not exists contribution_names_trgm_idx on contribution using gin (names_text gin_trgm_ops);
+drop index if exists contribution_names_idx;
 create index if not exists contribution_embedding_idx on contribution using hnsw (embedding vector_cosine_ops);
 create index if not exists contribution_identity_idx on contribution (identity_id, created_at);
 create index if not exists contribution_artifact_idx on contribution (artifact_hash);
-alter table contribution add column if not exists state text;
 create index if not exists contribution_state_idx on contribution (kind, state, notability desc);
 -- Migrated work keeps the predecessor's identifier in metadata.import_key, and
 -- the importer reconciles by it on every run.
@@ -210,6 +279,27 @@ create table if not exists verification (
 );
 create index if not exists verification_pending_idx on verification (method, outcome, id);
 create index if not exists verification_contribution_idx on verification (contribution_id);
+
+-- `contribution.lean_verified` is this table's projection onto the row every
+-- read path already touches. Derived here rather than by the verifier, so the
+-- fact and its cache cannot disagree no matter who writes the verification.
+create or replace function sync_lean_verified() returns trigger language plpgsql as $$
+declare
+  cid uuid := coalesce(new.contribution_id, old.contribution_id);
+  now_verified boolean;
+begin
+  select exists (select 1 from verification v
+                 where v.contribution_id = cid
+                   and v.method = 'lean-kernel' and v.outcome = 'passed')
+    into now_verified;
+  update contribution set lean_verified = now_verified
+   where id = cid and lean_verified is distinct from now_verified;
+  return null;
+end $$;
+drop trigger if exists verification_lean_verified on verification;
+create trigger verification_lean_verified
+  after insert or update or delete on verification
+  for each row execute function sync_lean_verified();
 
 -- Kernel checks, content-addressed. A check is a pure function of (source,
 -- pinned toolchain), so the same lemma checked by forty agents costs one
@@ -300,10 +390,7 @@ create index if not exists request_log_identity_idx on request_log (identity_id,
 create or replace view contribution_overview as
 select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
        c.artifact_hash, c.metadata, c.notability, c.tags, c.names, c.created_at, c.updated_at, c.search,
-       exists (select 1 from verification v
-               where v.contribution_id = c.id
-                 and v.method = 'lean-kernel' and v.outcome = 'passed') as lean_verified,
-       c.state
+       c.lean_verified, c.state
 from contribution c;
 
 -- ——— Tunable policy ————————————————————————————————————————————————————
@@ -370,7 +457,11 @@ $$;
 -- (kind, tier, kernel-verification), for how much the graph builds on it
 -- (incoming edges, each weighted by that edge's own review tier so an
 -- unreviewed T0 link barely counts and a trusted T2 link counts fully), and
--- for settling known questions. Every weight is read from config at run time.
+-- for settling known questions. Settlement credit is also weighted by the
+-- settling edge's tier: asserting an answer at T0 cannot earn the same credit
+-- as a reviewed connection. Parallel assertions of one (src,dst,rel) reduce
+-- to their strongest active edge, matching the graph's traversal semantics.
+-- Every weight is read from config at run time.
 create or replace function refresh_notability(ids uuid[] default null) returns void language plpgsql as $$
 declare
   w jsonb;
@@ -390,18 +481,23 @@ begin
   select value into w from config where key = 'notability_weights';
   if w is null then w := '{}'::jsonb; end if;
   settle_rels := array(select jsonb_array_elements_text(
-    coalesce(w->'settle_rels', '["answers","proves","disproves","refutes","serves"]'::jsonb)));
+    coalesce(w->'settle_rels', '["answers","proves","disproves","refutes","resolves"]'::jsonb)));
 
   with base as (
     select c.id,
            coalesce((w->'kind'->>c.kind)::real, (w->'kind'->>'_default')::real, 1.0)
              + coalesce((w->'tier'->>c.tier::text)::real, 0.0)
-             + case when exists (select 1 from verification v
-                                 where v.contribution_id = c.id
-                                   and v.method = 'lean-kernel' and v.outcome = 'passed')
-                    then coalesce((w->>'lean')::real, 2.0) else 0.0 end as own
+             + case when c.lean_verified then coalesce((w->>'lean')::real, 0.75) else 0.0 end as own
     from contribution c
     where c.kind <> 'edge' and (ids is null or c.id = any (ids))
+  ),
+  strongest_edges as (
+    select distinct on (e.src, e.dst, e.rel) e.src, e.dst, e.rel, ec.tier
+    from edge e
+    join contribution ec on ec.id = e.contribution_id
+    where ec.status = 'active'
+      and (ids is null or e.src = any (ids) or e.dst = any (ids))
+    order by e.src, e.dst, e.rel, ec.tier desc, e.created_at desc, e.contribution_id desc
   ),
   -- Damped, because incoming weight spans four orders of magnitude: a hub
   -- problem carries thousands of supporting edges and a fresh theorem carries
@@ -411,19 +507,20 @@ begin
     select e.dst as id,
            coalesce((w->>'edge_scale')::real, 2.0)
              * ln(1 + sum(coalesce((w->'rel'->>e.rel)::real, (w->'rel'->>'_default')::real, 0.5)
-                          * coalesce((w->'edge_tier'->>ec.tier::text)::real, 0.0))) as s
-    from edge e join contribution ec on ec.id = e.contribution_id
-    where ec.status = 'active' and (ids is null or e.dst = any (ids))
+                          * coalesce((w->'edge_tier'->>e.tier::text)::real, 0.0))) as s
+    from strongest_edges e
+    where ids is null or e.dst = any (ids)
     group by e.dst
   ),
   settles as (
     select e.src as id,
-           sum(coalesce((w->'tier'->>tgt.tier::text)::real, 0.0) * coalesce((w->>'settle')::real, 0.5)) as s
-    from edge e
-    join contribution ec on ec.id = e.contribution_id
+           sum(coalesce((w->'tier'->>tgt.tier::text)::real, 0.0)
+               * coalesce((w->>'settle')::real, 0.5)
+               * coalesce((w->'edge_tier'->>e.tier::text)::real, 0.0)) as s
+    from strongest_edges e
     join contribution tgt on tgt.id = e.dst
-    where ec.status = 'active' and e.rel = any (settle_rels)
-      and tgt.kind in ('problem', 'conjecture')
+    where e.rel = any (settle_rels)
+      and tgt.kind in ('problem', 'conjecture') and tgt.status = 'active'
       and (ids is null or e.src = any (ids))
     group by e.src
   )
@@ -536,12 +633,47 @@ create or replace view q_identities as
 create or replace view q_config as select key, value, updated_at from config;
 create or replace view q_topic_rules as select topic, pattern, ord from topic_rule;
 
+-- Asked for by name rather than attempted-and-caught: Postgres checks the
+-- privilege to create a role before it checks whether the role is already
+-- there, so `exception when duplicate_object` never fires for a non-superuser
+-- re-applying this file. It raised insufficient_privilege instead and took the
+-- whole migration with it.
 do $$ begin
-  create role math_reader nologin;
-exception when duplicate_object then null; end $$;
+  if not exists (select 1 from pg_roles where rolname = 'math_reader') then
+    create role math_reader nologin;
+  end if;
+end $$;
 grant usage on schema public to math_reader;
 grant select on q_entries, q_links, q_front_members, q_events, q_verifications,
                 q_artifacts, q_trails, q_trail_entries, q_identities, q_config,
                 q_topic_rules to math_reader;
 -- The server's own connection switches into this role per query statement.
-grant math_reader to current_user;
+-- Conditional for the same reason as the role itself: granting membership a
+-- second time needs ADMIN on the role, which the owning user does not have,
+-- so an unconditional grant makes this file apply exactly once.
+do $$ begin
+  if not pg_has_role(current_user, 'math_reader', 'member') then
+    execute format('grant math_reader to %I', current_user);
+  end if;
+end $$;
+
+-- ——— Derived-column backfill ————————————————————————————————————————————
+-- Rows written before `search` carried the artifact body, before names were
+-- folded, and before lean_verified was a column need one pass to catch up.
+-- Touching `title` is what fires contribution_derived, so the three land
+-- together. Guarded by a marker rather than by inspecting the data, because
+-- this file is re-applied on every schema change and a 146k-row rewrite is
+-- not something to repeat for nothing.
+do $$ begin
+  if not exists (select 1 from config where key = 'derived_columns_backfilled') then
+    update contribution c
+       set title = c.title,
+           lean_verified = exists (select 1 from verification v
+                                   where v.contribution_id = c.id
+                                     and v.method = 'lean-kernel' and v.outcome = 'passed');
+    insert into config (key, value) values ('derived_columns_backfilled', to_jsonb(now()))
+      on conflict (key) do nothing;
+  end if;
+end $$;
+
+analyze contribution;

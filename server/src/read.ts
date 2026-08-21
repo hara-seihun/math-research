@@ -26,14 +26,26 @@ export async function deref(
     return row ? { ...row, matched: "id" } : { error: `no entry with id ${raw}. Try search.` };
   }
   const norm = normalizeText(raw);
+  // Two indexable lookups unioned, never one predicate that ORs them: an OR
+  // between an expression index and a correlated EXISTS is not a plan any
+  // index can serve, and Postgres answered it by scanning all 146k rows and
+  // unnesting the names of each (250 ms, measured, on the hottest path in the
+  // server — every get, frontier, link, and every relates_to of a submit).
   const exact = await sql<{ id: string; title: string; kind: string; how: string }[]>`
-    select id, title, kind,
-           case when normalize_ref(title) = ${norm} then 'title' else 'name' end as how
-    from contribution
-    where status = 'active' and kind <> 'edge'
-      and (normalize_ref(title) = ${norm} or exists (select 1 from unnest(names) n where normalize_ref(n) = ${norm}))
-      and (${kind ?? null}::text is null or kind = ${kind ?? null})
-    order by (kind = coalesce(${kind ?? null}, kind)) desc, notability desc limit 5`;
+    select distinct on (id) id, title, kind, how from (
+      select id, title, kind, notability, 'title' as how
+      from contribution
+      where normalize_ref(title) = ${norm} and status = 'active' and kind <> 'edge'
+        and (${kind ?? null}::text is null or kind = ${kind ?? null})
+      union all
+      select id, title, kind, notability, 'name' as how
+      from contribution
+      where names_norm @> array[${norm}] and status = 'active' and kind <> 'edge'
+        and (${kind ?? null}::text is null or kind = ${kind ?? null})
+    ) hit
+    order by id, how, notability desc`;
+  exact.sort((a, b) => (a.how === b.how ? 0 : a.how === "title" ? -1 : 1));
+  exact.splice(5);
   // A ref that is some entry's own title beats an entry that merely lists it as
   // an alias: the caller typed the thing as it is displayed.
   const titled = exact.filter((r) => r.how === "title");
@@ -47,14 +59,19 @@ export async function deref(
   const fuzzy = await sql.begin(async (tx) => {
     await tx`select set_config('pg_trgm.word_similarity_threshold', '0.35', true)`;
     return tx<{ id: string; title: string; kind: string; score: number }[]>`
-      select id, title, kind,
-             greatest(word_similarity(${raw}, title),
-                      coalesce((select max(similarity(${raw}, n)) from unnest(names) n), 0)) as score
-      from contribution
-      where status = 'active' and kind <> 'edge'
-        and (${raw} <% title or exists (select 1 from unnest(names) n where n % ${raw}))
-        and (${kind ?? null}::text is null or kind = ${kind ?? null})
-      order by score desc, notability desc limit 5`;
+      select id, title, kind, max(score)::float8 as score from (
+        select id, title, kind, notability, word_similarity(${raw}, title) as score
+        from contribution
+        where ${raw} <% title and status = 'active' and kind <> 'edge'
+          and (${kind ?? null}::text is null or kind = ${kind ?? null})
+        union all
+        select id, title, kind, notability, word_similarity(${raw}, names_text) as score
+        from contribution
+        where ${raw} <% names_text and status = 'active' and kind <> 'edge'
+          and (${kind ?? null}::text is null or kind = ${kind ?? null})
+      ) hit
+      group by id, title, kind
+      order by score desc, max(notability) desc limit 5`;
   });
   if (!fuzzy.length) return { error: `nothing here is called "${raw}". Try search.` };
   // A tie the door itself can break: "cell N4 residual" asked of frontier is
@@ -110,6 +127,7 @@ export function listRow(r: Record<string, unknown>) {
     tier: r.tier,
     ...(r.lean_verified ? { lean_verified: true } : {}),
     notability: r.notability,
+    ...(r.ranking ? { ranking: r.ranking } : {}),
     ...(summary ? { summary } : {}),
   };
   if (Array.isArray(r.tags) && r.tags.length) out.topics = r.tags;

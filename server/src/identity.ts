@@ -20,12 +20,37 @@ export const KEY_HELP =
  * What the transport knows about this request. Both fields are optional: an
  * unidentified caller is a first-class caller here.
  */
-export type RequestContext = { bearer?: string; sessionId?: string; minted?: string };
+export type RequestContext = {
+  bearer?: string;
+  sessionId?: string;
+  minted?: string;
+  /** Whoever this request turned out to belong to, filled in as the handler
+   *  resolves it, so the request log and the rate limiter can name the caller
+   *  without asking the database a second time. */
+  resolved?: string | null;
+  address?: string;
+};
 
 const context = new AsyncLocalStorage<RequestContext>();
 
 export function withRequestContext<T>(ctx: RequestContext, run: () => T): T {
   return context.run(ctx, run);
+}
+
+export const requestContext = (): RequestContext => context.getStore() ?? {};
+
+const remember = (identityId: string | null): string | null => {
+  const store = context.getStore();
+  if (store) store.resolved = identityId;
+  return identityId;
+};
+
+/** Who the rate limiter should charge: the identity if there is one, the
+ *  client address otherwise. Anonymous callers are first-class here, so they
+ *  get a bucket rather than a refusal. */
+export function billingKey(): string {
+  const { resolved, address, sessionId } = context.getStore() ?? {};
+  return resolved ? `i:${resolved}` : address ? `a:${address}` : sessionId ? `s:${sessionId}` : "anonymous";
 }
 
 export const bearerOf = (authorization: string | string[] | undefined): string | undefined =>
@@ -41,14 +66,14 @@ export type Resolution =
 export async function caller(argumentKey?: string): Promise<Resolution> {
   const { bearer, sessionId } = context.getStore() ?? {};
   const key = argumentKey ?? (bearer?.startsWith("mrk_") ? bearer : undefined);
-  if (key) return { kind: "identity", identityId: sha256hex(key), via: "key" };
+  if (key) return { kind: "identity", identityId: remember(sha256hex(key))!, via: "key" };
 
   if (bearer) {
     const [token] = await sql<{ identity_id: string }[]>`
       update oauth_token set last_used_at = now()
       where token_hash = ${sha256hex(bearer)} returning identity_id`;
     return token
-      ? { kind: "identity", identityId: token.identity_id, via: "oauth" }
+      ? { kind: "identity", identityId: remember(token.identity_id)!, via: "oauth" }
       : {
           kind: "invalid",
           error:
@@ -62,7 +87,7 @@ export async function caller(argumentKey?: string): Promise<Resolution> {
       on conflict (id) do update set last_seen_at = now()
       returning identity_id`;
     return session!.identity_id
-      ? { kind: "identity", identityId: session!.identity_id, via: "session" }
+      ? { kind: "identity", identityId: remember(session!.identity_id)!, via: "session" }
       : { kind: "session", sessionId };
   }
 
@@ -95,6 +120,7 @@ export async function writer(argumentKey?: string): Promise<Writer> {
   if (who.kind === "anonymous") return { identityId: null };
 
   const { identityId, freshKey } = await mintIdentity();
+  remember(identityId);
   const [bound] = await sql<{ identity_id: string }[]>`
     update mcp_session set identity_id = ${identityId}
     where id = ${who.sessionId} and identity_id is null

@@ -42,19 +42,26 @@ touches no service and is safe while Lean checks are in flight.
 ## Tune the discovery policy against real corpus behaviour
 
 The notability weights and the topic taxonomy now live in the database and are
-tunable live over the MCP by a trusted operator — `get_tuning` shows the
-current values and the formula, `set_tuning` changes them (deep-merges weights
-and recomputes notability; replaces topic rules and reclassifies the corpus).
+tunable live over the MCP by a trusted operator — query `q_config` and
+`q_topic_rules` for the current values, and use `set_tuning` to change them
+(deep-merges weights and recomputes notability; replaces topic rules and
+reclassifies the corpus).
 No deploy needed.
 
-Still to do — the actual tuning of the values, once the embedding backfill is
-complete and there's a feel for how the corpus ranks:
+Initial calibration, 2026-08-21: parallel assertions of one relation now reduce
+to their strongest active edge; settlement credit uses only actual settling
+relations and is discounted by the settling edge's tier; `serves` no longer
+inflates resolution impact; and the Lean signal fell from 2.0 to 0.75 so
+formalization is evidence rather than a substitute for scope. The `/live` page
+now makes the rolling top ten and its concrete graph signals directly visible.
+
+Still to do — empirical tuning as that feed accumulates examples:
 
 - **Notability weights** (`kind`, `rel`, `tier`, `edge_tier`, `settle`, `lean`):
-  sanity-check the ordering `browse`/`hello` produce. Watch for a single
-  relation (e.g. `serves`, 12k edges) or a hub problem dominating. Consider
-  whether `front`/`edge` kinds should stay at 0, and whether the `settle` bonus
-  and `edge_tier` factors give T0 (unreviewed) links appropriately small pull.
+  compare `search({order_by:'notability'})` and `/live` against trusted
+  pairwise judgments, especially for dense campaigns and hub problems. Decide
+  whether `front`/`edge` kinds should stay at 0 and whether the remaining
+  relation weights preserve broad results over narrow but heavily linked ones.
 - **Topic taxonomy** (`topic_rule` patterns): ~49% of the corpus is untagged —
   decide whether that's fine (terse lemma statements) or the patterns need
   broadening; check for over/under-triggering topics and add missing subject

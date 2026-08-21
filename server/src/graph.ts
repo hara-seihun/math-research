@@ -1,6 +1,7 @@
 import type { TransactionSql } from "postgres";
 import { sql } from "./db.ts";
 import { sha256hex } from "./identity.ts";
+import { scoreByCompression } from "./ncd.ts";
 
 /** The handle a sql.begin callback receives. Spelled out, because
  *  sql.begin is overloaded and inferring it lands on `never`. */
@@ -46,51 +47,98 @@ export type SearchArgs = {
   front?: string;
   lean_verified?: boolean;
   min_tier?: number;
+  since?: Date;
   include_inactive?: boolean;
   limit: number;
   offset: number;
 };
 
+// Everything a query can match lives on `contribution.search`: title and
+// summary at weight A, the artifact body at weight D. That is what makes the
+// eligibility test a single-table OR, which Postgres answers as a BitmapOr
+// across the full-text and trigram indexes. Spread across two tables (the
+// body's tsvector on `artifact`) the same OR has no plan but a hash join of
+// the entire corpus followed by a filter: 1.06 s and 1.3 GB of buffer traffic
+// per search, measured, against ~10 ms now.
+//
+// The A/D weighting also replaced a hand-rolled `rank(title) * 2 + rank(body)`
+// with the thing ts_rank already does, so a title hit still outranks a passing
+// mention in a body without ranking having to know where the text came from.
+const RANK_WEIGHTS = "{0.05, 0.2, 0.4, 1.0}";
+
 export async function searchContributions(args: SearchArgs) {
   const { all, any } = queryParts(args.query);
   const raw = normalizeText(args.query);
   const kinds = args.kind === undefined ? null : Array.isArray(args.kind) ? args.kind : [args.kind];
-  return sql.begin(async (tx: Tx) => {
+  const need = args.offset + args.limit;
+
+  // Every filter that is not about matching text, shared by both passes so
+  // they cannot drift apart.
+  const filters = sql`
+        c.kind <> 'edge'
+    and (${kinds}::text[] is null or c.kind = any(${kinds}))
+    and (${args.state ?? null}::text is null or c.state = ${args.state ?? null})
+    and (${args.topic ?? null}::text is null or c.tags @> array[${args.topic ?? null}]::text[])
+    and (${args.lean_verified ?? null}::bool is null or c.lean_verified = ${args.lean_verified ?? false})
+    and (${args.min_tier ?? null}::int is null or c.tier >= ${args.min_tier ?? 0})
+    and (${args.since ?? null}::timestamptz is null or c.created_at >= ${args.since ?? null})
+    and (${args.include_inactive ?? false} or c.status = 'active')
+    and (${args.front ?? null}::uuid is null or exists (
+          select 1 from edge e join contribution ec on ec.id = e.contribution_id
+          where e.src = c.id and e.dst = ${args.front ?? null}::uuid
+            and e.rel = 'in-front' and ec.status = 'active'))`;
+
+  const columns = sql`c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.tags, c.names,
+                      c.created_at, c.lean_verified, c.notability`;
+
+  // Pass one: the text index. A query whose terms appear anywhere in the
+  // corpus is answered entirely here, off contribution_search_idx.
+  const matched = await sql`
+    with hit as (
+      select ${columns},
+             c.search @@ to_tsquery('english', ${all}) as complete,
+             ts_rank(${RANK_WEIGHTS}::float4[], c.search, to_tsquery('english', ${any})) as text_rank
+      from contribution c
+      where c.search @@ to_tsquery('english', ${any}) and ${filters})
+    select id, kind, title, summary, tier, status, state, tags, names, created_at,
+           lean_verified, notability,
+           case when complete then 'every term' else 'some terms' end as matched,
+           round(text_rank::numeric, 4)::float8 as score
+    from hit
+    order by complete desc,
+             text_rank * (1 + 0.2 * ln(1 + greatest(notability, 0))) desc,
+             created_at desc
+    limit ${need}`;
+
+  // Pass two, only when the index came up short: the promise this tool makes
+  // is that a misspelling degrades rather than returning nothing, and this is
+  // where that gets paid for. It is deliberately not OR-ed into the pass
+  // above. As one predicate the planner had to satisfy both branches for
+  // every row, and trigram similarity over title+summary at a 0.2 threshold
+  // returns a quarter of the corpus as candidates and rechecks each one:
+  // 2.1 s to contribute two rows, on every search, including the ones the
+  // text index had already answered in 25 ms. Restricted to titles it is
+  // ~80 ms and finds more of what a misspelling was reaching for, because a
+  // misremembered name is a name.
+  if (matched.length >= need) return matched.slice(args.offset);
+
+  const seen = matched.map((r) => r.id as string);
+  const fuzzy = await sql.begin(async (tx: Tx) => {
     await tx`select set_config('pg_trgm.similarity_threshold', '0.2', true)`;
     return tx`
-      with hit as (
-        select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.tags, c.names,
-               c.created_at, c.lean_verified, c.notability,
-               (c.search @@ to_tsquery('english', ${all}) or a.search @@ to_tsquery('english', ${all})) as complete,
-               ts_rank(c.search, to_tsquery('english', ${any})) * 2
-                 + ts_rank(a.search, to_tsquery('english', ${any})) as text_rank,
-               similarity(lower(c.title || ' ' || c.summary), ${raw}) as fuzzy
-        from contribution_overview c join artifact a on a.hash = c.artifact_hash
-        where c.kind <> 'edge'
-          and (c.search @@ to_tsquery('english', ${any})
-               or a.search @@ to_tsquery('english', ${any})
-               or lower(c.title || ' ' || c.summary) % ${raw})
-          and (${kinds}::text[] is null or c.kind = any(${kinds}))
-          and (${args.state ?? null}::text is null or c.state = ${args.state ?? null})
-          and (${args.topic ?? null}::text is null or ${args.topic ?? null} = any(c.tags))
-          and (${args.lean_verified ?? null}::bool is null or c.lean_verified = ${args.lean_verified ?? false})
-          and (${args.min_tier ?? null}::int is null or c.tier >= ${args.min_tier ?? 0})
-          and (${args.include_inactive ?? false} or c.status = 'active')
-          and (${args.front ?? null}::uuid is null or exists (
-                select 1 from edge e join contribution ec on ec.id = e.contribution_id
-                where e.src = c.id and e.dst = ${args.front ?? null}::uuid
-                  and e.rel = 'in-front' and ec.status = 'active'))
-      )
-      select id, kind, title, summary, tier, status, state, tags, names, created_at,
-             lean_verified, notability,
-             case when complete then 'every term' when text_rank > 0 then 'some terms' else 'fuzzy' end as matched,
-             round((text_rank * 3 + fuzzy * 2)::numeric, 4)::float8 as score
-      from hit
-      order by complete desc,
-               (text_rank * 3 + fuzzy * 2) * (1 + 0.2 * ln(1 + greatest(notability, 0))) desc,
-               created_at desc
-      limit ${args.limit} offset ${args.offset}`;
+      select ${columns},
+             'fuzzy' as matched,
+             round(greatest(similarity(lower(c.title), ${raw}),
+                            word_similarity(${raw}, c.names_text))::numeric, 4)::float8 as score
+      from contribution c
+      where (lower(c.title) % ${raw} or ${raw} <% c.names_text)
+        and not (c.id = any(${seen}::uuid[]))
+        and ${filters}
+      order by score desc, c.notability desc, c.created_at desc
+      limit ${need - matched.length}`;
   });
+
+  return [...matched, ...fuzzy].slice(args.offset);
 }
 
 // --- Semantic embeddings ------
@@ -240,13 +288,10 @@ export async function neighbourhood(id: string, opts?: { rel?: string; offset?: 
 // nominates candidates; alpha-normalized NCD (compression distance) ranks how
 // much structural information each shares with the query. Agents call this,
 // look, and decide what to link. The tool proposes nothing on its own.
-function compress(s: string): number {
-  return Bun.gzipSync(Buffer.from(s)).length;
-}
-function ncd(x: string, y: string): number {
-  const cx = compress(x), cy = compress(y), cxy = compress(x + "\n" + y);
-  return (cxy - Math.min(cx, cy)) / Math.max(cx, cy);
-}
+//
+// The compression itself runs in a worker (see ncd.ts): it is the only
+// unbroken stretch of CPU in request handling, and on a single-threaded
+// runtime it was 150 gzips long.
 function normalizeForNcd(s: string): string {
   return normalizeText(s).replace(/\s+/g, " ").trim().slice(0, 4000);
 }
@@ -273,10 +318,10 @@ export async function related(args: RelatedArgs) {
     const v = await embed(queryText);
     if (!v) return { error: "semantic search is warming up, so use method 'ncd' or 'lexical' for now." };
     const rows = await sql`
-      select co.id, co.kind, co.title, co.summary, co.tier, co.state, co.notability, co.lean_verified, co.created_at,
+      select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.created_at,
              round((1 - (c.embedding <=> ${asVector(v)}::vector))::numeric, 4)::float8 as similarity
-      from contribution c join contribution_overview co on co.id = c.id
-      where c.kind <> 'edge' and co.status = 'active' and c.embedding is not null
+      from contribution c
+      where c.kind <> 'edge' and c.status = 'active' and c.embedding is not null
         and (${selfId}::uuid is null or c.id <> ${selfId})
       order by c.embedding <=> ${asVector(v)}::vector limit ${args.limit}`;
     return { method: "semantic", related: rows };
@@ -284,27 +329,36 @@ export async function related(args: RelatedArgs) {
 
   const { any: tsq } = queryParts(queryText);
   const raw = normalizeText(`${queryText}`).slice(0, 300);
+  const wantsContent = args.method === "ncd";
   const candidates = await sql.begin(async (tx: Tx) => {
     await tx`select set_config('pg_trgm.similarity_threshold', '0.15', true)`;
-    return tx<({ id: string; content: string } & Record<string, unknown>)[]>`
+    return tx<({ id: string; content: string | null } & Record<string, unknown>)[]>`
       select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.created_at,
-             left(a.content, 4000) as content
-      from contribution_overview c join artifact a on a.hash = c.artifact_hash
+             case when ${wantsContent} then left(a.content, 4000) end as content
+      from contribution c left join artifact a on ${wantsContent} and a.hash = c.artifact_hash
       where c.kind <> 'edge' and c.status = 'active'
         and (${selfId}::uuid is null or c.id <> ${selfId})
         and (c.search @@ to_tsquery('english', ${tsq})
              or lower(c.title || ' ' || c.summary) % ${raw})
-      order by ts_rank(c.search, to_tsquery('english', ${tsq})) desc,
+      order by ts_rank(${RANK_WEIGHTS}::float4[], c.search, to_tsquery('english', ${tsq})) desc,
                c.notability desc
       limit 150`;
   });
 
-  const q = normalizeForNcd(queryText);
-  const scored = candidates.map(({ content, ...c }) => ({
-    ...c,
-    similarity: args.method === "ncd" ? Number((1 - ncd(q, normalizeForNcd(content as string))).toFixed(4)) : undefined,
-  }));
-  if (args.method === "ncd") scored.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
+  let scored: (Record<string, unknown> & { id: string; similarity?: number })[] = candidates.map(
+    ({ content: _content, ...c }) => c as Record<string, unknown> & { id: string },
+  );
+  if (wantsContent) {
+    const q = normalizeForNcd(queryText);
+    const byId = new Map(
+      (await scoreByCompression(
+        q,
+        candidates.map((c) => ({ id: c.id, content: normalizeForNcd(c.content ?? "") })),
+      )).map((s) => [s.id, s.similarity]),
+    );
+    scored = scored.map((c) => ({ ...c, similarity: byId.get(c.id) ?? 0 }));
+    scored.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
+  }
   const top = scored.slice(0, args.limit);
 
   // Show which candidates are already linked to the query id, so the caller

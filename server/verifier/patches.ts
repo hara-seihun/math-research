@@ -20,7 +20,7 @@
  * publication lands as a local commit and the host's tools/publish-mathlibplus.sh
  * is what carries it to the public repository.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, cpSync, readdirSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, cpSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sql } from "../src/db.ts";
 import { unsoundTokens } from "../src/lean.ts";
@@ -530,19 +530,32 @@ export async function revalidatePatches() {
 
 const shortId = (id: string) => id.slice(0, 8);
 
-/** Install exactly the oleans that were verified, so the build tree and the
- *  commit describe the same library. */
+/**
+ * Install exactly the oleans that were verified, so the build tree and the
+ * commit describe the same library.
+ *
+ * Modes are set explicitly rather than left to the umask: this process runs
+ * with a private one so that spool files stay between it and the runner, but
+ * the build tree is the opposite kind of thing — the sandbox reads it as
+ * another user through a read-only bind mount, and an olean it cannot read is
+ * a module that silently vanished from the library.
+ */
 function installOleans(checkId: string, deleted: string[]) {
   const built = oleanDir(checkId);
   const installed: string[] = [];
+  const publicDir = (dir: string) => {
+    mkdirSync(dir, { recursive: true });
+    for (let d = dir; d.startsWith(BUILD_LIB); d = dirname(d)) chmodSync(d, 0o755);
+  };
   const walk = (dir: string, rel = "") => {
     for (const entry of readdirSync(dir)) {
       const full = join(dir, entry);
       const relPath = rel ? join(rel, entry) : entry;
       if (statSync(full).isDirectory()) walk(full, relPath);
       else {
-        mkdirSync(dirname(join(BUILD_LIB, relPath)), { recursive: true });
+        publicDir(dirname(join(BUILD_LIB, relPath)));
         cpSync(full, join(BUILD_LIB, relPath));
+        chmodSync(join(BUILD_LIB, relPath), 0o644);
         installed.push(relPath);
       }
     }

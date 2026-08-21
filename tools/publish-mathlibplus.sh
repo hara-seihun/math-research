@@ -27,6 +27,9 @@ fi
 cd "$CLONE"
 git remote get-url guest > /dev/null 2>&1 || git remote add guest "$GUEST"
 git remote set-url guest "$GUEST"
+# The guest's checkout belongs to `math` and the verifier writes it with a
+# private umask, so read it as `math` rather than depending on its file modes.
+git config remote.guest.uploadpack "sudo -u math git-upload-pack"
 
 git fetch -q origin "$BRANCH"
 git fetch -q guest "$BRANCH"

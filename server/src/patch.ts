@@ -48,10 +48,12 @@ export const looksLikeDiff = (content: string): boolean => {
 export const isPatchSubmission = (kind: string, mediaType: string, content: string): boolean =>
   kind === "patch" || mediaType === "text/x-diff" || looksLikeDiff(content);
 
-/** A check is a pure function of (repository, base commit, diff), so it is
- *  stored under their hash and never run twice. */
+/** A check is a pure function of the runner contract plus repository, base,
+ *  and diff. Bump this when the runner changes what a pass or failure means;
+ *  otherwise an infrastructure failure stays cached after its cause is fixed. */
+export const PATCH_CHECK_VERSION = 2;
 export const patchCheckId = (repo: string, base: string, diff: string): string =>
-  sha256hex(`${repo}\n${base}\n${diff}`);
+  sha256hex(`${PATCH_CHECK_VERSION}\n${repo}\n${base}\n${diff}`);
 
 /** Lines the patch adds, which is where anything unsound would arrive. */
 export const addedLines = (diff: string): string =>

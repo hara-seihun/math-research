@@ -158,7 +158,8 @@ async function addRankingSignals(rows: Record<string, unknown>[]): Promise<Recor
       (select count(distinct e.src)::int
        from edge e join contribution ec on ec.id = e.contribution_id
        join contribution src on src.id = e.src
-       where e.dst = w.id and ec.status = 'active' and src.status = 'active') as built_on_by,
+       where e.dst = w.id and ec.status = 'active' and src.status = 'active'
+         and e.rel not in ('amends', 'assesses-impact', 'reviews', 'duplicates', 'supersedes')) as built_on_by,
       (select count(distinct e.dst)::int
        from edge e join contribution ec on ec.id = e.contribution_id
        join contribution target on target.id = e.dst

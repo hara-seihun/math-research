@@ -14,7 +14,7 @@ insert into config (key, value) values
             "generalizes":1.2,"uses":1.0,"depends-on":1.0,"equivalent-to":1.0,
             "attacks":0.8,"refines":0.8,"specializes":0.6,"repairs":0.6,"about":0.3,
             "reviews":0.3,"supersedes":0.2,"in-front":0.1,"part-of":0.1,
-            "duplicates":0.1,"_default":0.5},
+            "duplicates":0.1,"amends":0.0,"assesses-impact":0.0,"_default":0.5},
     "tier": {"0":0.0,"1":1.0,"2":3.0,"3":6.0},
     "edge_tier": {"0":0.25,"1":0.5,"2":1.0,"3":1.0},
     "edge_scale": 2.0,

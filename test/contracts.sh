@@ -58,7 +58,13 @@ mkdir -p "$PATCH_REPO_DIR/MathlibPlus" "$PATCH_BUILD_LIB"
 printf 'theorem alpha : 1 + 1 = 2 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Alpha.lean"
 printf 'import MathlibPlus.Alpha\ntheorem beta : 2 + 2 = 4 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Beta.lean"
 printf 'theorem gamma : 3 = 3 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Gamma.lean"
+printf 'theorem broken : 4 = 5 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Broken.lean"
 printf '.lake/\n' > "$PATCH_REPO_DIR/.gitignore"   # as in the real repository: build output is not source
+# The build tree says what currently builds. Part of the real library does not
+# (the umbrella module cannot, and ~1-2% has bit-rotted), and a module with no
+# olean is exactly that: Broken has none.
+mkdir -p "$PATCH_BUILD_LIB/MathlibPlus"
+touch "$PATCH_BUILD_LIB/MathlibPlus/Alpha.olean" "$PATCH_BUILD_LIB/MathlibPlus/Beta.olean" "$PATCH_BUILD_LIB/MathlibPlus/Gamma.olean"
 git -C "$PATCH_REPO_DIR" init -q -b main
 git -C "$PATCH_REPO_DIR" add -A
 git -C "$PATCH_REPO_DIR" -c user.name=contracts -c user.email=c@example.invalid commit -qm "library"
@@ -156,7 +162,7 @@ runner_says() { # <hash> <json> -> answers as the sandboxed runner would
   echo "$2" > "$SPOOL_DIR/out/$1.json"
 }
 await_verification() { # <verification id> -> its settled outcome
-  for _ in $(seq 100); do
+  for _ in $(seq 600); do
     OUT=$(psql -h "$WORK" -d math -tAc "select outcome from verification where id = $1")
     [[ $OUT != pending ]] && { echo "$OUT"; return 0; }
     sleep 0.1
@@ -966,7 +972,7 @@ EOF
 )
 MERGE_ID=$(patch_submit "fold Gamma into Alpha" "$MERGE")
 MERGE_V=$(patch_verification "$MERGE_ID")
-CHECK_ID=$(for _ in $(seq 100); do
+CHECK_ID=$(for _ in $(seq 600); do
   ID=$(psql -h "$WORK" -d math -tAc "select detail->>'check_id' from verification where id = $MERGE_V")
   [[ -n $ID && -f "$SPOOL_DIR/in/patch-$ID/job.json" ]] && { echo "$ID"; break; }; sleep 0.1
 done)
@@ -975,7 +981,9 @@ python3 -c 'import json,sys; j=json.load(open(sys.argv[1]));
 mods=[m["module"] for m in j["modules"]];
 assert mods == ["MathlibPlus.Alpha", "MathlibPlus.Beta"], mods
 assert j["deleted"] == ["MathlibPlus.Gamma"], j["deleted"]
-assert [m["changed"] for m in j["modules"]] == [True, False]' "$SPOOL_DIR/in/patch-$CHECK_ID/job.json" \
+assert [m["changed"] for m in j["modules"]] == [True, False]
+assert [m["optional"] for m in j["modules"]] == [False, False], j["modules"]
+assert j["modules"][1]["requires"] == ["MathlibPlus.Alpha"], j["modules"]' "$SPOOL_DIR/in/patch-$CHECK_ID/job.json" \
   || fail "the patch job was not the changed modules plus their importers, in build order"
 grep -q 'theorem gamma' "$SPOOL_DIR/in/patch-$CHECK_ID/src/MathlibPlus/Alpha.lean" || fail "the runner was handed unpatched sources"
 
@@ -1004,7 +1012,7 @@ p=[x for x in d["patches"] if x["id"]=="'"$MERGE_ID"'"]; assert p and p[0]["buil
 # it, because its answer was about a library that no longer exists.
 psql -q -h "$WORK" -d math -c "insert into lean_check (source_hash, source, outcome) values ('deadbeef', 'import MathlibPlus.Alpha' || chr(10) || 'example : True := trivial', 'failed')"
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$MERGE_ID\",\"tier\":2,\"note\":\"reviewed patch\"}" | field '["ok"]' > /dev/null
-for _ in $(seq 100); do
+for _ in $(seq 600); do
   STATE=$(psql -h "$WORK" -d math -tAc "select state from patch_publication where contribution_id = '$MERGE_ID'")
   [[ $STATE == published ]] && break; sleep 0.1
 done
@@ -1018,6 +1026,28 @@ git -C "$PATCH_REPO_DIR" status --porcelain | grep -q . && fail "publication lef
   || fail "publication kept a cached check of a module it changed"
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_decl where module = 'MathlibPlus.GroupTheory.Claim1'") == 1 ]] \
   || fail "publication disturbed the index of modules it did not touch"
+
+# Contract: a module that does not build at the base commit is the library's
+# state, not the patch's doing. Touching one must not condemn the patch, and a
+# patch that could build nothing at all verified nothing.
+BROKEN=$(printf 'diff --git a/MathlibPlus/Broken.lean b/MathlibPlus/Broken.lean\n--- a/MathlibPlus/Broken.lean\n+++ b/MathlibPlus/Broken.lean\n@@ -1 +1,2 @@\n theorem broken : 4 = 5 := rfl\n+-- a note that changes nothing\n')
+BROKEN_ID=$(patch_submit "touch a module that does not build" "$BROKEN")
+BROKEN_V=$(patch_verification "$BROKEN_ID")
+BROKEN_CHECK=$(for _ in $(seq 600); do
+  ID=$(psql -h "$WORK" -d math -tAc "select detail->>'check_id' from verification where id = $BROKEN_V")
+  [[ -n $ID && -f "$SPOOL_DIR/in/patch-$ID/job.json" ]] && { echo "$ID"; break; }; sleep 0.1
+done)
+[[ -n $BROKEN_CHECK ]] || fail "a patch to an unbuilt module was never spooled"
+python3 -c 'import json,sys; j=json.load(open(sys.argv[1])); assert j["modules"][0]["optional"] is True, j["modules"]' \
+  "$SPOOL_DIR/in/patch-$BROKEN_CHECK/job.json" || fail "a module with no olean was not marked already-broken"
+rm -rf "$SPOOL_DIR/in/patch-$BROKEN_CHECK"
+mkdir -p "$SPOOL_DIR/out/patch-$BROKEN_CHECK.staging"
+echo '{"ok":true,"built":[],"still_broken":["MathlibPlus.Broken"],"elapsed_ms":10}' \
+  > "$SPOOL_DIR/out/patch-$BROKEN_CHECK.staging/result.json"
+mv "$SPOOL_DIR/out/patch-$BROKEN_CHECK.staging" "$SPOOL_DIR/out/patch-$BROKEN_CHECK"
+[[ $(await_verification "$BROKEN_V") == inconclusive ]] || fail "a patch that built nothing was not inconclusive"
+psql -h "$WORK" -d math -tAc "select detail->>'reason' from verification where id = $BROKEN_V" | grep -q "does not build at this commit" \
+  || fail "a patch that built nothing did not explain why"
 
 echo "all contracts hold"
 

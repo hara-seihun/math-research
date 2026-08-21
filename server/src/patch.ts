@@ -62,6 +62,9 @@ export type PatchDetail = {
   changed_modules?: string[];
   deleted_modules?: string[];
   rebuilt_modules?: string[];
+  /** Modules in the rebuild set that do not build at the base commit either. */
+  already_broken?: string[];
+  still_broken?: string[];
   files?: { status: string; path: string }[];
   built?: string[];
   failed_module?: string;

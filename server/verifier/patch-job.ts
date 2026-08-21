@@ -15,6 +15,18 @@ export type PatchModule = {
   path: string;
   /** Changed by the patch (as opposed to rebuilt because it imports one). */
   changed: boolean;
+  /**
+   * The module does not build at the base commit either — it has no olean in
+   * the library's build tree — so a failure here is the state of the library,
+   * not something the patch broke. A patch that repairs one of these is the
+   * whole point; a patch that merely touches one (the umbrella module, which
+   * cannot build at all, is edited by every patch that adds a file) must not
+   * be blamed for it.
+   */
+  optional: boolean;
+  /** Its imports that are also in this job, so a module whose dependency
+   *  failed is skipped rather than compiled against a missing olean. */
+  requires: string[];
 };
 
 export type PatchJob = {
@@ -30,6 +42,7 @@ export type PatchModuleResult = {
   module: string;
   exit_code?: number;
   timed_out?: boolean;
+  skipped?: boolean;
   output?: string;
 };
 
@@ -38,6 +51,8 @@ export type PatchDecl = { name: string; type: string; axioms: string[]; proof?: 
 export type PatchResult = {
   ok: boolean;
   built: string[];
+  /** Modules that were already broken at the base commit and still are. */
+  still_broken?: string[];
   failed?: PatchModuleResult;
   modules?: PatchModuleResult[];
   /** Declarations of each changed module after the patch. */

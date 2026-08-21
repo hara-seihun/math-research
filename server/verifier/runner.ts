@@ -214,7 +214,20 @@ async function runPatchJob(id: string) {
     const deadline = started + job.timeout_ms;
     const modules: PatchModuleResult[] = [];
     const decls: Record<string, Decl[]> = {};
+    const broken = new Set<string>();
     for (const module of job.modules) {
+      // A module whose dependency did not build cannot build either, and
+      // compiling it would only report the missing olean.
+      const missing = module.requires.find((dep) => broken.has(dep));
+      if (missing) {
+        const report: PatchModuleResult = { module: module.module, skipped: true, output: `${missing} did not build` };
+        modules.push(report);
+        broken.add(module.module);
+        if (module.optional) continue;
+        result.failed = report;
+        result.modules = modules;
+        return;
+      }
       const olean = join(out, `${module.module.replaceAll(".", "/")}.olean`);
       mkdirSync(dirname(olean), { recursive: true });
       const budget = Math.min(TIMEOUT_MS, Math.max(1, deadline - Date.now()));
@@ -227,14 +240,22 @@ async function runPatchJob(id: string) {
       };
       modules.push(report);
       if (compiled.exitCode !== 0 || compiled.timedOut || /declaration uses 'sorry'/.test(compiled.output)) {
+        // A module that was already broken at the base commit is the library's
+        // state, not this patch's doing: record it and carry on.
+        if (module.optional) {
+          broken.add(module.module);
+          rmSync(olean, { force: true });
+          continue;
+        }
         result.failed = report;
         result.modules = modules;
         return;
       }
       result.built.push(module.module);
     }
+    result.still_broken = [...broken];
 
-    for (const module of job.modules.filter((m) => m.changed)) {
+    for (const module of job.modules.filter((m) => m.changed && !broken.has(m.module))) {
       const auditFile = join(work, `Audit_${module.module.replaceAll(".", "_")}.lean`);
       writeFileSync(auditFile, auditSource(module.module));
       const audit = await runLean([`--root=${work}`, auditFile], work, AUDIT_TIMEOUT_MS, { before: out, after: work });

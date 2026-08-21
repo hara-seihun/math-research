@@ -61,7 +61,9 @@ export -f dump
 
 load() { # <jsonl…> — replaces exactly the modules the dumps cover
   local staged=()
-  for f in "$@"; do [[ -s $f ]] && staged+=("$f"); done
+  # A .part is a dump that was interrupted, and loading half a module's
+  # declarations would replace good rows with a truncated set.
+  for f in "$@"; do [[ -s $f && $f != *.part ]] && staged+=("$f"); done
   [[ ${#staged[@]} -gt 0 ]] || { echo "nothing dumped, nothing loaded" >&2; return 1; }
   {
     echo "begin;"

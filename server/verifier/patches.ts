@@ -207,12 +207,14 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
 
   const deleted = new Set<string>();
   const changed = new Set<string>();
+  const isNew = new Set<string>();
   for (const f of files) {
     const target = moduleOf(f.path);
     if (f.status.startsWith("D")) {
       if (target) deleted.add(target);
       continue;
     }
+    if (target && (f.status.startsWith("A") || f.status.startsWith("R"))) isNew.add(target);
     if (f.status.startsWith("R") && f.from) {
       const gone = moduleOf(f.from);
       if (gone) deleted.add(gone);
@@ -251,6 +253,7 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
   // Everything downstream of a changed module is rebuilt: a statement whose
   // meaning moved has to be seen by the proofs that used it.
   const rebuild = new Set(changed);
+  const builtAtBase = (module: string) => existsSync(join(BUILD_LIB, `${module.replaceAll(".", "/")}.olean`));
   const queue = [...changed, ...deleted];
   while (queue.length > 0) {
     const next = queue.shift()!;
@@ -283,6 +286,13 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
   };
   for (const module of rebuild) visit(module);
 
+  // Part of this library does not build today: ~1-2% has bit-rotted and the
+  // umbrella module cannot build at all, which every patch that adds a file
+  // touches. Those modules are built anyway — repairing one is exactly the
+  // patch worth writing — but their failure is the library's state rather
+  // than a regression, so it does not condemn the patch.
+  const alreadyBroken = new Set(order.filter((module) => !builtAtBase(module) && !isNew.has(module)));
+
   const src = join(dir, "src-job");
   rmSync(src, { recursive: true, force: true });
   const modules: PatchModule[] = [];
@@ -298,7 +308,13 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
     }
     mkdirSync(dirname(join(src, rel)), { recursive: true });
     cpSync(from, join(src, rel));
-    modules.push({ module, path: rel, changed: changed.has(module) });
+    modules.push({
+      module,
+      path: rel,
+      changed: changed.has(module),
+      optional: alreadyBroken.has(module),
+      requires: (importsOf.get(module) ?? []).filter((dep) => rebuild.has(dep)),
+    });
   }
 
   return {
@@ -310,6 +326,7 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
       changed_modules: [...changed],
       deleted_modules: [...deleted],
       rebuilt_modules: order.filter((m) => !changed.has(m)),
+      already_broken: [...alreadyBroken],
     },
   };
 }
@@ -395,11 +412,19 @@ export async function collectPatches(inflight: Map<string, number>) {
       const detail: PatchDetail = {
         ...(existing?.detail ?? {}),
         built: parsed.built,
+        still_broken: parsed.still_broken?.length ? parsed.still_broken : undefined,
         elapsed_ms: parsed.elapsed_ms,
         decl_summary: declSummary(parsed.decls),
         foreign_axioms: foreignAxioms(parsed.decls),
       };
-      if (parsed.ok) {
+      if (parsed.ok && parsed.built.length === 0) {
+        await resolvePatchDetail(id, "inconclusive", {
+          ...detail,
+          reason: `nothing in this patch could be built: ${
+            (parsed.still_broken ?? []).join(", ") || "no module was compiled"
+          }, which does not build at this commit either, so the patch verified nothing`,
+        });
+      } else if (parsed.ok) {
         rmSync(oleanDir(id), { recursive: true, force: true });
         mkdirSync(dirname(oleanDir(id)), { recursive: true });
         if (existsSync(join(outDir, "lib"))) cpSync(join(outDir, "lib"), oleanDir(id), { recursive: true });
@@ -455,11 +480,16 @@ export async function judgePatches() {
       deleted_modules: detail.deleted_modules,
       rebuilt_modules: detail.rebuilt_modules?.length,
       built: detail.built?.length,
+      still_broken: detail.still_broken,
       decl_summary: detail.decl_summary,
       errors: detail.errors,
       note:
         row.outcome === "passed"
-          ? "applies to the library and every module it touches, plus everything importing them, builds against the pinned Mathlib. Publication happens if review promotes it to T2."
+          ? `applies to the library, and every module it touches plus everything importing them builds against the pinned Mathlib${
+              detail.still_broken?.length
+                ? `. ${detail.still_broken.join(", ")} does not build here, but did not build before the patch either, so it is not held against it`
+                : ""
+            }. Publication happens if review promotes it to T2.`
           : undefined,
     });
   }

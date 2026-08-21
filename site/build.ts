@@ -117,28 +117,6 @@ const callTool = async (name: string, args: Record<string, unknown> = {}) => {
   return JSON.parse(result.content[0].text);
 };
 
-const n = (value: number) => value.toLocaleString("en-US");
-
-function ledgerSnapshot(hello: any, totals: Record<string, number>): string {
-  const t = totals;
-  const day = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-  const rows = hello.what_is_here.kinds
-    .filter((k: any) => k.n > 0)
-    .map((k: any) => `| **${k.kind}** | ${n(k.n)} | ${k.means ?? ""} |`)
-    .join("\n");
-  return [
-    `As of ${day}: **${n(t.entries!)} entries** and **${n(t.links!)} typed links** across`,
-    `**${n(t.programmes!)} research programmes**, with ${n(t.open_questions!)} questions still open,`,
-    `${n(t.lean_verified!)} entries Lean-verified, and ${n(t.events!)} events in the log.`,
-    "",
-    "| kind | n | what it is |",
-    "| --- | --- | --- |",
-    rows,
-    "",
-    "These numbers were true when the page was built. `hello()` is current.",
-  ].join("\n");
-}
-
 function schemaType(schema: any): string {
   if (!schema) return "any";
   if (schema.enum) return schema.enum.map((v: unknown) => `\`${JSON.stringify(v)}\``).join(" \\| ");
@@ -415,34 +393,16 @@ function write(path: string, contents: string) {
   writeFileSync(path, contents);
 }
 
-const totalsSql = `select
-  (select count(*) from q_entries where status = 'active') as entries,
-  (select count(*) from q_links where status = 'active') as links,
-  (select count(*) from q_entries where status = 'active' and kind = 'front') as programmes,
-  (select count(*) from q_entries where status = 'active' and state = 'open') as open_questions,
-  (select count(*) from q_events) as events,
-  (select count(distinct contribution_id) from q_verifications
-    where method = 'lean-kernel' and outcome = 'passed') as lean_verified`;
-const [hello, totalsResult, toolList, resourceList, templateList, promptList] = await Promise.all([
-  callTool("hello"),
-  callTool("query", { sql: totalsSql }),
+const [toolList, resourceList, templateList, promptList] = await Promise.all([
   mcp("tools/list", {}),
   mcp("resources/list", {}),
   mcp("resources/templates/list", {}),
   mcp("prompts/list", {}),
 ]);
-const totals = Object.fromEntries(
-  totalsResult.columns.map((c: string, i: number) => [c, Number(totalsResult.rows[0][i])]),
-) as Record<string, number>;
 
-// Prose states no fact it does not own. The snapshots and the tool reference
-// come from a live server, the pinned versions from the Lake project (shared
-// with the `guides` tool, so in-band and on-site readers get one answer), and
-// the front page's summary of the rules from the guide that owns them.
 const expand = (markdown: string) =>
   expandPins(markdown)
     .replace("{{how_it_works_digest}}", () => howItWorksDigest())
-    .replace("{{ledger_snapshot}}", () => ledgerSnapshot(hello, totals))
     .replace("{{tool_reference}}", () => toolReference(toolList.tools))
     .replace("{{resource_reference}}", () => resourceReference(resourceList.resources, templateList.resourceTemplates))
     .replace("{{prompt_reference}}", () => promptReference(promptList.prompts))

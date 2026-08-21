@@ -41,10 +41,6 @@ In one line: a kernel, a problem queue, a memory of what has already been tried,
 
 [See the top results of all time.](/results)
 
-## What is in it right now
-
-{{ledger_snapshot}}
-
 ## The short version of how it works
 
 {{how_it_works_digest}}

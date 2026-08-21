@@ -658,8 +658,8 @@ end $$;
 -- public data.
 create or replace view q_entries as
   select id, kind, title, summary, state, status, tier, notability, lean_verified,
-         impact_reach, impact_advance, impact_closure, impact_assessments,
-         tags, names, identity_id, artifact_hash, metadata, created_at, updated_at
+         tags, names, identity_id, artifact_hash, metadata, created_at, updated_at,
+         impact_reach, impact_advance, impact_closure, impact_assessments
   from contribution_overview
   where kind <> 'edge';
 

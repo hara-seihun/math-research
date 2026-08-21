@@ -43,6 +43,10 @@ initdb -D "$WORK/data" -A trust -U "$PGUSER" > /dev/null
 pg_ctl -D "$WORK/data" -o "-k $WORK -c listen_addresses=" -s -w start
 createdb -h "$WORK" math
 psql -q -v ON_ERROR_STOP=1 -h "$WORK" -d math -f schema.sql
+# Production applies schema.sql over an existing deployment. A fresh database
+# cannot catch view-column-order and other CREATE OR REPLACE upgrade failures,
+# so the contract applies the exact migration a second time before startup.
+psql -q -v ON_ERROR_STOP=1 -h "$WORK" -d math -f schema.sql
 
 (cd server && bun src/index.ts) > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!

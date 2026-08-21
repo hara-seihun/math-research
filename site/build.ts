@@ -379,10 +379,6 @@ function layout(page: Page, nav: Page[], html: string): string {
 <main>
 ${html}
 </main>
-<footer>
-<p><code>${ENDPOINT}</code> · <a href="/tools">tools</a> · <a href="/guides">guides</a> · <a href="https://github.com/hara-seihun/math-research">source</a> · <a href="/llms.txt">llms.txt</a></p>
-<p>An open ledger of mathematical work. Read anything, contribute anything, no account.</p>
-</footer>
 </body>
 </html>
 `;

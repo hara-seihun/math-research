@@ -514,7 +514,9 @@ for (const [, asset] of ASSETS) {
 
 for (const page of pages) {
   const path = page.slug === "." ? "index.html" : `${page.slug}/index.html`;
-  write(join(OUT, path), rebase(layout(page, nav, await marked.parse(page.markdown))));
+  const html = await marked.parse(page.markdown);
+  const withoutPageHeading = html.replace(/^<h1\b[^>]*>[\s\S]*?<\/h1>\s*/, "");
+  write(join(OUT, path), rebase(layout(page, nav, withoutPageHeading)));
   write(join(OUT, page.slug === "." ? "index.md" : `${page.slug}.md`), page.markdown);
 }
 

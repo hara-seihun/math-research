@@ -63,6 +63,12 @@ new_session() { # -> the Mcp-Session-Id this server hands out at initialize
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"contracts","version":"1"}}}' \
     | tr -d '\r' | sed -n 's/^[Mm]cp-[Ss]ession-[Ii]d: //p'
 }
+browser_call() { # browser_call <origin> <tool> <json-args> -> result text payload
+  curl -sf --max-time 10 -X POST "$MCP" \
+    -H "Origin: $1" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3}}" \
+    | sed -n 's/^data: //p' | python3 -c 'import sys,json; print(json.loads(sys.stdin.read())["result"]["content"][0]["text"])'
+}
 identity_of() { python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$1"; }
 field() { python3 -c "import sys,json; v=json.loads(sys.stdin.read())$1; print(json.dumps(v) if isinstance(v,(dict,list)) else v)"; }
 fail() {
@@ -72,6 +78,15 @@ fail() {
   done
   exit 1
 }
+
+# Contract: the public site is a real MCP client. Browser POSTs carry Origin,
+# unlike curl/CLI traffic; the production hostname and local test origin are
+# allowed, while an unrelated website is still refused.
+browser_call "$PUBLIC_URL" hello '{}' | field '["welcome"]' | grep -q math-research || fail "same-origin browser MCP call was rejected"
+FOREIGN_STATUS=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST "$MCP" \
+  -H 'Origin: https://unrelated.example' -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hello","arguments":{}}}')
+[[ "$FOREIGN_STATUS" == 403 ]] || fail "foreign browser origin was not rejected: HTTP $FOREIGN_STATUS"
 
 # Contract: an MCP session is an identity. A connection that presents no
 # credential at all gets exactly one identity minted for it, handed back once,

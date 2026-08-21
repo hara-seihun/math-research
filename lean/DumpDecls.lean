@@ -1,8 +1,8 @@
 /-
 Declaration dumper: the index behind `search_decls`.
 
-Imports already-built modules and writes one JSON object per declaration —
-name, module, pretty-printed statement, whether its type is a proposition —
+Imports already-built modules and writes one JSON object per declaration,
+giving its name, module, pretty-printed statement and whether its type is a proposition,
 so the ledger can answer "what is there to use?" from Postgres in a
 millisecond instead of a twenty-second kernel round trip.
 

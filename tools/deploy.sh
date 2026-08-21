@@ -4,7 +4,7 @@
 # rebuild the onboarding site against the freshly restarted server.
 #
 #   tools/deploy.sh          everything
-#   tools/deploy.sh --site   site only — no service is touched, so it is safe
+#   tools/deploy.sh --site   site only, touching no service, so it is safe
 #                            to run while Lean checks are in flight
 #
 # schema.sql is applied on every deploy. It is written to be re-appliable:
@@ -33,7 +33,7 @@ fi
 pull='
   cd /srv/math-research
   if ! sudo -u math git diff --quiet -- site/content guides; then
-    echo "unpublished /admin draft in site/content or guides — publish or revert it at https://lemma.ing/admin" >&2
+    echo "unpublished /admin draft in site/content or guides, so publish or revert it at https://lemma.ing/admin" >&2
     exit 1
   fi
   sudo -u math git pull -q
@@ -76,7 +76,7 @@ site='
   sudo -u math env MATH_MCP_URL=http://127.0.0.1:8787/mcp bun run build.ts
 '
 
-# Joined with newlines, not `;` — $roll and $site are multi-line and a
+# Joined with newlines rather than `;`, because $roll and $site are multi-line and a
 # semicolon landing at the start of a line is a syntax error on the far side.
 case "${1-}" in
   --site) steps=$(printf '%s\n' "$pull" "$site") ;;

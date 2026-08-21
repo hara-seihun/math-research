@@ -1,7 +1,7 @@
 # The software-engineering skill requires a test pipeline to finish in under a
 # minute, so the pipeline enforces it on itself: a suite that wants longer is a
 # suite to rewrite, not a limit to raise. The usual cause is waiting on a clock
-# instead of on the state you actually need — this one spent 56 of its 80
+# instead of on the state you actually need. This one spent 56 of its 80
 # seconds in `sleep 0.1`, which was hiding a five second wake-up gap in the
 # verifier that every real submission was paying too.
 #

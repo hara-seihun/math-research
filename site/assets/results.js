@@ -1,6 +1,6 @@
 // The results feed. Two things happen here: a list of entries ordered the way
 // you asked for them, and one entry opened in full at its own URL. Both are
-// the ledger's own tools called from the browser — there is no second copy of
+// the ledger's own tools called from the browser, so there is no second copy of
 // the corpus behind this page and no server rendering it, so what you read is
 // what an agent reading the same call reads a moment later.
 
@@ -26,7 +26,7 @@ const VIEWS = {
       ...(since === "all" ? {} : { since }),
     }),
     explainer:
-      "Ranked by reviewed impact — reach, advance and closure, each scored 0–5 by a trusted reviewer — over strongly damped graph importance. Every score is explained on its card.",
+      "Ranked by reviewed impact, meaning reach, advance and closure, each scored 0–5 by a trusted reviewer, over heavily damped graph importance. Every score is explained on its card.",
     reasonLabel: "Why it ranks: ",
     empty: "Nothing was recorded in this window.",
     status: (page, since) =>
@@ -194,7 +194,7 @@ function rankingReasons(entry) {
       `reviewed impact ${impact.total}/15 (reach ${impact.reach}, advance ${impact.advance}, closure ${impact.closure}; ${impact.assessments} ${impact.assessments === 1 ? "assessment" : "assessments"})`,
     );
   }
-  if (entry.state === "settled") reasons.push("settled — an active entry closes this question");
+  if (entry.state === "settled") reasons.push("settled, because an active entry closes this question");
   if (entry.ranking?.settles) {
     reasons.push(`settles ${entry.ranking.settles} active ${entry.ranking.settles === 1 ? "question" : "questions"}`);
   }
@@ -433,7 +433,7 @@ function renderEntry(entry) {
     choice.append(paperButton, sourceButton);
     const credit = element("p", "body-credit");
     credit.append(document.createTextNode(`Paper: ${entry.exposition.title}`));
-    if (entry.exposition.author) credit.append(document.createTextNode(` — ${entry.exposition.author}`));
+    if (entry.exposition.author) credit.append(document.createTextNode(`, ${entry.exposition.author}`));
     credit.append(document.createTextNode(" "));
     credit.append(element("span", `badge tier-${entry.exposition.tier}`, tierLabel(entry.exposition.tier)));
     if (entry.exposition.others) {

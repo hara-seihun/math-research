@@ -319,7 +319,7 @@ console.log(`withdrawn: ${withdrawn} (${entries_gone} entries, ${edges_gone} lin
 // ——— Kernel verifications ————————————————————————————————————————————
 // Only a *proved* declaration is a kernel check. `lean_statement` names Lean
 // that states the entry and proves nothing, so it is provenance and never a
-// verification — and an entry demoted from one to the other loses the
+// verification, and an entry demoted from one to the other loses the
 // verification an earlier load gave it.
 const [{ verified }] = await db<{ verified: number }[]>`
   with added as (

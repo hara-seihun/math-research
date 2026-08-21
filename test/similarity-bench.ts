@@ -260,7 +260,7 @@ class Bm25 {
 type Case = { query: string; gold: number; pool: number[] };
 
 /** One normalizer's view of a corpus, computed once and shared by every
- *  scorer measured against it — otherwise nine scorers normalize the same
+ *  scorer measured against it, since otherwise nine scorers normalize the same
  *  45,000 texts nine times, which was most of the benchmark's runtime. */
 class Normalized {
   private readonly byIndex = new Map<number, string>();

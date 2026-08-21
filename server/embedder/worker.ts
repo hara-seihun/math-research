@@ -9,7 +9,7 @@ const BATCH = 16;
 // bge-small hard-caps at 512 tokens per sequence and dense math text tokenizes
 // heavily, so we cap chars for the batch attempt and, if a batch trips the
 // limit, fall back to per-item embedding with shrinking caps down to a floor
-// that is always under 512 tokens — one long entry never stalls the backfill.
+// that is always under 512 tokens, so one long entry never stalls the backfill.
 const BATCH_CHARS = 900;
 const SHRINK = [900, 600, 400, 256];
 

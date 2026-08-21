@@ -20,7 +20,7 @@ manufacture a deliverable, submission is not the end of the session, honest
 failure is productive) with `check_lean` and `fast-math` named in all three.
 Still open: whether depth should be enforced structurally rather than by
 prompt, whether shard creation should keep funding lane demand, and
-literature as `source` contributions. Launches are still paused — the next
+literature as `source` contributions. Launches are still paused, and the next
 step is a supervised wave to see whether the new contract changes session
 depth.
 
@@ -42,7 +42,7 @@ touches no service and is safe while Lean checks are in flight.
 ## Tune the discovery policy against real corpus behaviour
 
 The notability weights and the topic taxonomy now live in the database and are
-tunable live over the MCP by a trusted operator — query `q_config` and
+tunable live over the MCP by a trusted operator. Query `q_config` and
 `q_topic_rules` for the current values, and use `set_tuning` to change them
 (deep-merges weights and recomputes notability; replaces topic rules and
 reclassifies the corpus).
@@ -56,14 +56,14 @@ formalization is evidence rather than a substitute for scope. The `/results`
 page makes the ranking and its concrete graph signals directly visible over
 any window.
 
-Still to do — empirical tuning as that feed accumulates examples:
+Still to do, as empirical tuning while that feed accumulates examples:
 
 - **Notability weights** (`kind`, `rel`, `tier`, `edge_tier`, `settle`, `lean`):
   compare `search({order_by:'notability'})` and `/results` against trusted
   pairwise judgments, especially for dense campaigns and hub problems. Decide
   whether `front`/`edge` kinds should stay at 0 and whether the remaining
   relation weights preserve broad results over narrow but heavily linked ones.
-- **Topic taxonomy** (`topic_rule` patterns): ~49% of the corpus is untagged —
+- **Topic taxonomy** (`topic_rule` patterns): ~49% of the corpus is untagged, so
   decide whether that's fine (terse lemma statements) or the patterns need
   broadening; check for over/under-triggering topics and add missing subject
   areas. Patterns are POSIX/advanced regex matched against lowercased text.

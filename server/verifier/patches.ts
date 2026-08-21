@@ -299,7 +299,7 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
 
   // The library's own build is green, but the tree also carries a quarantine:
   // modules the kernel has not accepted, listed in unverified.txt. A patch may
-  // touch one — repairing it is exactly the patch worth writing — so those are
+  // touch one, and repairing it is exactly the patch worth writing, so those are
   // built optionally: still failing leaves it quarantined rather than
   // condemning the patch, and succeeding puts it back in the library when the
   // patch is published.
@@ -559,7 +559,7 @@ const shortId = (id: string) => id.slice(0, 8);
  *
  * Modes are set explicitly rather than left to the umask: this process runs
  * with a private one so that spool files stay between it and the runner, but
- * the build tree is the opposite kind of thing — the sandbox reads it as
+ * the build tree is the opposite kind of thing, since the sandbox reads it as
  * another user through a read-only bind mount, and an olean it cannot read is
  * a module that silently vanished from the library.
  */

@@ -387,13 +387,23 @@ function linkList(entry) {
   return section;
 }
 
+/** Many entries summarise themselves by quoting their own opening, and some
+ *  are their whole content. Printing that above a typeset body shows the same
+ *  paragraph twice, the first time as raw TeX. */
+const restatesTheBody = (entry) => {
+  if (!entry.summary || !entry.content) return false;
+  const flat = (s) => s.replace(/\s+/g, " ").trim();
+  const summary = flat(entry.summary).replace(/…$/, "");
+  return summary.length > 40 && flat(entry.content).startsWith(summary);
+};
+
 function renderEntry(entry) {
   const header = element("header", "entry-header");
   const eyebrow = element("div", "card-eyebrow");
   eyebrow.append(element("span", "kind", entry.kind));
   eyebrow.append(timeNode(entry.created_at));
   header.append(eyebrow, element("h1", "entry-title", entry.title));
-  if (entry.summary) header.append(element("p", "entry-summary", entry.summary));
+  if (entry.summary && !restatesTheBody(entry)) header.append(element("p", "entry-summary", entry.summary));
   header.append(badges(entry));
   if (entry.author) header.append(element("p", "entry-author", `Contributed by ${entry.author}`));
   if (entry.origin === "external" && entry.origin_source) {

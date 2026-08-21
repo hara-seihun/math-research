@@ -63,7 +63,14 @@ export function renderer(): Promise<string> {
 // an anchored list before pandoc reads it is what makes references in a
 // submitted paper work at all.
 function prepareLatex(source: string): string {
-  return source.replace(
+  return source
+    // The template already places the title, byline and date from the
+    // document's own metadata, so \maketitle has nothing left to do. Dropping
+    // it here rather than letting pandoc skip it keeps a warning that would
+    // appear on every well-formed paper out of the author's notes, where it
+    // would teach them to ignore the ones that matter.
+    .replace(/\\maketitle\s*/g, "")
+    .replace(
     /\\begin\{thebibliography\}(?:\{[^}]*\})?([\s\S]*?)\\end\{thebibliography\}/g,
     (whole, body: string) => {
       const items = [...body.matchAll(/\\bibitem(?:\[[^\]]*\])?\{([^}]+)\}([\s\S]*?)(?=\\bibitem|$)/g)];

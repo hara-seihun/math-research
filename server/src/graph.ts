@@ -312,12 +312,14 @@ export async function related(args: RelatedArgs) {
   /** The title line, for the lexical probe. */
   let aboutText: string;
   let selfId: string | null = null;
+  let embedded = false;
   if (args.id) {
-    const [row] = await sql<{ content: string; title: string; summary: string }[]>`
-      select a.content, c.title, c.summary from contribution c
+    const [row] = await sql<{ content: string; title: string; summary: string; embedded: boolean }[]>`
+      select a.content, c.title, c.summary, c.embedding is not null as embedded from contribution c
       join artifact a on a.hash = c.artifact_hash where c.id = ${args.id}`;
     if (!row) return { error: "no contribution with that id" };
     selfId = args.id;
+    embedded = row.embedded;
     queryText = `${row.title}\n${row.summary}\n${row.content}`;
     aboutText = `${row.title}\n${row.summary}`;
   } else if (args.text) {
@@ -328,22 +330,28 @@ export async function related(args: RelatedArgs) {
   }
 
   const wantsContent = args.method === "ncd";
-  const vector = args.method === "lexical" ? null : await embed(queryText);
-  if (!vector && args.method === "semantic") {
+  // An entry that is already embedded is its own probe: re-embedding its text
+  // costs a second and a half on a CPU embedder to recompute a vector sitting
+  // in the row.
+  const probeVector =
+    args.method === "lexical" ? null
+    : embedded ? sql`(select embedding from contribution where id = ${selfId}::uuid)`
+    : await embed(queryText).then((v) => (v ? sql`${asVector(v)}::vector` : null));
+  if (!probeVector && args.method === "semantic") {
     return { error: "semantic search is warming up, so use method 'ncd' or 'lexical' for now." };
   }
 
   type Candidate = { id: string; content: string | null; similarity?: number } & Record<string, unknown>;
   let candidates: Candidate[];
-  if (vector) {
+  if (probeVector) {
     candidates = await sql<Candidate[]>`
       select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source, c.created_at,
-             round((1 - (c.embedding <=> ${asVector(vector)}::vector))::numeric, 4)::float8 as similarity,
+             round((1 - (c.embedding <=> ${probeVector}))::numeric, 4)::float8 as similarity,
              case when ${wantsContent} then left(a.content, 4000) end as content
       from contribution c left join artifact a on ${wantsContent} and a.hash = c.artifact_hash
       where c.kind <> 'edge' and c.status = 'active' and c.embedding is not null
         and (${selfId}::uuid is null or c.id <> ${selfId})
-      order by c.embedding <=> ${asVector(vector)}::vector
+      order by c.embedding <=> ${probeVector}
       limit ${wantsContent ? 150 : args.limit}`;
   } else {
     // Words, for the caller who asked for words: a title or a typed phrase,

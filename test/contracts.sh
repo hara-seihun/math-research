@@ -664,6 +664,105 @@ call search '{"kind":"problem","state":"settled","settled_by_origin":"ledger","l
 call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"note\":\"withdrawn\"}" | field '["ok"]' > /dev/null
 [[ $(call frontier "{\"ref\":\"$SQ\"}" | field '["state"]') == open ]] || fail "retracting the answer did not reopen the question"
 
+# ——— A theory is an object, not a document ———————————————————————————————
+# The family only earns its keep if a framework can be recorded once and used
+# by someone who never read it: the vocabulary has to be resolvable by name,
+# the dictionary has to be rows rather than prose, and a reviewed equivalent
+# reformulation has to actually make two questions one question. All three are
+# checked end to end here, including the review gate that stops anyone from
+# closing the corpus by asserting equivalences.
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theory\",\"title\":\"a framework with no stated scope\",\"summary\":\"s\",\"content\":\"c.\"}" \
+  | field '["error"]' | grep -qi "applies_to" || fail "a theory was accepted without saying what it applies to"
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"not a theory\",\"summary\":\"s\",\"content\":\"c.\",\"applies_to\":\"everything\"}" \
+  | field '["error"]' | grep -qi "belongs on" || fail "a theory-only field was accepted on another kind"
+
+THEORY=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theory\",\"title\":\"contract theory of widget extensions\",\"summary\":\"s\",\"content\":\"c.\",\"applies_to\":\"finite widget extensions W/V\",\"introduces\":[{\"term\":\"widget group\",\"statement\":\"The automorphisms of W fixing V.\",\"names\":[\"Wid(W/V)\"]},{\"term\":\"widget-solvable\",\"statement\":\"Built from a tower of widget radicals.\"}]}")
+echo "$THEORY" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["introduced"])==2 and all(x["id"] for x in d["introduced"])' \
+  || fail "a theory did not mint its vocabulary: $(echo "$THEORY" | head -c 300)"
+THEORY=$(echo "$THEORY" | field '["id"]')
+# The point of minting them: an agent who never read the write-up can ask for
+# the concept by the name it was introduced under.
+call get '{"ref":"Wid(W/V)"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["kind"]=="definition" and d["matched_by"]=="name"' \
+  || fail "a minted definition was not resolvable by its alias"
+
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"correspondence\",\"title\":\"dictionary with no rows\",\"summary\":\"s\",\"content\":\"c.\",\"via\":\"$THEORY\",\"applies_to\":\"a\",\"transports_to\":\"b\",\"fidelity\":\"equivalence\"}" \
+  | field '["error"]' | grep -qi "dictionary" || fail "a correspondence was accepted with no dictionary rows"
+PILLAR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"the widget correspondence theorem\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+CORR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"correspondence\",\"title\":\"the fundamental widget dictionary\",\"summary\":\"s\",\"content\":\"c.\",\"via\":\"$THEORY\",\"applies_to\":\"intermediate widgets of W/V\",\"transports_to\":\"subgroups of Wid(W/V)\",\"fidelity\":\"equivalence\",\"dictionary\":[{\"source\":\"intermediate widget U\",\"target\":\"subgroup H\",\"note\":\"inclusion-reversing\",\"proof\":\"the widget correspondence theorem\"},{\"source\":\"degree [U:V]\",\"target\":\"index [G:H]\"}]}" | field '["id"]')
+# A row's proof is stored as the id it resolved to, not the phrase that was
+# typed, and it is a link the graph can see.
+psql -h "$WORK" -d math -tAc "select count(*) from q_dictionary where correspondence_id = '$CORR'" | grep -q '^2$' \
+  || fail "the dictionary did not unfold into rows"
+[[ $(psql -h "$WORK" -d math -tAc "select proof from q_dictionary where correspondence_id = '$CORR' and row_no = 1") == "$PILLAR" ]] \
+  || fail "a dictionary row's proof was not resolved to an id"
+psql -h "$WORK" -d math -tAc "select count(*) from edge where src = '$CORR' and dst = '$PILLAR' and rel = 'rests-on'" | grep -q '^1$' \
+  || fail "a proved dictionary row did not record a rests-on link"
+call theories "{\"ref\":\"contract theory of widget extensions\"}" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["applies_to"].startswith("finite widget"), d["applies_to"]
+assert len(d["vocabulary"]) == 2 and all(v["statement"] for v in d["vocabulary"])
+rows = d["dictionaries"][0]["rows"]
+assert len(rows) == 2 and rows[0]["source"] and rows[0]["target"], rows
+' || fail "theories did not serve the framework's vocabulary and dictionary"
+
+# Contract: a reformulation needs all three of what it restates, what it
+# restated it through, and how faithful the restatement is.
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"reformulation\",\"title\":\"a restatement out of nowhere\",\"summary\":\"s\",\"content\":\"c.\"}" \
+  | field '["error"]' | grep -qi "reformulates" || fail "a reformulation was accepted with nothing to reformulate"
+WQ1=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"is every widget extension solvable\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"reformulation\",\"title\":\"restated with a made-up fidelity\",\"summary\":\"s\",\"content\":\"c.\",\"reformulates\":\"$WQ1\",\"via\":\"$THEORY\",\"fidelity\":\"probably\"}" \
+  | field '["error"]' | grep -qi "fidelity" || fail "a reformulation was accepted with an undeclared fidelity"
+
+REF=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"reformulation\",\"title\":\"is every widget group solvable\",\"summary\":\"s\",\"content\":\"c.\",\"reformulates\":\"$WQ1\",\"via\":\"$THEORY\",\"fidelity\":\"equivalent\"}" | field '["id"]')
+WANS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"every widget group is solvable\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$REF\",\"rel\":\"answers\"}]}" | field '["id"]')
+# Asserted, not reviewed: nothing transports. Otherwise anyone could close
+# every open question in the corpus by claiming an equivalence.
+[[ $(call frontier "{\"ref\":\"$WQ1\"}" | field '["state"]') == open ]] \
+  || fail "an unreviewed equivalence settled a question"
+REF_EDGE=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where src='$REF' and dst='$WQ1' and rel='reformulates'")
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$REF\",\"tier\":2,\"note\":\"the translation checks out\"}" > /dev/null
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$REF_EDGE\",\"tier\":2,\"note\":\"and so does the link\"}" > /dev/null
+WF=$(call frontier "{\"ref\":\"$WQ1\"}")
+echo "$WF" | WANS="$WANS" REF="$REF" python3 -c '
+import os, sys, json
+d = json.load(sys.stdin)
+assert d["state"] == "settled", "a reviewed equivalence did not carry the settlement home"
+assert not d["answered_by"], "nothing answers this question directly"
+through = d["settled_through"]
+assert any(t["through"]["id"] == os.environ["REF"] and t["answered_by"]["id"] == os.environ["WANS"] for t in through), through
+assert "equivalence" in d["stands"], d["stands"]
+assert any(r["id"] == os.environ["REF"] and r["transports_settlement"] for r in d["reformulations"])
+' || fail "frontier did not explain a transported settlement: $(echo "$WF" | head -c 400)"
+call theories "{\"for\":\"$WQ1\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);t=d["transported"];assert t and t[0]["transports_settlement"] and t[0]["via"]' \
+  || fail "theories({for}) did not report the transport"
+# And it is as reversible as any other settlement.
+call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$WANS\",\"note\":\"withdrawn\"}" > /dev/null
+[[ $(call frontier "{\"ref\":\"$WQ1\"}" | field '["state"]') == open ]] \
+  || fail "withdrawing the answer left the transported settlement standing"
+
+# Contract: a one-directional restatement is progress, never a closure, at any
+# tier. This is the difference the fidelity field exists to record.
+WQ2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"is every widget extension tame\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+REF2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"reformulation\",\"title\":\"a sufficient widget-group condition for tameness\",\"summary\":\"s\",\"content\":\"c.\",\"reformulates\":\"$WQ2\",\"via\":\"$THEORY\",\"fidelity\":\"implies\"}" | field '["id"]')
+REF2_EDGE=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where src='$REF2' and dst='$WQ2' and rel='reformulates'")
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$REF2\",\"tier\":2,\"note\":\"correct, but one way\"}" > /dev/null
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$REF2_EDGE\",\"tier\":2,\"note\":\"n\"}" > /dev/null
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"the sufficient condition holds\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$REF2\",\"rel\":\"answers\"}]}" > /dev/null
+[[ $(call frontier "{\"ref\":\"$WQ2\"}" | field '["state"]') == open ]] \
+  || fail "a one-directional reformulation closed the question it only implies"
+
+# Contract: the same transport rule reads a bare equivalence link, so two
+# questions already in the corpus can be identified without a write-up.
+EQ1=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"the widget parity question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+EQ2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"the gadget parity question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+EQ_EDGE=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$EQ1\",\"dst\":\"$EQ2\",\"rel\":\"equivalent-to\",\"note\":\"same question in two vocabularies\"}" | field '["edge_id"]')
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"gadget parity, resolved\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$EQ2\",\"rel\":\"answers\"}]}" > /dev/null
+[[ $(call frontier "{\"ref\":\"$EQ1\"}" | field '["state"]') == open ]] || fail "a T0 equivalence link transported a settlement"
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$EQ_EDGE\",\"tier\":2,\"note\":\"the identification is right\"}" > /dev/null
+[[ $(call frontier "{\"ref\":\"$EQ1\"}" | field '["state"]') == settled ]] \
+  || fail "a reviewed equivalence link did not identify the two questions"
+
 # Contract: news is a cursor, not a clock. A reader hands back the sequence
 # number it was given and gets exactly the events it has not seen -- no
 # interval to guess, no double-read, no gap -- and the packet carries the

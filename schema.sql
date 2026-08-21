@@ -243,6 +243,10 @@ create index if not exists contribution_names_norm_idx on contribution using gin
 create index if not exists contribution_names_trgm_idx on contribution using gin (names_text gin_trgm_ops);
 drop index if exists contribution_names_idx;
 create index if not exists contribution_embedding_idx on contribution using hnsw (embedding vector_cosine_ops);
+-- The default ef_search of 40 caps every vector query at roughly forty rows
+-- however many were asked for, which quietly turned a 150-candidate
+-- nomination into 39. Related and search both ask for more than that.
+alter role current_user set hnsw.ef_search = 200;
 create index if not exists contribution_identity_idx on contribution (identity_id, created_at);
 create index if not exists contribution_artifact_idx on contribution (artifact_hash);
 create index if not exists contribution_state_idx on contribution (kind, state, notability desc);
@@ -267,6 +271,11 @@ create table if not exists edge (
 );
 create index if not exists edge_src_idx on edge (src, rel);
 create index if not exists edge_dst_idx on edge (dst, rel);
+-- The transport relation (see settlement_transport) is asked for by relation
+-- alone, on every write, and the relations that carry it are a few dozen rows
+-- out of a hundred thousand.
+create index if not exists edge_transport_idx on edge (rel)
+  where rel in ('reformulates', 'equivalent-to');
 
 -- ——— Review claims ——————————————————————————————————————————————————————
 -- A short lease on one entry's *adjudication*, and on nothing else.
@@ -774,12 +783,56 @@ begin
 end $$;
 
 -- ——— Work-item state ———————————————————————————————————————————————————
--- A question is settled when something active in the graph answers it. That
--- is a fact about the edges, so it is derived here rather than declared, and
--- it stays true when a later answer arrives or a link is retracted. Routes
--- and other work items carry a state their author set; this only ever touches
--- question kinds.
+-- A question is settled when something active in the graph answers it — or
+-- when something answers a statement this question has been *reformulated*
+-- into. That second clause is what makes a theory more than a document: the
+-- point of inventing Galois theory is that settling the group question
+-- settles the field question, and a ledger that leaves the field question
+-- reading 'open' has recorded the theory without believing it.
+--
+-- Transport is deliberately narrow, because a wrong equivalence would close
+-- real questions:
+--   * a kind='reformulation' entry with fidelity 'equivalent', linked to what
+--     it restates with rel='reformulates'; or a bare rel='equivalent-to' link;
+--   * the entry and the link must both be at T2 (canon). One-directional
+--     fidelities ('implies', 'implied-by') and unreviewed claims transport
+--     nothing — they are progress, and frontier shows them as such.
+-- Equivalence is symmetric and composes, so this is the reachability closure
+-- of that reviewed relation, depth-capped because a chain of six reviewed
+-- equivalences is already further than any reader will follow.
+create or replace function settlement_transport() returns table (a uuid, b uuid)
+  language sql stable as $$
+  with pairs as (
+    select e.src as a, e.dst as b
+    from edge e
+    join contribution ec on ec.id = e.contribution_id and ec.status = 'active' and ec.tier >= 2
+    join contribution s on s.id = e.src and s.status = 'active'
+    join contribution d on d.id = e.dst and d.status = 'active'
+    where (e.rel = 'reformulates' and s.kind = 'reformulation' and s.tier >= 2
+           and s.metadata->>'fidelity' = 'equivalent')
+       or e.rel = 'equivalent-to'
+  )
+  select a, b from pairs union select b, a from pairs
+$$;
+
+-- Every statement a question is the same question as, itself included, out to
+-- the depth cap. One place, so refresh_state's derivation and frontier's
+-- explanation of a transported settlement cannot disagree.
+create or replace function transport_closure(ids uuid[]) returns table (root uuid, node uuid, depth int)
+  language sql stable as $$
+  with recursive sym as materialized (select a, b from settlement_transport()),
+  reach as (
+    select t as root, t as node, 0 as depth from unnest(ids) t
+    union
+    select r.root, s.b, r.depth + 1 from reach r join sym s on s.a = r.node where r.depth < 6
+  )
+  select root, node, depth from reach
+$$;
+
 create or replace function refresh_state(ids uuid[] default null) returns void language plpgsql as $$
+declare
+  targets uuid[];
+  settled uuid[];
 begin
   if ids is null then
     perform pg_advisory_xact_lock(hashtext('refresh_state'));
@@ -787,19 +840,24 @@ begin
     perform pg_advisory_xact_lock_shared(hashtext('refresh_state'));
     perform 1 from contribution where id = any (ids) order by id for no key update;
   end if;
+  select array_agg(id) into targets from contribution
+   where kind in ('problem', 'conjecture') and (ids is null or id = any (ids));
+  if targets is null then return; end if;
+  -- One closure for the whole batch, not one per question: the transport
+  -- relation is a scan of the edge table, and a full refresh has every
+  -- question in the corpus to decide.
+  select coalesce(array_agg(distinct r.root), '{}') into settled
+    from transport_closure(targets) r
+    join edge e on e.dst = r.node
+    join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+    join contribution src on src.id = e.src and src.status = 'active'
+   where e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves');
   update contribution c
      set state = case
            when c.status <> 'active' then 'retired'
-           when exists (
-             select 1 from edge e
-             join contribution ec on ec.id = e.contribution_id
-             join contribution src on src.id = e.src
-             where e.dst = c.id and ec.status = 'active' and src.status = 'active'
-               and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
-           ) then 'settled'
+           when c.id = any (settled) then 'settled'
            else 'open' end
-   where c.kind in ('problem', 'conjecture')
-     and (ids is null or c.id = any (ids));
+   where c.id = any (targets);
 end $$;
 
 -- What one write can change: the entry itself, both ends of a link, and the
@@ -818,6 +876,12 @@ begin
     union select e.dst from edge e where e.src = any (ids)
     union select e.src from edge e where e.dst = any (ids)
   ) x where t is not null;
+  -- Settlement transports along reviewed equivalences, which reach further
+  -- than a link: an answer to the group-side question arrives attached to the
+  -- reformulation, and the question it closes is the field-side one on the
+  -- other side of that equivalence — two hops from the write that landed, and
+  -- more when equivalences compose.
+  select array_agg(distinct node) into targets from transport_closure(targets);
   -- One ordered claim covers both refreshes; each also claims its own, which
   -- is a no-op once these locks are held.
   perform 1 from contribution where id = any (targets) order by id for no key update;
@@ -856,6 +920,54 @@ create or replace view q_front_members as
   join contribution f on f.id = e.dst
   join contribution_overview m on m.id = e.src
   where e.rel = 'in-front' and m.status = 'active';
+
+-- A theory's dictionary as rows rather than as prose. kind='correspondence'
+-- stores its translation table in metadata.dictionary; unfolded here, "what
+-- does this theory turn my kind of object into?" is a SQL question, and an
+-- agent holding an object can look for its own side of a translation without
+-- reading a single write-up.
+create or replace view q_dictionary as
+  select c.id as correspondence_id, c.title as correspondence, c.tier, c.notability,
+         (select e.dst from edge e join contribution ec on ec.id = e.contribution_id
+           where e.src = c.id and e.rel = 'dictionary-of' and ec.status = 'active'
+           order by ec.tier desc limit 1) as theory_id,
+         c.metadata->>'applies_to' as source_side,
+         c.metadata->>'transports_to' as target_side,
+         c.metadata->>'fidelity' as fidelity,
+         row_number() over (partition by c.id order by ord) as row_no,
+         r->>'source' as source, r->>'target' as target, r->>'note' as note,
+         r->>'proof' as proof
+  from contribution c
+  cross join lateral jsonb_array_elements(c.metadata->'dictionary') with ordinality as d(r, ord)
+  where c.kind = 'correspondence' and c.status = 'active'
+    and jsonb_typeof(c.metadata->'dictionary') = 'array';
+
+-- Every transport that has actually been made: one row per reformulation,
+-- what it restates, what it was restated through, and whether that
+-- restatement is faithful enough and reviewed enough to carry a settlement
+-- back to the original (which is exactly settlement_transport's rule, read
+-- from the same columns).
+create or replace view q_transports as
+  select r.id as reformulation_id, r.title, r.tier, r.status, r.notability, r.created_at,
+         r.metadata->>'fidelity' as fidelity,
+         rf.dst as reformulates_id, tgt.title as reformulates, tgt.kind as reformulates_kind,
+         tgt.state as reformulates_state,
+         v.dst as via_id, viac.title as via, viac.kind as via_kind,
+         coalesce(dof.theory_id, v.dst) as theory_id,
+         (r.metadata->>'fidelity' = 'equivalent' and r.tier >= 2 and rfe.tier >= 2) as transports
+  from contribution r
+  join edge rf on rf.src = r.id and rf.rel = 'reformulates'
+  join contribution rfe on rfe.id = rf.contribution_id and rfe.status = 'active'
+  join contribution tgt on tgt.id = rf.dst and tgt.status = 'active'
+  join edge v on v.src = r.id and v.rel = 'via'
+  join contribution ve on ve.id = v.contribution_id and ve.status = 'active'
+  join contribution viac on viac.id = v.dst and viac.status = 'active'
+  left join lateral (
+    select e.dst as theory_id from edge e
+    join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+    where e.src = v.dst and e.rel = 'dictionary-of' order by ec.tier desc limit 1
+  ) dof on true
+  where r.kind = 'reformulation' and r.status = 'active';
 
 create or replace view q_events as
   select seq, kind, contribution_id, identity_id, payload, created_at from event;
@@ -903,7 +1015,7 @@ do $$ begin
   end if;
 end $$;
 grant usage on schema public to math_reader;
-grant select on q_entries, q_links, q_front_members, q_events, q_verifications,
+grant select on q_entries, q_links, q_front_members, q_dictionary, q_transports, q_events, q_verifications,
                 q_artifacts, q_trails, q_trail_entries, q_identities, q_config,
                 q_topic_rules, q_decls, q_patches, q_review_claims to math_reader;
 -- The server's own connection switches into this role per query statement.

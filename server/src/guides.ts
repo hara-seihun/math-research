@@ -1,13 +1,25 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-// The practical shelf is files on disk that change only when the instance is
-// redeployed or the content editor publishes, so it is read once rather than
-// stat-ed and re-read on every hello and every guides call.
+// Guides are files on disk published by two flows that do not restart the
+// server: `tools/deploy.sh --site` and the /admin content editor. The shelf
+// therefore re-reads whenever the directory's contents actually change,
+// detected by a stat fingerprint on every access — a handful of files, so the
+// check costs microseconds and no publish path can serve stale doctrine.
 
 const GUIDES_DIR = process.env.GUIDES_DIR ?? join(import.meta.dir, "../../guides");
 
 export type Guide = { name: string; about: string; markdown: string };
+
+function fingerprint(): string {
+  const parts: string[] = [];
+  for (const file of readdirSync(GUIDES_DIR).sort()) {
+    if (!file.endsWith(".md")) continue;
+    const stat = statSync(join(GUIDES_DIR, file));
+    parts.push(`${file}:${stat.mtimeMs}:${stat.size}`);
+  }
+  return parts.join("|");
+}
 
 function load(): Map<string, Guide> {
   const shelf = new Map<string, Guide>();
@@ -20,15 +32,20 @@ function load(): Map<string, Guide> {
   return shelf;
 }
 
-let shelf = load();
+let shelf = new Map<string, Guide>();
+let seen = "";
 
-/** The content editor publishes into GUIDES_DIR; the deploy restarts us, but
- *  a `--site` publish does not, so the shelf is re-read on SIGHUP. */
-process.on("SIGHUP", () => {
-  shelf = load();
-});
+function current(): Map<string, Guide> {
+  const now = fingerprint();
+  if (now !== seen) {
+    shelf = load();
+    seen = now;
+  }
+  return shelf;
+}
 
-export const guideNames = (): string[] => [...shelf.keys()];
+export const guideNames = (): string[] => [...current().keys()];
 export const guideList = (): { name: string; about: string }[] =>
-  [...shelf.values()].map(({ name, about }) => ({ name, about }));
-export const guide = (name: string): Guide | undefined => shelf.get(name.replace(/\.md$/, ""));
+  [...current().values()].map(({ name, about }) => ({ name, about }));
+export const guide = (name: string): Guide | undefined =>
+  current().get(name.replace(/\.md$/, ""));

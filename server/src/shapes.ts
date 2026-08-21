@@ -606,6 +606,7 @@ const LeanGroup = z.strictObject({
   members: z.array(
     z.strictObject({
       name: z.string(),
+      is_proof: z.boolean(),
       module: z.string().optional(),
       library: z.string().optional(),
       contribution_id: z.string().optional(),
@@ -633,6 +634,7 @@ export const LeanSimilarOut = z.discriminatedUnion("mode", [
     identical: z.array(LeanGroup).describe("Groups saying the same thing modulo names; one member of each is redundant."),
     near: z.array(LeanGroup),
     compared: z.number().int().describe("Pairs the scan actually scored, after bucketing."),
+    next_offset: z.number().int().optional().describe("Pass this as offset to read the next page of exact groups."),
     note: z.string(),
   }),
 ]);

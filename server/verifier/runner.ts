@@ -201,15 +201,27 @@ async function runPatchJob(id: string) {
   const jobDir = join(SPOOL_IN, `patch-${id}`);
   const work = join(WORK_DIR, `patch-${id}`);
   const src = join(work, "src");
-  const out = join(work, "out");
+  const overlay = join(work, "overlay");
   const started = Date.now();
   const result: PatchResult = { ok: false, built: [] };
   const staging = join(SPOOL_OUT, `patch-${id}.staging`);
   try {
     const job: PatchJob = JSON.parse(readFileSync(join(jobDir, "job.json"), "utf8"));
     rmSync(work, { recursive: true, force: true });
-    mkdirSync(out, { recursive: true });
+    mkdirSync(overlay, { recursive: true });
     cpSync(join(jobDir, "src"), src, { recursive: true });
+
+    // Lean stops at the first LEAN_PATH root containing a module's directory;
+    // a sparse `out/MathlibPlus/X.olean` therefore hides every unchanged
+    // `MathlibPlus/*.olean` in later roots. A symlink overlay is a cheap full
+    // namespace across the sandbox's bind-mount boundary: unlink before
+    // writing so the read-only published tree is never modified, and return
+    // only the files this job rebuilt.
+    const base = (process.env.EXTRA_LEAN_PATH ?? "").split(":").find((dir) => existsSync(dir));
+    if (!base) throw new Error("patch runner has no readable EXTRA_LEAN_PATH");
+    const cloned = Bun.spawnSync(["cp", "-as", `${base}/.`, overlay], { stdout: "pipe", stderr: "pipe" });
+    if (cloned.exitCode !== 0) throw new Error(`could not create patch olean overlay: ${cloned.stderr.toString()}`);
+    for (const deleted of job.deleted) rmSync(join(overlay, `${deleted.replaceAll(".", "/")}.olean`), { force: true });
 
     const deadline = started + job.timeout_ms;
     const modules: PatchModuleResult[] = [];
@@ -228,10 +240,11 @@ async function runPatchJob(id: string) {
         result.modules = modules;
         return;
       }
-      const olean = join(out, `${module.module.replaceAll(".", "/")}.olean`);
+      const olean = join(overlay, `${module.module.replaceAll(".", "/")}.olean`);
+      rmSync(olean, { force: true });
       mkdirSync(dirname(olean), { recursive: true });
       const budget = Math.min(TIMEOUT_MS, Math.max(1, deadline - Date.now()));
-      const compiled = await runLean([`--root=${src}`, "-o", olean, join(src, module.path)], work, budget, { before: out });
+      const compiled = await runLean([`--root=${src}`, "-o", olean, join(src, module.path)], work, budget, { before: overlay });
       const report: PatchModuleResult = {
         module: module.module,
         exit_code: compiled.exitCode,
@@ -258,7 +271,7 @@ async function runPatchJob(id: string) {
     for (const module of job.modules.filter((m) => m.changed && !broken.has(m.module))) {
       const auditFile = join(work, `Audit_${module.module.replaceAll(".", "_")}.lean`);
       writeFileSync(auditFile, auditSource(module.module));
-      const audit = await runLean([`--root=${work}`, auditFile], work, AUDIT_TIMEOUT_MS, { before: out, after: work });
+      const audit = await runLean([`--root=${work}`, auditFile], work, AUDIT_TIMEOUT_MS, { before: overlay, after: work });
       if (audit.exitCode !== 0 || audit.timedOut) {
         result.audit_error = audit.timedOut ? `audit of ${module.module} timed out` : audit.output.slice(-2000);
         result.error = `the axiom audit of ${module.module} did not complete`;
@@ -277,7 +290,13 @@ async function runPatchJob(id: string) {
     result.elapsed_ms = Date.now() - started;
     rmSync(staging, { recursive: true, force: true });
     mkdirSync(staging, { recursive: true });
-    if (result.ok && existsSync(out)) cpSync(out, join(staging, "lib"), { recursive: true });
+    if (result.ok && existsSync(overlay)) {
+      for (const module of result.built) {
+        const rel = `${module.replaceAll(".", "/")}.olean`;
+        mkdirSync(dirname(join(staging, "lib", rel)), { recursive: true });
+        copyFileSync(join(overlay, rel), join(staging, "lib", rel));
+      }
+    }
     writeFileSync(join(staging, "result.json"), JSON.stringify(result));
     renameSync(staging, join(SPOOL_OUT, `patch-${id}`));
     rmSync(work, { recursive: true, force: true });

@@ -1293,18 +1293,26 @@ psql -q -h "$WORK" -d math -c "insert into lean_decl (module, name, library, kin
    '∀ {β : Type u_7} (t : Finset β) (g : β → ℝ) (c : ℝ), (∀ y ∈ t, g y ≤ c) → ∑ j ∈ t, g j ≤ t.card • c', true),
   ('MathlibPlus.Dup.C', 'MathlibPlus.Dup.C.other', 'MathlibPlus', 'theorem',
    '∀ (p q : Prop), p ∧ q → q ∧ p', true),
+  ('MathlibPlus.Dup.Defs', 'MathlibPlus.Dup.Defs.first', 'MathlibPlus', 'def', 'Nat → Nat', false),
+  ('MathlibPlus.Dup.Defs', 'MathlibPlus.Dup.Defs.second', 'MathlibPlus', 'def', 'Nat → Nat', false),
+  ('Mathlib.Finset.Sum', 'Mathlib.Finset.bounded_sum', 'Mathlib', 'theorem',
+   '∀ {γ : Type u_3} (u : Finset γ) (h : γ → ℝ) (b : ℝ), (∀ z ∈ u, h z ≤ b) → ∑ k ∈ u, h k ≤ u.card • b', true),
+  ('MathlibPlus.Dup.Numerals', 'MathlibPlus.Dup.Numerals.seven_prime', 'MathlibPlus', 'theorem',
+   'Fact (Nat.Prime 7)', true),
+  ('Mathlib.Data.Nat.Prime', 'Mathlib.fact_prime_three', 'Mathlib', 'theorem',
+   'Fact (Nat.Prime 3)', true),
   ('MathlibPlus.Dup.A', 'MathlibPlus.Dup.A.Config.mk.injEq', 'MathlibPlus', 'theorem',
    '∀ {α : Type u_1} (s : Finset α) (f : α → ℝ) (n : ℝ), (∀ x ∈ s, f x ≤ n) → ∑ i ∈ s, f i ≤ s.card • n', true)"
 bun run tools/normalize-lean.ts > "$WORK/normalize.log" 2>&1 || fail "normalize-lean failed: $(tail -3 "$WORK/normalize.log")"
 
 call lean_similar '{"name":"MathlibPlus.Dup.A.sum_bound"}' \
-  | python3 -c 'import sys,json; d=json.load(sys.stdin); names=[m["name"] for m in d["exact"]]; assert names==["MathlibPlus.Dup.B.bounded_sum"], d' \
-  || fail "lean_similar did not recognize a renamed copy as the same statement"
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); names={m["name"] for m in d["exact"]}; assert names=={"MathlibPlus.Dup.B.bounded_sum","Mathlib.Finset.bounded_sum"}, d' \
+  || fail "lean_similar did not recognize renamed copies as the same statement"
 
 # The same question asked with source nobody has ever indexed, in a third set
 # of names: normalization happens on the way in, not only at index time.
 call lean_similar '{"source":"theorem entirely_different_name {γ : Type u_3} (u : Finset γ) (h : γ → ℝ) (b : ℝ) : (∀ z ∈ u, h z ≤ b) → ∑ k ∈ u, h k ≤ u.card • b"}' \
-  | python3 -c 'import sys,json; d=json.load(sys.stdin); assert {m["name"] for m in d["exact"]} == {"MathlibPlus.Dup.A.sum_bound","MathlibPlus.Dup.B.bounded_sum"}, d' \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); assert {m["name"] for m in d["exact"]} == {"MathlibPlus.Dup.A.sum_bound","MathlibPlus.Dup.B.bounded_sum","Mathlib.Finset.bounded_sum"}, d' \
   || fail "lean_similar did not match pasted source against the indexed twins"
 
 call lean_similar '{"scan":true,"library":"MathlibPlus"}' \
@@ -1312,10 +1320,32 @@ call lean_similar '{"scan":true,"library":"MathlibPlus"}' \
 import sys, json
 d = json.load(sys.stdin)
 groups = [g for g in d["identical"] if len(g["members"]) > 1]
-assert len(groups) == 1, d
-names = {m["name"] for m in groups[0]["members"]}
-assert names == {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum"}, d
+names = [{m["name"] for m in g["members"]} for g in groups]
+assert {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum"} in names, d
+assert all("MathlibPlus.Dup.A.Config.mk.injEq" not in group for group in names), d
 ' || fail "a scan did not group the duplicate pair, or swept in generated or unrelated declarations"
+
+# Exact-only cleanup scans are not the bounded NCD attention window: they walk
+# the complete normalized-hash index, can exclude same-typed definitions, and
+# can ask which MathlibPlus proofs should simply import Mathlib.
+call lean_similar '{"scan":true,"library":"MathlibPlus","proofs_only":true,"exact_only":true,"limit":1}' \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["scanned"] == 4 and d["next_offset"] == 1, d
+assert {m["name"] for m in d["identical"][0]["members"]} == {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum"}, d
+assert all(m["is_proof"] for m in d["identical"][0]["members"]), d
+' || fail "exact-only scan did not cover the full proof scope or page duplicate groups"
+call lean_similar '{"scan":true,"library":"MathlibPlus","against_library":"Mathlib","proofs_only":true,"exact_only":true}' \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert len(d["identical"]) == 1, d
+members = d["identical"][0]["members"]
+assert {m["library"] for m in members} == {"MathlibPlus", "Mathlib"}, d
+assert {m["name"] for m in members} == {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum", "Mathlib.Finset.bounded_sum"}, d
+assert all("prime" not in m["name"] for m in members), d
+' || fail "cross-library scan missed a duplicate or treated different numerals as alpha-equivalent"
 
 # Contract: a patch is a change to the library, verified by applying it and
 # building what it touches. A diff that does not apply is a failure with the

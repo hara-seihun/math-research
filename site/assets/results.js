@@ -45,6 +45,7 @@ const moreButton = root.querySelector("[data-more]");
 const filterSelect = root.querySelector("[data-filter]");
 const searchForm = root.querySelector("[data-search-form]");
 const searchInput = root.querySelector("[data-search]");
+const excludeExternalInput = root.querySelector("[data-exclude-external]");
 // Everything on the page that is neither the feed nor the open entry: the
 // explanation of how to read this, which belongs with the list and not with a
 // theorem someone came to read.
@@ -57,6 +58,7 @@ const pages = new Map();
 
 let filter = "top-all";
 let query = "";
+let excludeExternal = false;
 const loading = new Set();
 
 // --- Talking to the ledger ------
@@ -187,11 +189,15 @@ function card(entry, rank) {
   return item;
 }
 
-const stateKey = () => JSON.stringify([filter, query]);
+const stateKey = () => JSON.stringify([filter, query, excludeExternal]);
 
 function searchRequest() {
   const request = FILTERS[filter].request();
-  return query ? { ...request, query } : request;
+  return {
+    ...request,
+    ...(query ? { query } : {}),
+    ...(excludeExternal ? { exclude_external: true } : {}),
+  };
 }
 
 function renderList() {
@@ -453,8 +459,10 @@ function readControlsFromUrl() {
   const params = new URL(location.href).searchParams;
   filter = FILTERS[params.get("filter")] ? params.get("filter") : "top-all";
   query = params.get("q")?.trim() ?? "";
+  excludeExternal = params.get("external") === "exclude";
   filterSelect.value = filter;
   searchInput.value = query;
+  excludeExternalInput.checked = excludeExternal;
 }
 
 function writeControlsToUrl() {
@@ -463,6 +471,8 @@ function writeControlsToUrl() {
   else url.searchParams.set("filter", filter);
   if (query) url.searchParams.set("q", query);
   else url.searchParams.delete("q");
+  if (excludeExternal) url.searchParams.set("external", "exclude");
+  else url.searchParams.delete("external");
   history.replaceState(history.state, "", url);
 }
 
@@ -478,6 +488,12 @@ function showSelection() {
 
 filterSelect.addEventListener("change", () => {
   filter = filterSelect.value;
+  writeControlsToUrl();
+  showSelection();
+});
+
+excludeExternalInput.addEventListener("change", () => {
+  excludeExternal = excludeExternalInput.checked;
   writeControlsToUrl();
   showSelection();
 });

@@ -1,5 +1,5 @@
 import type { TransactionSql } from "postgres";
-import { onBoard, sql } from "./db.ts";
+import { onBoard, sql, withoutExternalResults } from "./db.ts";
 import { sha256hex } from "./identity.ts";
 import { rankBySimilarity } from "./ncd.ts";
 
@@ -49,6 +49,7 @@ export type SearchArgs = {
   min_tier?: number;
   origin?: "ledger" | "external";
   board?: boolean;
+  exclude_external?: boolean;
   since?: Date;
   include_inactive?: boolean;
   limit: number;
@@ -85,6 +86,7 @@ export async function searchContributions(args: SearchArgs) {
     and (${args.min_tier ?? null}::int is null or c.tier >= ${args.min_tier ?? 0})
     and (${args.origin ?? null}::text is null or c.origin = ${args.origin ?? null})
     and (not ${args.board ?? false}::bool or (${onBoard()}))
+    and (not ${args.exclude_external ?? false}::bool or (${withoutExternalResults()}))
     and (${args.since ?? null}::timestamptz is null or c.created_at >= ${args.since ?? null})
     and (${args.include_inactive ?? false} or c.status = 'active')
     and (${args.front ?? null}::uuid is null or exists (

@@ -221,7 +221,20 @@ td:nth-child(2) { color: var(--muted); white-space: nowrap; }
   cursor: pointer;
 }
 
+.feed-toggle {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.feed-toggle input { accent-color: var(--accent); }
+
 .feed-controls select:focus-visible,
+.feed-toggle input:focus-visible,
 .feed-search input:focus-visible,
 .feed-search button:focus-visible,
 .feed-more:focus-visible,

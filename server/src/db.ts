@@ -64,6 +64,18 @@ export const statesAFinding = () => sql`right(btrim(c.title), 1) <> '?'`;
  *  headline. */
 export const onBoard = () => sql`(${certified()}) and ${statesAFinding()}`;
 
+/** Exclude mathematics established elsewhere. This removes directly external
+ *  entries and questions with an active external closure, while retaining
+ *  ordinary ledger results that do not settle a question. */
+export const withoutExternalResults = () => sql`
+  c.origin = 'ledger' and not exists (
+    select 1 from edge xe
+    join contribution xec on xec.id = xe.contribution_id
+    join contribution xsetter on xsetter.id = xe.src
+    where xe.dst = c.id and xe.rel = any(${SETTLES})
+      and xec.status = 'active' and xsetter.status = 'active'
+      and xsetter.origin = 'external')`;
+
 /** What ranks the board: the reviewed 0-5 dimensions, twice, over heavily
  *  damped graph importance. Also a fragment over a `contribution` aliased `c`. */
 export const impactScore = () => sql`

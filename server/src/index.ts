@@ -3,7 +3,7 @@ import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, isInitializeRequest, McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { announceWrite, cacheKey, listenForWrites, shared } from "./cache.ts";
-import { certified, drainRequestLog, impactScore, logRequest, onBoard, pruneRequestLog, SETTLES, sql, statesAFinding } from "./db.ts";
+import { certified, drainRequestLog, impactScore, logRequest, onBoard, pruneRequestLog, SETTLES, sql, statesAFinding, withoutExternalResults } from "./db.ts";
 import { guide, guideList, guideNames, guides as shelf } from "./guides.ts";
 import { leanVersion, mathlibVersion } from "./pinned.ts";
 import { corpus } from "./snapshot.ts";
@@ -496,7 +496,7 @@ defineTool(
     title: "Search and browse the ledger",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact damps internal graph density hard and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, minimum tier, or origin. `origin:'ledger'` keeps only what was first established here, and for questions `settled_by_origin:'ledger'` keeps only the ones this ledger actually closed rather than recorded a published closure of. `board:true` keeps the all-time board this ledger publishes, with `order_by:'impact'` for browsing or relevance order when combined with `query`. Returns short list rows; get(<ref>) has the full text.",
+      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact damps internal graph density hard and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, minimum tier, or origin. `origin:'ledger'` keeps only entries first established here; `exclude_external:true` also removes questions closed by outside mathematics. `board:true` keeps the all-time board this ledger publishes, with `order_by:'impact'` for browsing or relevance order when combined with `query`. Returns short list rows; get(<ref>) has the full text.",
     inputSchema: z.object({
       query: z.string().optional().describe("What are you looking for? Plain language is fine; \"quote\" a phrase to require it. Leave it out to browse by importance or recency."),
       kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. ['theorem','result']."),
@@ -517,6 +517,9 @@ defineTool(
       board: z
         .boolean().optional()
         .describe("The all-time board: T2 mathematics this ledger established first, meaning a question closed here by a T2 link of ledger origin, or any entry a reviewer has scored for impact and nothing established elsewhere settles, and in either case headlined by what was found. A closure whose title still asks its question is off the board until it is amended, and review_queue lists those."),
+      exclude_external: z
+        .boolean().optional()
+        .describe("Exclude entries established elsewhere and questions with an active external closure. Keeps ordinary ledger results."),
       since: z.string().optional().describe("Only entries created since this ISO timestamp or interval such as '30m', '24h', '7d', or '2w'."),
       order_by: z
         .enum(["notability", "impact", "recent", "oldest"]).optional()
@@ -525,11 +528,11 @@ defineTool(
       ...pageParams(100, 10),
     }),
   },
-  async ({ query, kind, state, topic, front, lean_verified, min_tier, settled_by_min_tier, origin, settled_by_origin, board, since, order_by, include_inactive, limit, offset }) => {
+  async ({ query, kind, state, topic, front, lean_verified, min_tier, settled_by_min_tier, origin, settled_by_origin, board, exclude_external, since, order_by, include_inactive, limit, offset }) => {
     const parsedSince = since ? parseSince(since) : undefined;
     if (since && !parsedSince) return fail({ error: `invalid since value ${JSON.stringify(since)}; use an ISO timestamp or an interval such as 24h.` });
     const sinceAt = parsedSince ?? undefined;
-    logRequest("search", null, { query, kind, state, topic, min_tier, origin, since, order_by });
+    logRequest("search", null, { query, kind, state, topic, min_tier, origin, exclude_external, since, order_by });
     let frontId: string | undefined;
     if (front) {
       const f = await refOr(front, "front");
@@ -538,7 +541,7 @@ defineTool(
     }
     if (query?.trim()) {
       const rows = await searchContributions({
-        query, kind, state, topic, front: frontId, lean_verified, min_tier, origin, board, since: sinceAt, include_inactive, limit, offset,
+        query, kind, state, topic, front: frontId, lean_verified, min_tier, origin, board, exclude_external, since: sinceAt, include_inactive, limit, offset,
       });
       const strong = rows.filter((r) => r.matched === "every term").length;
       return structured(SearchOut, {
@@ -568,6 +571,7 @@ defineTool(
                 and sec.tier >= ${settled_by_min_tier ?? 0}
                 and (${settled_by_origin ?? null}::text is null or setter.origin = ${settled_by_origin ?? null})))
         and (not ${board ?? false}::bool or (${onBoard()}))
+        and (not ${exclude_external ?? false}::bool or (${withoutExternalResults()}))
         and (${sinceAt ?? null}::timestamptz is null or c.created_at >= ${sinceAt ?? null})
         and (${lean_verified ?? null}::bool is null or c.lean_verified = ${lean_verified ?? false})
         and (${frontId ?? null}::uuid is null or exists (

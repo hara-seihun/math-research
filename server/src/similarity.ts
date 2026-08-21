@@ -28,7 +28,7 @@ import { createHash } from "node:crypto";
 /** Bumped whenever a normalizer changes what it produces. Stored rows carry
  *  it, so a change is a backfill the tooling can find rather than a corpus
  *  half-written in two conventions. */
-export const NORM_VERSION = 2;
+export const NORM_VERSION = 3;
 
 // --- Alpha normalization ------
 
@@ -448,10 +448,24 @@ export function normalizeDecl(name: string, statement: string): NormalizedDecl {
   return {
     norm,
     norm_hash: createHash("sha256").update(norm).digest("hex"),
-    bands: bands(norm),
+    bands: bands(flatten(norm)),
     generated: isGenerated(name),
   };
 }
+
+/**
+ * The normal form with its numbering thrown away, which is the form to
+ * *compare* — never the form to identify by.
+ *
+ * Numbering by first occurrence is what makes `§0 + §1 = §1 + §0` different
+ * from `§0 + §0 = §0 + §0`, so identity needs it. Similarity cannot afford it:
+ * one extra typeclass binder shifts every index after it, and two statements
+ * that say the same thing stop sharing substrings. Measured against
+ * `Finset.sum_le_card_nsmul` from a concrete instance of it, flattening moves
+ * the true match from 0.27 to 0.46 while the best false match drops from 0.37
+ * to 0.30 — a reordering, not a rescaling.
+ */
+export const flatten = (norm: string): string => norm.replace(/§\d+/g, "§");
 
 // --- Compression distance ------
 

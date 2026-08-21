@@ -23,7 +23,7 @@
  */
 import { sql } from "./db.ts";
 import { clusterBySimilarity, rankBySimilarity } from "./ncd.ts";
-import { alphaLean, bands, extractDecls, NORM_VERSION, normalizeDecl, statementForm } from "./similarity.ts";
+import { alphaLean, bands, extractDecls, flatten, NORM_VERSION, normalizeDecl, statementForm } from "./similarity.ts";
 
 export type LeanMatch = {
   origin: "library" | "ledger";
@@ -70,7 +70,7 @@ const exactMatches = (normHash: string, limit: number) => sql<DeclRow[]>`
  *  most-overlapping first, since a cap has to cut somewhere and cutting at
  *  random is how a real match gets lost before NCD ever sees it. */
 async function nearCandidates(norm: string, opts: { library?: string; module?: string; ledgerOnly?: boolean }) {
-  const probe = bands(norm);
+  const probe = bands(flatten(norm));
   const library = opts.library ?? null;
   const module = opts.module ?? null;
   const libraryRows = opts.ledgerOnly
@@ -157,11 +157,13 @@ export async function similarDeclarations(args: SimilarArgs): Promise<SimilarRes
     (row) => row.norm_hash !== norm_hash && row.name !== name,
   );
 
+  // Scored on the flattened form: identity is the hash above, and comparison
+  // is better off not knowing which occurrence a placeholder was.
   const scored = await rankBySimilarity({
     mode: "lean",
-    query: norm,
+    query: flatten(norm),
     normalized: true,
-    candidates: nearRows.map((row, i) => ({ id: String(i), text: row.norm })),
+    candidates: nearRows.map((row, i) => ({ id: String(i), text: flatten(row.norm) })),
   });
   const near = scored
     .map((s) => ({ row: nearRows[Number(s.id)]!, similarity: s.similarity }))
@@ -259,7 +261,7 @@ export async function scanDuplicates(args: ScanArgs): Promise<ScanResult | { err
   const { pairs, compared } = await clusterBySimilarity({
     mode: "lean",
     normalized: true,
-    units: representatives.map((row, i) => ({ id: String(i), text: row.norm })),
+    units: representatives.map((row, i) => ({ id: String(i), text: flatten(row.norm) })),
     threshold: args.threshold,
     limit: args.limit,
   });

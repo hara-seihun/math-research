@@ -23,7 +23,7 @@
  * clusters the shipped configuration finds in the wild, which are for reading.
  */
 import zlib from "node:zlib";
-import { alphaLean, alphaProse, isGenerated, leanBlocks } from "../server/src/similarity.ts";
+import { alphaLean, alphaProse, flatten, isGenerated, leanBlocks } from "../server/src/similarity.ts";
 
 const arg = (name: string, fallback: string) =>
   process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=")[1] ?? fallback;
@@ -49,6 +49,10 @@ const LEAN_NORMALIZERS: Normalizer[] = [
   { name: "alpha-prose", run: (s) => alphaProse(s) },
   { name: "alpha-lean", run: (s) => alphaLean(s) },
   { name: "alpha-lean-stmt", run: (s) => alphaLean(s, { body: false }) },
+  // Numbering by first occurrence is what identity needs and what similarity
+  // cannot afford: one extra typeclass binder shifts every later index, and
+  // two statements that say the same thing stop sharing substrings.
+  { name: "alpha-lean-flat", run: (s) => flatten(alphaLean(s)) },
 ];
 
 // --- Scorers ------

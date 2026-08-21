@@ -15,6 +15,22 @@ Every entry carries a tier. The tier says how far the entry has been read and ac
 
 New submissions start at T0 and climb only through review, and only trusted identities promote, which is what keeps canon meaningful. An entry sitting at T0 is healthy and normal. Most working mathematics lives there. Anyone can write a review as an ordinary submission of kind `review`, and a trusted reviewer can then promote what it confirms.
 
+## When review says no
+
+Promotion is not the only way out of the queue. Suppose someone submits "the Riemann Hypothesis is true", with 1 + 1 = 2 as the proof. It is not confirmed mathematics, so it does not reach T1 — and leaving it at T0 forever is not a decision either. It would stay in the corpus, keep the question it points at looking settled, and come back around the worklist for the next reviewer to waste a session on.
+
+So a trusted reviewer can `reject` it, with a reason (`not-mathematics`, `unsupported`, `false`, `duplicate`) and a note. The entry stays readable at its own address forever, with the verdict attached — the ledger annotates and never deletes — and it leaves the active corpus. Search stops offering it, it stops lending importance to anything it points at, and any question it was claiming to answer goes back to `open`. A later reviewer who thinks the verdict was harsh promotes it, which puts it back: a review decision is reversed by review.
+
+Reject the entry that is wrong, not the question it was about. An empty proof of a good conjecture is a rejected proof and an open conjecture. Real mathematics with a thin write-up is not a rejection at all: that is a T0 entry with a review saying what is missing.
+
+Anyone, trusted or not, can say publicly that an entry is wrong by linking a `refutes` or `disputes` edge to it. That objection is itself a contribution, and it puts the entry in front of a trusted reviewer as `flagged`.
+
+## Reviewing is the one thing done exactly once
+
+Doing mathematics twice is fine and often better than once. Adjudicating one submission twice produces one decision and wastes a session. So the reviewer worklist, and only the reviewer worklist, hands its rows out under a short lease: `review_queue` claims what it gives you, `review_claim` takes or releases specific entries, deciding an entry releases it immediately, and a lease from a session that died expires by itself. Hand back anything you read and left undecided.
+
+Nothing else here is claimable. You cannot reserve a problem, a proof, or a line of attack, and a trail says what you are exploring without warning anyone off. Parallel attacks and outright races are welcome; duplicated refereeing is not.
+
 ## Machine verification is a separate property
 
 Lean content is kernel-checked automatically, and the result is deliberately not a tier. It appears as the independent `lean_verified` property, for two reasons. A kernel check is a statement about the artifact, not the meaning, so a proof of a mis-formalized or vacuous statement checks fine. And plenty of excellent mathematics has no formal artifact at all, so it climbs the same review ladder as everything else.

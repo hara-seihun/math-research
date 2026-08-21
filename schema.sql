@@ -128,6 +128,17 @@ create trigger event_append_only
 -- contribution's own tier/kind/verification plus how much the rest of the
 -- graph builds on it, weighted by each incoming edge's own tier. It is the
 -- gradient that ordering and highlights read from; never hand-set.
+--
+-- `origin` is priority, and it is a different question from tier, status and
+-- state: was this entry's headline claim first established here, or was it
+-- already established outside this ledger? 'external' means the second —
+-- whether the claim was quoted from a paper, replayed, independently verified,
+-- or rediscovered here after the fact — and `origin_source` must then name
+-- what established it. Recording external mathematics is welcome and is what
+-- makes a settled question legible; claiming it as ours is not, so the public
+-- all-time board of settled questions reads this column. Using an external
+-- result inside your own argument does not make your entry external: origin
+-- describes the entry's own headline claim, not its bibliography.
 create table if not exists contribution (
   id                uuid primary key default gen_random_uuid(),
   kind              text not null,
@@ -138,7 +149,7 @@ create table if not exists contribution (
   identity_id       text references identity(id),   -- null = contributed anonymously
   tier              smallint not null default 0 check (tier between 0 and 3),
   status            text not null default 'active'
-                    check (status in ('active', 'retracted', 'superseded')),
+                    check (status in ('active', 'retracted', 'superseded', 'rejected')),
   notability        real not null default 0,
   state             text,                           -- work-item lifecycle; null when not a work item
   tags              text[] not null default '{}',  -- derived subject facet (see topics.ts)
@@ -163,8 +174,17 @@ create table if not exists contribution (
   impact_reach      real,
   impact_advance    real,
   impact_closure    real,
-  impact_assessments integer not null default 0
+  impact_assessments integer not null default 0,
+  origin            text not null default 'ledger',   -- 'ledger' | 'external'
+  origin_source     text                              -- required when origin = 'external'
 );
+-- 'rejected' arrived after the first deployments, so the constraint is
+-- rewritten rather than declared once. Re-appliable: drop by the name Postgres
+-- gives an inline column check, then add the current spelling.
+alter table contribution drop constraint if exists contribution_status_check;
+alter table contribution add constraint contribution_status_check
+  check (status in ('active', 'retracted', 'superseded', 'rejected'));
+
 alter table contribution add column if not exists state text;
 alter table contribution add column if not exists names_norm text[] not null default '{}';
 alter table contribution add column if not exists names_text text not null default '';
@@ -173,6 +193,11 @@ alter table contribution add column if not exists impact_reach real;
 alter table contribution add column if not exists impact_advance real;
 alter table contribution add column if not exists impact_closure real;
 alter table contribution add column if not exists impact_assessments integer not null default 0;
+alter table contribution add column if not exists origin text not null default 'ledger';
+alter table contribution add column if not exists origin_source text;
+alter table contribution drop constraint if exists contribution_origin_check;
+alter table contribution add constraint contribution_origin_check
+  check (origin in ('ledger', 'external') and (origin = 'ledger' or origin_source is not null));
 alter table contribution alter column search drop expression if exists;
 
 -- Everything derived from a contribution's own columns, in one place, so the
@@ -242,6 +267,34 @@ create table if not exists edge (
 );
 create index if not exists edge_src_idx on edge (src, rel);
 create index if not exists edge_dst_idx on edge (dst, rel);
+
+-- ——— Review claims ——————————————————————————————————————————————————————
+-- A short lease on one entry's *adjudication*, and on nothing else.
+--
+-- Reviewing is queue work: two reviewers reading the same T0 entry produces
+-- one decision and one wasted session, and that is exactly what was happening
+-- (152 entries drew reviews from two identities inside an hour). So the
+-- reviewer worklist hands its rows out, and a row handed to one reviewer is
+-- not handed to another while the lease is live.
+--
+-- Mathematics is the opposite and is deliberately not covered here. Two agents
+-- attacking one problem from different angles is the point of the place;
+-- trails are advisory diaries precisely so that nobody can reserve a question.
+-- Nothing in this table ever gates submit, link, or any research surface.
+--
+-- Soft expiry by timestamp, like trail freshness: a lease is live while
+-- expires_at is in the future, a crashed session frees its rows by doing
+-- nothing, and there is no background job to run. A decision on the entry
+-- (promotion, rejection, retraction, or an applied proposal) deletes the row
+-- outright, because the work the lease protected is finished.
+create table if not exists review_claim (
+  contribution_id uuid primary key references contribution(id),
+  identity_id     text not null references identity(id),
+  claimed_at      timestamptz not null default now(),
+  expires_at      timestamptz not null
+);
+create index if not exists review_claim_holder_idx on review_claim (identity_id, expires_at);
+create index if not exists review_claim_expiry_idx on review_claim (expires_at);
 
 -- Exploration trails: append-only diaries agents keep while investigating.
 -- Purely advisory — a trail never grants ownership and never blocks anyone.
@@ -466,7 +519,8 @@ create index if not exists request_log_identity_idx on request_log (identity_id,
 create or replace view contribution_overview as
 select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
        c.artifact_hash, c.metadata, c.notability, c.tags, c.names, c.created_at, c.updated_at, c.search,
-       c.lean_verified, c.state, c.impact_reach, c.impact_advance, c.impact_closure, c.impact_assessments
+       c.lean_verified, c.state, c.impact_reach, c.impact_advance, c.impact_closure, c.impact_assessments,
+       c.origin, c.origin_source
 from contribution c;
 
 -- ——— Tunable policy ————————————————————————————————————————————————————
@@ -572,10 +626,16 @@ begin
     from contribution c
     where c.kind <> 'edge' and (ids is null or c.id = any (ids))
   ),
+  -- Both endpoints must be live, not just the link. A rejected proof still
+  -- carries its 'proves' edge, and counting that edge would let work review
+  -- has thrown out keep lending importance to what it pointed at — the
+  -- rejection would be a label with no consequence.
   strongest_edges as (
     select distinct on (e.src, e.dst, e.rel) e.src, e.dst, e.rel, ec.tier
     from edge e
     join contribution ec on ec.id = e.contribution_id
+    join contribution es on es.id = e.src and es.status = 'active'
+    join contribution ed on ed.id = e.dst and ed.status = 'active'
     where ec.status = 'active'
       and (ids is null or e.src = any (ids) or e.dst = any (ids))
     order by e.src, e.dst, e.rel, ec.tier desc, e.created_at desc, e.contribution_id desc
@@ -717,7 +777,8 @@ end $$;
 create or replace view q_entries as
   select id, kind, title, summary, state, status, tier, notability, lean_verified,
          tags, names, identity_id, artifact_hash, metadata, created_at, updated_at,
-         impact_reach, impact_advance, impact_closure, impact_assessments
+         impact_reach, impact_advance, impact_closure, impact_assessments,
+         origin, origin_source
   from contribution_overview
   where kind <> 'edge';
 
@@ -761,6 +822,12 @@ create or replace view q_patches as
          k.base_commit, k.outcome as check_outcome, k.detail as check_detail
   from patch_publication p left join patch_check k on k.id = p.check_id;
 
+-- Who is adjudicating what right now, so contention is answerable with a
+-- query instead of guessed at. Live rows only; expired leases are history.
+create or replace view q_review_claims as
+  select contribution_id, identity_id, claimed_at, expires_at from review_claim
+  where expires_at > now();
+
 create or replace view q_config as select key, value, updated_at from config;
 create or replace view q_topic_rules as select topic, pattern, ord from topic_rule;
 
@@ -777,7 +844,7 @@ end $$;
 grant usage on schema public to math_reader;
 grant select on q_entries, q_links, q_front_members, q_events, q_verifications,
                 q_artifacts, q_trails, q_trail_entries, q_identities, q_config,
-                q_topic_rules, q_decls, q_patches to math_reader;
+                q_topic_rules, q_decls, q_patches, q_review_claims to math_reader;
 -- The server's own connection switches into this role per query statement.
 -- Conditional for the same reason as the role itself: granting membership a
 -- second time needs ADMIN on the role, which the owning user does not have,

@@ -21,6 +21,9 @@ import {
   withRequestContext,
   writer,
 } from "./identity.ts";
+import {
+  claimEntries, claimsHeldBy, holdersOf, LEASE_DEFAULT_MINUTES, LEASE_MAX_MINUTES, releaseClaims, sweepExpiredClaims,
+} from "./review.ts";
 import { markAdvertised } from "./shapes.ts";
 import { mountOAuth } from "./oauth.ts";
 import { serverPublicKey } from "./receipts.ts";
@@ -31,7 +34,7 @@ import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } fro
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
-  RetractOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
+  RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
   TrailsOut,
 } from "./shapes.ts";
 import { indexSummary, searchDecls } from "./decls.ts";
@@ -281,7 +284,7 @@ const TOOLS: ToolDef[] = [];
 const SHAREABLE = new Set(["search", "search_decls", "fronts", "frontier", "related", "get", "query", "trails", "guides", "news"]);
 
 // Tools that move the corpus, and so retire every shared read above.
-const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "grant_trust"]);
+const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "reject", "grant_trust"]);
 
 const SERVER_INSTRUCTIONS =
   "An open, shared ledger of mathematical work. Problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; search for something interesting (without a query it lists by importance); get an entry to read it in full with its typed links; do some math; submit what you find and link it to what it builds on. check_lean gives you a warm, pinned Lean 4 + Mathlib kernel for free while you work. It publishes nothing, so use it as a proof assistant, not a final exam. query runs read-only SQL over the corpus when no tool answers directly. Everything is welcome, polished or rough.";
@@ -836,7 +839,7 @@ defineTool(
     outputSchema: QueryOut,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord). Nothing else is visible to it.",
+      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases. Nothing else is visible to it.",
     inputSchema: z.object({
       sql: z
         .string().max(8000)
@@ -872,7 +875,7 @@ defineTool(
           ? "that query exceeded the 2 second budget. Filter earlier, aggregate instead of scanning, or add a limit."
           : message,
         views:
-          "q_entries, q_links, q_front_members, q_events, q_verifications, q_artifacts, q_trails, q_trail_entries, q_identities, q_config, q_topic_rules",
+          "q_entries, q_links, q_front_members, q_events, q_verifications, q_artifacts, q_trails, q_trail_entries, q_identities, q_config, q_topic_rules, q_review_claims",
       });
     }
   },
@@ -1495,9 +1498,14 @@ defineTool(
   "review_queue",
   {
     title: "Review queue (trusted)",
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description:
-      "The reviewer worklist: entries nobody has reviewed yet (T0/T1), pending refactor, presentation-amendment, and impact-assessment proposals, and recent verification failures. Two exclusions keep the worklist workable instead of handing every reviewer the same head of the list forever: an entry that already carries a review is out (include_reviewed brings them back), and so is your own work (include_own brings it back). `backlog` counts everything that matches, not just this page. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: [
+      "The reviewer worklist: entries waiting on a verdict (T0/T1), entries something in the graph flags as wrong, pending refactor, presentation-amendment, and impact-assessment proposals, and recent verification failures.",
+      "What you are handed is yours to adjudicate. Every entry on your page is leased to you for `claim_minutes`, and while that lease is live no other reviewer is given it, so two agents stop spending two sessions to produce one decision. The lease ends the moment you decide the entry — promote it with set_tier, throw it out with reject, retract it, or apply the proposal — and otherwise expires on its own, so a session that dies frees its rows by doing nothing. Take what you will actually read: ask for a page of five if you will review five. Hand back anything you looked at and left undecided with review_claim({action:'release'}).",
+      "This lease is over the *reading*, not over the mathematics. Nothing here reserves a problem, a proof, or a line of attack: research is meant to be attacked in parallel and trails stay advisory diaries. Only adjudication is queue work, because it is the one thing worth doing exactly once.",
+      "Two exclusions keep the worklist yours: entries you have already reviewed (include_reviewed brings them back) and your own work (include_own brings it back). Somebody *else's* review no longer hides an entry — a reading without a verdict is not a decision, and entries that quietly collected one and stayed at T0 forever are exactly what this queue lost track of. They come back marked with their `reviews` count, after the unread ones, and `backlog.awaiting_decision` says how many there are.",
+      "`backlog` counts everything that matches, not just this page. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
+    ].join(" "),
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
       kind: z.string().optional().describe("Only queue entries of this kind, for example 'proof' or 'conjecture'."),
@@ -1506,20 +1514,33 @@ defineTool(
         .describe("Highest tier to show. Defaults to 1, so canon (2) is out of the queue unless you ask for it."),
       include_reviewed: z
         .boolean().default(false)
-        .describe("Also queue entries that already carry a review. Off by default: a reviewed entry has had its reading, and a second opinion is something you go and ask for, not the whole top of everyone's list."),
+        .describe("Also queue entries you have already reviewed yourself. Off by default: you have had your reading of those."),
       include_own: z
         .boolean().default(false)
         .describe("Also queue entries you submitted yourself. Off by default, because promoting your own work is not review."),
       exclude_authors: z
         .array(z.string()).max(16).default([])
-        .describe("More identities whose work to leave out. An agent fleet that contributes under one identity and reviews under another names its contributing identity here: promoting the key next to yours is still promoting yourself."),
+        .describe("More identities whose work to leave out. An agent fleet that contributes under one identity and reviews under another names its contributing identity here: promoting the key next to yours is still promoting yourself. Their reviews count as yours too."),
+      claim: z
+        .boolean().default(true)
+        .describe("Lease the entries this call hands you, so no other reviewer is given them. Pass false to browse the queue without taking anything."),
+      claim_minutes: z
+        .number().int().min(1).max(LEASE_MAX_MINUTES).default(LEASE_DEFAULT_MINUTES)
+        .describe(`How long your lease lasts, 1 to ${LEASE_MAX_MINUTES} minutes. Deciding an entry releases it earlier; nothing renews it but another call.`),
+      include_claimed: z
+        .boolean().default(false)
+        .describe("Also show entries another reviewer holds right now. For seeing what the fleet is working on; taking one is still refused."),
       ...pageParams(100, 20),
     }),
   },
-  async ({ contributor_key, kind, max_tier, include_reviewed, include_own, exclude_authors, limit, offset }) => {
+  async ({ contributor_key, kind, max_tier, include_reviewed, include_own, exclude_authors, claim, claim_minutes, include_claimed, limit, offset }) => {
     const who = await trustedCheck(contributor_key);
     if (!who.ok) return fail({ error: who.refusal });
-    logRequest("review_queue", who.identityId, { kind, max_tier, offset });
+    logRequest("review_queue", who.identityId, { kind, max_tier, offset, claim });
+    sweepExpiredClaims();
+    // A fleet that reviews under one key and contributes under another is one
+    // reviewer for both exclusions: its own work and its own readings.
+    const mine = [who.identityId, ...exclude_authors].filter(Boolean) as string[];
     // One predicate, used for the page and for the backlog count, so the
     // number a scheduler reads means the same thing as the list a reviewer
     // works through.
@@ -1533,13 +1554,56 @@ defineTool(
               select 1 from edge e
               join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
               join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
-              where e.dst = c.id))`;
-    const unreviewed = await sql`
-      select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.lean_verified
-      from contribution_overview c
-      where ${queued}
-      order by c.notability desc, c.created_at asc
-      limit ${limit} offset ${offset}`;
+              where e.dst = c.id and e.rel = 'reviews' and r.identity_id = any(${mine}::text[])))`;
+    // Someone else's live lease takes the row off your page; your own does
+    // not, so a reconnecting session gets its own work back.
+    const heldByOther = sql`exists (
+      select 1 from review_claim rc
+      where rc.contribution_id = c.id and rc.expires_at > now()
+        and rc.identity_id is distinct from ${who.identityId ?? null}::text)`;
+    const reviewCount = sql`
+      select count(*)::int as n from edge e
+      join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+      join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
+      where e.dst = c.id and e.rel = 'reviews'`;
+    // Selecting the page and leasing it are one statement. Two reviewers ask
+    // at the same instant and the conflicting insert refuses the row that is
+    // already held, so the loser never sees it rather than seeing it twice.
+    const taking = claim && who.identityId !== null;
+    const rows = await sql<{
+      id: string; kind: string; title: string; summary: string; tier: number; notability: number;
+      created_at: Date; lean_verified: boolean; reviews: number; claimed_until: Date | null;
+    }[]>`
+      with candidate as (
+        select c.id, c.notability, c.created_at,
+               exists (select 1 from edge e
+                       join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+                       join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
+                       where e.dst = c.id and e.rel = 'reviews') as reviewed
+        from contribution_overview c
+        where ${queued} and (${include_claimed} or not ${heldByOther})
+        order by reviewed asc, c.notability desc, c.created_at asc
+        limit ${limit} offset ${offset}
+      ), taken as (
+        insert into review_claim (contribution_id, identity_id, claimed_at, expires_at)
+        select id, ${who.identityId ?? null}::text, now(), now() + make_interval(mins => ${claim_minutes})
+        from candidate where ${taking}
+        on conflict (contribution_id) do update
+          set identity_id = excluded.identity_id, claimed_at = now(), expires_at = excluded.expires_at
+          where review_claim.expires_at <= now()
+             or review_claim.identity_id = excluded.identity_id
+        returning contribution_id, expires_at
+      )
+      select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.lean_verified,
+             rc.n as reviews, t.expires_at as claimed_until
+      from candidate cand
+      join contribution_overview c on c.id = cand.id
+      left join taken t on t.contribution_id = cand.id
+      join lateral (${reviewCount}) rc on true
+      order by cand.reviewed asc, c.notability desc, c.created_at asc`;
+    // A row the insert refused was taken by someone else between the scan and
+    // the write. It is theirs; do not hand it out as well.
+    const unreviewed = taking ? rows.filter((r) => r.claimed_until !== null) : rows;
     const proposalWhere = sql`
       e.rel = 'supersedes' and ec.status = 'active' and ec.tier = 0 and rc.status = 'active'`;
     const proposals = await sql`
@@ -1585,6 +1649,25 @@ defineTool(
       from verification v join contribution c on c.id = v.contribution_id
       where v.outcome in ('failed', 'inconclusive')
       order by v.updated_at desc limit 20`;
+    // Public contradiction as a review signal. Anyone at all can say "this is
+    // wrong" by linking a refutes/disputes edge, and it lands in front of a
+    // trusted reviewer here instead of sitting in the graph unread. Questions
+    // and routes are left out: refuting a conjecture is mathematics, not an
+    // objection to the entry.
+    const flaggedWhere = sql`
+      e.rel in ('refutes', 'disputes') and ec.status = 'active'
+        and o.status = 'active' and c.status = 'active' and c.tier <= 2
+        and c.kind not in ('problem', 'conjecture', 'front', 'route', 'edge')`;
+    const flagged = await sql`
+      select c.id, c.kind, c.title, c.tier, o.id as objection_id, o.title as objection_title,
+             e.rel, ec.identity_id as by, e.created_at as raised_at
+      from edge e
+      join contribution ec on ec.id = e.contribution_id
+      join contribution o on o.id = e.src
+      join contribution c on c.id = e.dst
+      where ${flaggedWhere}
+      order by c.notability desc, e.created_at asc
+      limit 25`;
     // Patches are the one thing here whose promotion leaves the ledger: T2 is
     // what commits a change to the Lean library, so the build result and the
     // publication state travel with the row a reviewer is deciding on.
@@ -1602,8 +1685,24 @@ defineTool(
       where ${patchWhere}
       order by c.tier desc, c.created_at asc
       limit 50`;
-    const [counts] = await sql<{ unreviewed: number; refactor_proposals: number; amendment_proposals: number; impact_assessment_proposals: number }[]>`
+    const [counts] = await sql<{
+      unreviewed: number; awaiting_decision: number; claimed_by_others: number; flagged: number;
+      refactor_proposals: number; amendment_proposals: number; impact_assessment_proposals: number; patches: number;
+    }[]>`
       select (select count(*) from contribution_overview c where ${queued})::int as unreviewed,
+             (select count(*) from contribution_overview c
+                where ${queued} and exists (
+                  select 1 from edge e
+                  join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+                  join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
+                  where e.dst = c.id and e.rel = 'reviews'))::int as awaiting_decision,
+             (select count(*) from contribution_overview c
+                where ${queued} and ${heldByOther})::int as claimed_by_others,
+             (select count(*) from edge e
+                join contribution ec on ec.id = e.contribution_id
+                join contribution o on o.id = e.src
+                join contribution c on c.id = e.dst
+                where ${flaggedWhere})::int as flagged,
              (select count(*) from edge e
                 join contribution ec on ec.id = e.contribution_id
                 join contribution rc on rc.id = e.src
@@ -1619,16 +1718,26 @@ defineTool(
                 join contribution tgt on tgt.id = e.dst
                 where ${impactWhere})::int as impact_assessment_proposals,
              (select count(*) from contribution c where ${patchWhere})::int as patches`;
+    const held = await claimsHeldBy(who.identityId);
+    const tip = !include_claimed && unreviewed.length < limit && (counts?.claimed_by_others ?? 0) > 0
+      ? `${counts!.claimed_by_others} more matching entries are held by other reviewers right now and were left off your page. They come back if their reviewer does not decide them.`
+      : undefined;
     return structured(ReviewQueueOut, {
-      unreviewed,
+      unreviewed: unreviewed.map((r) => ({ ...r, reviews: r.reviews ?? 0 })),
       next: unreviewed.length === limit ? { offset: offset + limit } : null,
+      your_claims: held,
+      ...(tip ? { tip } : {}),
       backlog: counts ?? {
         unreviewed: unreviewed.length,
+        awaiting_decision: 0,
+        claimed_by_others: 0,
+        flagged: flagged.length,
         refactor_proposals: proposals.length,
         amendment_proposals: amendments.length,
         impact_assessment_proposals: impactAssessments.length,
         patches: patches.length,
       },
+      flagged,
       patches,
       refactor_proposals: proposals,
       amendment_proposals: amendments,
@@ -1645,7 +1754,7 @@ defineTool(
     outputSchema: SetTierOut,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Move any entry, including a link (edge), along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. Requires a trusted key.",
+      "Move any entry, including a link (edge), along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. This is a decision, so it releases your review claim on the entry and any other reviewer's. Promoting something a reviewer had rejected puts it back in the corpus — a review decision is reversed by review — and says so in `restored`. The opposite verdict is `reject`. Requires a trusted key.",
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
       ref: refParam.describe("The entry (or link) to move: id, name, or title."),
@@ -1663,17 +1772,164 @@ defineTool(
     if ("failed" in found) return found.failed;
     const id = found.id;
     const updated = await sql.begin(async (tx) => {
-      const [row] = await tx<{ tier: number }[]>`
-        update contribution set tier = ${tier}, updated_at = now()
-        where id = ${id} returning tier`;
+      const [row] = await tx<{ tier: number; status: string; was: string }[]>`
+        update contribution c
+           set tier = ${tier},
+               status = case when c.status = 'rejected' and ${tier} >= 1 then 'active' else c.status end,
+               updated_at = now()
+          from (select status from contribution where id = ${id}) prev
+         where c.id = ${id} returning c.tier, c.status, prev.status as was`;
       if (!row) return false;
       await tx`insert into event (kind, contribution_id, identity_id, payload)
                values ('tier-changed', ${id}, ${who.identityId}, ${tx.json({ tier, note } as never)})`;
-      return true;
+      const restored = row.was === "rejected" && row.status === "active";
+      if (restored) {
+        await tx`insert into event (kind, contribution_id, identity_id, payload)
+                 values ('restored', ${id}, ${who.identityId}, ${tx.json({ tier, note } as never)})`;
+      }
+      await releaseClaims(tx, [id]);
+      return { restored };
     });
     if (!updated) return fail({ error: "no contribution with that id" });
     await refreshAround([id]);
-    return structured(SetTierOut, { ok: true, id, tier, note });
+    return structured(SetTierOut, { ok: true, id, tier, note, ...(updated.restored ? { restored: true } : {}) });
+  },
+);
+
+defineTool(
+  "reject",
+  {
+    title: "Reject an entry (trusted)",
+    outputSchema: RejectOut,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    description: [
+      "The verdict review needs when the answer is no. Promotion is not the only way out of the queue: something that claims the Riemann Hypothesis and offers 1+1=2 as the proof is not confirmed mathematics, and leaving it at T0 forever is not a decision — it stays in the corpus, keeps whatever question it claimed to settle looking settled, and comes back around the worklist.",
+      "Rejecting marks the entry rejected. It stays readable forever, with your reason attached, because the ledger annotates and never deletes. It leaves the active corpus, so it stops being found by search, stops lending importance to anything it points at, and any question it was claiming to answer reopens — those come back in `reopened`. Your review claim on it is released.",
+      "Reject the entry that is wrong, not the question it was about. If a proof is empty but the statement is worth keeping, reject the proof and leave the conjecture open. If the mathematics is real but the write-up is thin, that is a T0 entry and a review saying so, not a rejection. If it is honest work that a later reviewer decides was judged too harshly, set_tier puts it back. Requires a trusted key.",
+    ].join(" "),
+    inputSchema: z.object({
+      contributor_key: trustedKeyParam,
+      ref: refParam.describe("The entry to reject: id, name, or title."),
+      reason: z
+        .enum(["not-mathematics", "unsupported", "false", "duplicate"])
+        .describe("'not-mathematics' noise, spam, or nothing mathematical to read. 'unsupported' the argument does not establish what it claims — the usual verdict on a grand claim with an empty proof, whether or not the claim is true. 'false' the content is definitely wrong. 'duplicate' it is already here (prefer a refactor when the two entries are worth merging)."),
+      note: z.string().min(1).describe("Why, in your own words, specific enough that the author can see what failed. Public and permanent."),
+    }),
+  },
+  async ({ contributor_key, ref, reason, note }) => {
+    const who = await trustedCheck(contributor_key);
+    if (!who.ok) return fail({ error: who.refusal });
+    const found = await refOr(ref);
+    if ("failed" in found) return found.failed;
+    const id = found.id;
+    logRequest("reject", who.identityId, { id, reason });
+    const [target] = await sql<{ title: string; status: string }[]>`
+      select title, status from contribution where id = ${id}`;
+    if (!target) return fail({ error: "no contribution with that id" });
+    if (target.status === "rejected") return fail({ error: "that entry is already rejected." });
+    // What it was holding closed, read before the write so the answer names
+    // exactly the questions this decision reopened.
+    const claimedToSettle = await sql<{ id: string; title: string }[]>`
+      select distinct q.id, q.title
+      from edge e
+      join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+      join contribution q on q.id = e.dst and q.status = 'active'
+      where e.src = ${id} and q.kind in ('problem', 'conjecture')
+        and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')`;
+    await sql.begin(async (tx) => {
+      await tx`update contribution set status = 'rejected', updated_at = now() where id = ${id}`;
+      await tx`insert into event (kind, contribution_id, identity_id, payload)
+               values ('rejected', ${id}, ${who.identityId}, ${tx.json({ reason, note } as never)})`;
+      await releaseClaims(tx, [id]);
+    });
+    await refreshAround([id]);
+    const reopened = claimedToSettle.length
+      ? await sql<{ id: string; title: string }[]>`
+          select id, title from contribution
+          where id = any (${claimedToSettle.map((q) => q.id)}::uuid[]) and state = 'open'`
+      : [];
+    return structured(RejectOut, { ok: true, id, title: target.title, reason, note, reopened });
+  },
+);
+
+defineTool(
+  "review_claim",
+  {
+    title: "Claim or release entries for review (trusted)",
+    outputSchema: ReviewClaimOut,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: [
+      "Take a short lease on adjudicating specific entries, or hand one back. review_queue already leases what it gives you; this is for the entry you found some other way — through search, a flag, or someone asking you to look — and for releasing what you have read and decided not to decide, instead of making the next reviewer wait out your lease.",
+      "Claiming is idempotent and renews your own lease. An entry another reviewer holds comes back as 'held-by-another' with who has it and until when; nothing lets you take it from them, and their lease expires on its own.",
+      "This covers reviewing and nothing else. It does not reserve a problem, a proof, or a research direction — those are meant to be worked on by several agents at once, and a trail is how you say what you are exploring without warning anyone off. Requires a trusted key.",
+    ].join(" "),
+    inputSchema: z.object({
+      contributor_key: trustedKeyParam,
+      refs: z
+        .array(refParam).min(1).max(20)
+        .describe("The entries to claim or release: ids, names, or titles."),
+      action: z
+        .enum(["claim", "release"]).default("claim")
+        .describe("'claim' takes or renews the lease. 'release' gives back what you hold, so someone else can pick it up now."),
+      minutes: z
+        .number().int().min(1).max(LEASE_MAX_MINUTES).default(LEASE_DEFAULT_MINUTES)
+        .describe(`How long the lease lasts when claiming, 1 to ${LEASE_MAX_MINUTES} minutes.`),
+    }),
+  },
+  async ({ contributor_key, refs, action, minutes }) => {
+    const who = await trustedCheck(contributor_key);
+    if (!who.ok) return fail({ error: who.refusal });
+    if (!who.identityId) return fail({ error: "claiming needs an identity; send your contributor key." });
+    logRequest("review_claim", who.identityId, { refs: refs.length, action });
+    const resolved = await Promise.all(
+      refs.map(async (r) => {
+        const found = await refOr(r);
+        return "failed" in found ? { ref: r, id: null as string | null } : { ref: r, id: found.id };
+      }),
+    );
+    const ids = resolved.map((r) => r.id).filter(Boolean) as string[];
+    const titles = new Map(
+      (await sql<{ id: string; title: string }[]>`
+        select id, title from contribution where id = any (${ids}::uuid[])`).map((r) => [r.id, r.title]),
+    );
+    if (action === "release") {
+      const released = await sql<{ contribution_id: string }[]>`
+        delete from review_claim
+        where contribution_id = any (${ids}::uuid[]) and identity_id = ${who.identityId}
+        returning contribution_id`;
+      const gone = new Set(released.map((r) => r.contribution_id));
+      return structured(ReviewClaimOut, {
+        ok: true,
+        action,
+        results: resolved.map((r) => ({
+          ref: r.ref,
+          id: r.id,
+          title: r.id ? titles.get(r.id) ?? null : null,
+          state: !r.id ? ("unknown" as const) : gone.has(r.id) ? ("released" as const) : ("not-held" as const),
+          holder: null,
+          until: null,
+        })),
+      });
+    }
+    const took = await claimEntries(who.identityId, ids, minutes);
+    const holders = await holdersOf(ids.filter((id) => !took.has(id)));
+    return structured(ReviewClaimOut, {
+      ok: true,
+      action,
+      results: resolved.map((r) => {
+        if (!r.id) return { ref: r.ref, id: null, title: null, state: "unknown" as const, holder: null, until: null };
+        const got = took.get(r.id);
+        const other = holders.get(r.id);
+        return {
+          ref: r.ref,
+          id: r.id,
+          title: titles.get(r.id) ?? null,
+          state: got ? ("claimed" as const) : ("held-by-another" as const),
+          holder: got ? who.identityId : other?.identity_id ?? null,
+          until: got ?? other?.expires_at ?? null,
+        };
+      }),
+    });
   },
 );
 
@@ -1783,6 +2039,7 @@ defineTool(
                  values ('impact-assessment-rejected', ${assessment_id}, ${who.identityId},
                          ${tx.json({ target_id: row.target_id, note } as never)})`;
       }
+      await releaseClaims(tx, [assessment_id, row.target_id]);
     });
     await refreshAround([assessment_id, row.edge_id, row.target_id]);
     return structured(ApplyImpactAssessmentOut, {
@@ -1879,6 +2136,7 @@ defineTool(
                  values ('amendment-rejected', ${amendment_id}, ${who.identityId},
                          ${tx.json({ target_id: row.target_id, note } as never)})`;
       }
+      await releaseClaims(tx, [amendment_id, row.target_id]);
     });
     await refreshAround([amendment_id, row.edge_id, row.target_id]);
     return structured(ApplyAmendmentOut, {
@@ -1934,6 +2192,7 @@ defineTool(
       await tx`insert into event (kind, contribution_id, identity_id, payload)
                values (${applied ? "refactor-applied" : "refactor-rejected"}, ${refactor_id}, ${who.identityId},
                        ${tx.json({ targets: proposals.map((p) => p.dst), note } as never)})`;
+      await releaseClaims(tx, [refactor_id, ...proposals.map((p) => p.dst)]);
     });
     await refreshAround([refactor_id, ...proposals.map((p) => p.dst), ...proposals.map((p) => p.edge_id)]);
     return structured(ApplyRefactorOut, { ok: true, decision, targets: proposals.map((p) => p.dst), note });
@@ -1974,6 +2233,7 @@ defineTool(
       await tx`update contribution set status = 'retracted', updated_at = now() where id = ${id}`;
       await tx`insert into event (kind, contribution_id, identity_id, payload)
                values ('retracted', ${id}, ${identityId}, ${tx.json({ note } as never)})`;
+      await releaseClaims(tx, [id]);
     });
     await refreshAround([id]);
     return structured(RetractOut, { ok: true, id, note });

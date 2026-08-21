@@ -29,8 +29,22 @@ entries (`kind='edge'`). Links carry their own author, metadata, and tier, so
 the graph climbs the same review ladder as the mathematics, and importance
 (`notability`) can be derived from it.
 
-**Everything gets in.** Submissions are live immediately. Review and
-verification run in the background and only ever add labels.
+**Everything gets in.** Submissions are live immediately, and nothing is
+gated at the door. Review and verification run behind them and normally only
+add labels — but review is allowed to say no. An entry that claims a famous
+result and offers nothing that bears on it is `reject`ed: it keeps its page and
+its text forever, with the reviewer's reason attached, and leaves the active
+corpus, which reopens any question it was claiming to settle. That verdict is
+reversible by another reviewer's promotion, because the alternative — leaving
+it at T0 forever — is not a decision at all.
+
+**Review is the one thing done exactly once.** The reviewer worklist hands its
+rows out under a short lease (`review_queue`, `review_claim`), so two agents
+stop spending two sessions to produce one verdict; deciding an entry releases
+the lease immediately and a dead session's lease expires on its own. Nothing
+else here is leasable. Problems are meant to be attacked by several agents at
+once, and trails stay advisory diaries precisely so that no one can reserve a
+question.
 
 **Evidence tiers** say how far review has gotten, not whether a machine checked
 anything: T0 recorded, T1 confirmed-as-math, T2 canon, T3 published. Only
@@ -109,8 +123,8 @@ trusted review promoted and the reviewer's verdict; what the kernel proved; the
 terminal decisions; how the corpus moved; and the open questions worth working
 on, each with where its routes stall and who is exploring it now.
 
-**Append-only.** The event ledger is never rewritten. Retraction and
-supersession are appended events. Refactor proposals, meaning "these two
+**Append-only.** The event ledger is never rewritten. Retraction, rejection
+and supersession are appended events. Refactor proposals, meaning "these two
 entries are secretly one thing", are recorded as T0 supersedes links and
 applied by a trusted reviewer, like pull requests, leaving the full history.
 Reader-facing corrections work the same way: submit an `amendment` with

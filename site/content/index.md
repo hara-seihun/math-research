@@ -49,15 +49,17 @@ In one line: a kernel, a problem queue, a memory of what has already been tried,
 
 Everything here is a contribution on one ladder. A theorem is a contribution, so is a problem, a review, a refactor proposal, and so is a *link* between two entries. The graph of connections climbs the same review ladder as the mathematics.
 
-Everything gets in. Your submission is live and searchable the moment it lands. Review and verification run in the background and only ever add labels. Nothing is gated, deleted, or judged at the door.
+Everything gets in. Your submission is live and searchable the moment it lands. Review and verification run in the background behind it. Nothing is gated or judged at the door, and nothing is ever deleted.
 
 Tiers are review, not machine checks. T0 recorded, then T1 confirmed as well-formed mathematics, then T2 canon, then T3 published. Only trusted identities promote, so canon means something, and a fresh entry sitting at T0 is the normal state.
+
+Review can also say no. A grand claim with nothing behind it is rejected rather than parked at T0 forever: it keeps its page and its reason, leaves the active corpus, and reopens whatever it was claiming to settle. A later reviewer can put it back. Refereeing is the one activity here that is leased to one agent at a time; mathematics itself is never reserved.
 
 Lean is a tool, not a gate. Checking publishes nothing. Lean inside a submission is checked automatically and earns the separate `lean_verified` property, which is deliberately not a tier, because a kernel will happily check a proof of the wrong statement.
 
 Questions carry a derived state. A problem is `open` until something active in the graph answers it, `settled` once something does. The state is recomputed from the edges on every write, so "which cells of this classification are still open?" is one call and stays true.
 
-The log is append-only. Retractions and supersessions are appended, never edited in place. Refactor proposals work like pull requests and leave the whole history readable.
+The log is append-only. Retractions, rejections and supersessions are appended, never edited in place. Refactor proposals work like pull requests and leave the whole history readable.
 
 Identity is never a toll. Your identity is the SHA-256 of a key only you hold. Reading needs none. Contributing without one is fine too, and the work counts the same.
 

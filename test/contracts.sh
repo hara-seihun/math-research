@@ -306,23 +306,119 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"not
 GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '["tier"]') == 2 ]] || fail "operator set_tier did not apply"
 
-# Contract: the review queue is a worklist, not a scoreboard. It is ordered by
-# notability and every reviewer sees the same head of it, so an entry that
-# cannot move has to leave: one already carrying a review, and your own work,
-# which you may not promote. Both come back on request, and backlog counts the
-# whole queue rather than the page a scheduler happens to have asked for.
+# Contract: the review queue is a worklist, not a scoreboard. Your own work is
+# out (you may not promote it), and so is anything you have already read. What
+# somebody *else* read and left undecided stays in, marked, because a reading
+# without a verdict is not a decision and entries that collected one used to
+# sit at T0 unreachable forever. backlog counts the whole queue rather than the
+# page a scheduler happens to have asked for.
 RQX=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"conjecture\",\"title\":\"queue subject\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
 RQO=$(call submit "{\"contributor_key\":\"$OPKEY\",\"kind\":\"conjecture\",\"title\":\"the reviewer's own conjecture\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-queue() { call review_queue "{\"contributor_key\":\"$OPKEY\",\"kind\":\"conjecture\"${1:-}}"; }
+queue() { call review_queue "{\"contributor_key\":\"$OPKEY\",\"kind\":\"conjecture\",\"claim\":false${1:-}}"; }
 queued() { python3 -c "import sys,json; d=json.load(sys.stdin); ids=[e['id'] for e in d['unreviewed']]; assert d['backlog']['unreviewed'] == len(ids), d['backlog']; sys.exit(0 if ('\$1' in ids) == ('\$2' == 'in') else 1)"; }
 queue "" | queued "$RQX" in || fail "an unreviewed entry was missing from the review queue"
 queue "" | queued "$RQO" out || fail "the review queue offered the reviewer their own submission"
 queue ',"include_own":true' | queued "$RQO" in || fail "include_own did not bring the reviewer's own work back"
 RQR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"review\",\"title\":\"a reading of the queue subject\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RQR\",\"dst\":\"$RQX\",\"rel\":\"reviews\"}" | field '["edge_id"]' > /dev/null
-queue "" | queued "$RQX" out || fail "a reviewed entry stayed at the head of the review queue"
-queue ',"include_reviewed":true' | queued "$RQX" in || fail "include_reviewed did not bring a reviewed entry back"
+queue "" | queued "$RQX" in || fail "someone else's undecided reading hid an entry from the queue"
+queue "" | python3 -c "import sys,json; d=json.load(sys.stdin)
+row = next(e for e in d['unreviewed'] if e['id'] == '$RQX')
+assert row['reviews'] == 1, row
+assert d['backlog']['awaiting_decision'] >= 1, d['backlog']" || fail "the queue did not mark an entry as read-but-undecided"
+# The reviewer's own reading is what takes it off their list.
+RQR2=$(call submit "{\"contributor_key\":\"$OPKEY\",\"kind\":\"review\",\"title\":\"the reviewer's own reading\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+call link "{\"contributor_key\":\"$OPKEY\",\"src\":\"$RQR2\",\"dst\":\"$RQX\",\"rel\":\"reviews\"}" | field '["edge_id"]' > /dev/null
+queue "" | queued "$RQX" out || fail "an entry the reviewer had already read stayed on their list"
+queue ',"include_reviewed":true' | queued "$RQX" in || fail "include_reviewed did not bring back what the reviewer had read"
 queue ",\"include_reviewed\":true,\"exclude_authors\":[\"$(identity_of "$KEY")\"]" | queued "$RQX" out || fail "exclude_authors did not drop that identity's work"
+
+# ——— Reviewers do not collide ————————————————————————————————————————————
+# Contract: the queue hands its rows out under a lease. Two reviewers asking
+# at once must get disjoint work, because two readings of one entry produce
+# one decision and waste a session — which is exactly what was happening on
+# the live ledger. The lease covers adjudication only: nothing here gates
+# submit, link, or any research door, since problems are meant to be attacked
+# in parallel.
+TKEY="mrk_test_second_reviewer"
+TID=$(python3 -c "import hashlib; print(hashlib.sha256(b'$TKEY').hexdigest())")
+psql -q -h "$WORK" -d math -c "insert into identity (id, role) values ('$TID', 'trusted')"
+for i in 1 2 3 4; do
+  call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"lease-subject\",\"title\":\"lease subject $i\",\"summary\":\"s\",\"content\":\"c.\"}" > /dev/null
+done
+lease_queue() { call review_queue "{\"contributor_key\":$1,\"kind\":\"lease-subject\"${2:-}}"; }
+ids_of() { python3 -c 'import sys,json; print(" ".join(e["id"] for e in json.load(sys.stdin)["unreviewed"]))'; }
+MINE=$(lease_queue "\"$OPKEY\"" ',"limit":2' | ids_of)
+THEIRS=$(lease_queue "\"$TKEY\"" ',"limit":2' | ids_of)
+[[ -n $MINE && -n $THEIRS ]] || fail "the leased queue handed a reviewer nothing to do"
+for m in $MINE; do
+  for t in $THEIRS; do
+    [[ $m == "$t" ]] && fail "two reviewers were handed the same entry ($m)"
+  done
+done
+LEASED=$(echo "$MINE" | cut -d' ' -f1)
+# The holder sees their own claims listed, and asking again renews rather than
+# loses them.
+lease_queue "\"$OPKEY\"" ',"limit":2' | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert '$LEASED' in [c['id'] for c in d['your_claims']], d['your_claims']
+assert all(e['claimed_until'] for e in d['unreviewed']), d['unreviewed']" || fail "a reviewer lost sight of what they were holding"
+# Another reviewer is told who holds it rather than handed it as well.
+call review_claim "{\"contributor_key\":\"$TKEY\",\"refs\":[\"$LEASED\"]}" \
+  | python3 -c "import sys,json; r=json.load(sys.stdin)['results'][0]; assert r['state']=='held-by-another' and r['holder']=='$OPID', r" \
+  || fail "a claimed entry was handed to a second reviewer"
+# Contract: a decision ends the lease. This is the release that matters —
+# nobody should have to wait out a lease on work that is already decided.
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$LEASED\",\"tier\":1,\"note\":\"confirmed\"}" | field '["ok"]' > /dev/null
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from review_claim where contribution_id = '$LEASED'") == 0 ]] \
+  || fail "promoting an entry did not release the review claim on it"
+# Releasing by hand gives back work read and left undecided.
+HOLD=$(echo "$MINE" | cut -d' ' -f2)
+call review_claim "{\"contributor_key\":\"$OPKEY\",\"refs\":[\"$HOLD\"],\"action\":\"release\"}" \
+  | python3 -c "import sys,json; r=json.load(sys.stdin)['results'][0]; assert r['state']=='released', r" \
+  || fail "a reviewer could not hand back what they were holding"
+call review_claim "{\"contributor_key\":\"$TKEY\",\"refs\":[\"$HOLD\"]}" \
+  | python3 -c "import sys,json; r=json.load(sys.stdin)['results'][0]; assert r['state']=='claimed', r" \
+  || fail "a released entry was not free for the next reviewer"
+# Contract: leases are soft. An agent that dies frees its work by doing
+# nothing, so an expired lease is invisible and the entry comes back.
+psql -q -h "$WORK" -d math -c "update review_claim set expires_at = now() - interval '1 minute' where contribution_id = '$HOLD'"
+lease_queue "\"$OPKEY\"" ',"limit":10' | ids_of | grep -q "$HOLD" || fail "an expired lease still held an entry out of the queue"
+
+# ——— Review can say no ————————————————————————————————————————————————————
+# Contract: promotion is not the only exit. "The Riemann Hypothesis is true,
+# proof: 1+1=2" must not sit at T0 forever quietly holding a question closed.
+# Rejecting takes it out of the active corpus, keeps it readable with its
+# reason, and reopens whatever it was claiming to settle.
+BOGUS_Q=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"conjecture\",\"title\":\"A hard open question\",\"summary\":\"s\",\"content\":\"Is it so?\"}" | field '["id"]')
+BOGUS_P=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"proof\",\"title\":\"Settling the hard open question\",\"summary\":\"s\",\"content\":\"1 + 1 = 2, therefore yes.\"}" | field '["id"]')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$BOGUS_P\",\"dst\":\"$BOGUS_Q\",\"rel\":\"proves\"}" | field '["edge_id"]' > /dev/null
+[[ $(call get "{\"ref\":\"$BOGUS_Q\"}" | field '["state"]') == settled ]] || fail "an asserted proof did not settle its question"
+call reject "{\"contributor_key\":\"$KEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"x\"}" \
+  | field '["error"]' | grep -qi trusted || fail "an untrusted key was allowed to reject"
+call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"1+1=2 does not bear on the question.\"}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'] and [q['id'] for q in d['reopened']] == ['$BOGUS_Q'], d" \
+  || fail "rejecting the proof did not report the question it reopened"
+[[ $(call get "{\"ref\":\"$BOGUS_Q\"}" | field '["state"]') == open ]] || fail "rejecting a bogus proof left its question settled"
+[[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '["status"]') == rejected ]] || fail "a rejected entry is not readable with its verdict"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from event where contribution_id = '$BOGUS_P' and kind = 'rejected' and payload->>'reason' = 'unsupported'") == 1 ]] \
+  || fail "the rejection did not land in the public event ledger with its reason"
+call search "{\"query\":\"Settling the hard open question\"}" | grep -q "$BOGUS_P" \
+  && fail "a rejected entry is still offered by search"
+# Contract: a review decision is reversed by review. Promoting something that
+# was rejected puts it back, so a harsh verdict is not permanent damage.
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"tier\":1,\"note\":\"on second reading the argument is real\"}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'] and d.get('restored') is True, d" \
+  || fail "promoting a rejected entry did not restore it"
+[[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '["status"]') == active ]] || fail "a restored entry did not come back active"
+call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"and back out again\"}" | field '["ok"]' > /dev/null
+# Contract: anyone at all can flag, and it reaches a trusted reviewer. A
+# refutation link is the objection; acting on it stays trusted-only.
+FLAG_T=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"a result somebody disputes\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+FLAG_O=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"counterexample\",\"title\":\"why that result is wrong\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$FLAG_O\",\"dst\":\"$FLAG_T\",\"rel\":\"refutes\"}" | field '["edge_id"]' > /dev/null
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false}" | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert any(f['id'] == '$FLAG_T' and f['objection_id'] == '$FLAG_O' for f in d['flagged']), d['flagged']
+assert d['backlog']['flagged'] >= 1, d['backlog']" || fail "a public refutation never reached the review queue"
 
 # Contract: a write refreshes what it touched, not the corpus. Promotion and
 # linking used to recompute state and notability over every row, which on a
@@ -834,6 +930,8 @@ declare -A DOORS=(
   [news]='{}'
   [set_tuning]="{\"contributor_key\":\"$OPKEY\",\"notability_weights\":{},\"note\":\"no-op\"}"
   [review_queue]="{\"contributor_key\":\"$OPKEY\"}"
+  [review_claim]="{\"contributor_key\":\"$OPKEY\",\"refs\":[\"$Q\"],\"action\":\"release\"}"
+  [reject]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$RQO\",\"reason\":\"not-mathematics\",\"note\":\"contract test\"}"
   [set_tier]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$Q\",\"tier\":1,\"note\":\"n\"}"
   [apply_refactor]="{\"contributor_key\":\"$OPKEY\",\"refactor_id\":\"$PROPOSAL\",\"decision\":\"reject\",\"note\":\"n\"}"
   [apply_amendment]="{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$AMEND_REJECT\",\"decision\":\"reject\",\"note\":\"n\"}"

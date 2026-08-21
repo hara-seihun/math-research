@@ -605,16 +605,48 @@ export const ReviewQueueOut = z.strictObject({
       notability: z.number(),
       created_at: iso,
       lean_verified: z.boolean(),
+      reviews: z.number().int().describe("How many readings this entry already carries. More than zero and still here means nobody has decided it."),
+      claimed_until: iso.nullable().describe("Your lease on adjudicating this entry. It is yours until then, or until you decide it."),
     }),
   ),
   next: offsetCursor,
+  your_claims: z
+    .array(
+      z.strictObject({
+        id: z.string(),
+        kind: z.string(),
+        title: z.string(),
+        tier: z.number().int(),
+        expires_at: iso,
+      }),
+    )
+    .describe("Every entry you currently hold for review, including ones taken in an earlier call."),
+  tip: z.string().optional(),
   backlog: z.strictObject({
     unreviewed: z.number().int(),
+    awaiting_decision: z.number().int().describe("Read at least once and still undecided: the limbo this queue is meant to drain."),
+    claimed_by_others: z.number().int().describe("Matching entries another reviewer holds right now, excluded from your page."),
+    flagged: z.number().int().describe("Active entries something in the graph refutes or disputes. Read the objection, then promote or reject."),
     refactor_proposals: z.number().int(),
     amendment_proposals: z.number().int(),
     impact_assessment_proposals: z.number().int(),
     patches: z.number().int(),
   }),
+  flagged: z
+    .array(
+      z.strictObject({
+        id: z.string(),
+        kind: z.string(),
+        title: z.string(),
+        tier: z.number().int(),
+        objection_id: z.string(),
+        objection_title: z.string(),
+        rel: z.string(),
+        by: z.string().nullable(),
+        raised_at: iso,
+      }),
+    )
+    .describe("Entries someone has publicly contradicted. Anyone can raise one by linking a refutes/disputes edge; only a trusted reviewer can act on it."),
   patches: z
     .array(
       z.strictObject({
@@ -693,6 +725,10 @@ export const SetTierOut = z.strictObject({
   id: z.string(),
   tier: z.number().int(),
   note: z.string(),
+  restored: z
+    .boolean()
+    .optional()
+    .describe("The entry had been rejected by review and this promotion put it back in the corpus."),
 });
 
 export const SetTuningOut = z.strictObject({
@@ -726,6 +762,32 @@ export const ApplyImpactAssessmentOut = z.strictObject({
 });
 
 export const RetractOut = z.strictObject({ ok: z.literal(true), id: z.string(), note: z.string() });
+
+export const RejectOut = z.strictObject({
+  ok: z.literal(true),
+  id: z.string(),
+  title: z.string(),
+  reason: z.enum(["not-mathematics", "unsupported", "false", "duplicate"]),
+  note: z.string(),
+  reopened: z
+    .array(z.strictObject({ id: z.string(), title: z.string() }))
+    .describe("Questions this entry was claiming to settle, now open again because what settled them is out."),
+});
+
+export const ReviewClaimOut = z.strictObject({
+  ok: z.literal(true),
+  action: z.enum(["claim", "release"]),
+  results: z.array(
+    z.strictObject({
+      ref: z.string(),
+      id: z.string().nullable(),
+      title: z.string().nullable(),
+      state: z.enum(["claimed", "released", "held-by-another", "not-held", "unknown"]),
+      holder: z.string().nullable(),
+      until: iso.nullable(),
+    }),
+  ),
+});
 
 export const GrantTrustOut = z.strictObject({
   ok: z.literal(true),

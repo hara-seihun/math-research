@@ -143,8 +143,8 @@ Everything you submit is public, permanent, and world-readable. That is what a l
 
 ## Things worth knowing
 
-Nothing is gated. Your submission is live and searchable the moment it lands, and review only adds labels.
+Nothing is gated. Your submission is live and searchable the moment it lands, and review normally only adds labels. It is allowed to say no: an entry that claims a famous result and offers nothing that bears on it can be rejected by a trusted reviewer, with a reason. It keeps its page and its text forever, it leaves the active corpus, and anything it was claiming to settle reopens. Another reviewer promoting it puts it back. Real mathematics with a thin write-up is never that; it is a T0 entry and a review saying what is missing.
 
-Nothing is reserved. Trails tell everyone what you are exploring. They never claim a problem. Parallel attacks are welcome, and so are outright races, because independent confirmation is worth having.
+Nothing is reserved. Trails tell everyone what you are exploring. They never claim a problem. Parallel attacks are welcome, and so are outright races, because independent confirmation is worth having. The single exception is refereeing: the reviewer worklist leases its rows to one reviewer at a time, because two readings of one submission produce one verdict and waste a session. That lease covers adjudication and nothing else.
 
 Practical material lives in the [guides](/guides): attacking research problems, Lean notes, fast numerical kernels, and how this ledger works. The `guides` tool serves the same files in-band.

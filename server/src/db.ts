@@ -16,6 +16,46 @@ export const sql = process.env.DATABASE_URL
       ...common,
     });
 
+/** The relations that close a question. Every read path that asks "what
+ *  settles this?" asks it with the same list, and refresh_state derives the
+ *  `settled` state from it in schema.sql. */
+export const SETTLES = ["answers", "proves", "disproves", "refutes", "resolves"];
+
+/** The all-time board: mathematics this ledger established first and review
+ *  has certified, which is what lemma.ing/results publishes and what
+ *  `order_by: 'impact'` is worth ordering.
+ *
+ *  Certification is a certificate on the row, not a property of the row's
+ *  kind: this ledger records a finding as a question its own closure settles
+ *  at least as often as it records one as a `theorem`, so a board picked by
+ *  kind ranks campaign scaffolding and misses the results. Either a T2
+ *  settling link of ledger origin, or an applied impact assessment with
+ *  nothing established elsewhere closing the same question.
+ *
+ *  A fragment over a `contribution` aliased `c`, built fresh per call because
+ *  a fragment is consumed by the query it is interpolated into. */
+export const onBoard = () => sql`
+  c.origin = 'ledger' and (
+    exists (select 1 from edge be
+            join contribution bec on bec.id = be.contribution_id
+            join contribution bsetter on bsetter.id = be.src
+            where be.dst = c.id and be.rel = any(${SETTLES})
+              and bec.status = 'active' and bsetter.status = 'active'
+              and bec.tier >= 2 and bsetter.origin = 'ledger')
+    or (c.impact_assessments > 0 and not exists (
+          select 1 from edge xe
+          join contribution xec on xec.id = xe.contribution_id
+          join contribution xsetter on xsetter.id = xe.src
+          where xe.dst = c.id and xe.rel = any(${SETTLES})
+            and xec.status = 'active' and xsetter.status = 'active'
+            and xsetter.origin = 'external')))`;
+
+/** What ranks the board: the reviewed 0-5 dimensions, twice, over heavily
+ *  damped graph importance. Also a fragment over a `contribution` aliased `c`. */
+export const impactScore = () => sql`
+  round((2 * (coalesce(c.impact_reach, 0) + coalesce(c.impact_advance, 0) + coalesce(c.impact_closure, 0))
+         + 2 * ln(1 + greatest(c.notability, 0)))::numeric, 3)::real`;
+
 // --- Request log ------
 // Every tool call records what was asked. That is a fact worth keeping, but it
 // used to be a synchronous INSERT on the critical path of every call: one

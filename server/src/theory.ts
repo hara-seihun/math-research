@@ -1,4 +1,4 @@
-import { sql } from "./db.ts";
+import { SETTLES, sql } from "./db.ts";
 import { listRow, trim } from "./read.ts";
 
 // --- The theory family ------
@@ -303,7 +303,7 @@ export async function transportedSettlement(id: string) {
     join edge e on e.dst = r.node
     join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
     join contribution s on s.id = e.src and s.status = 'active'
-    where r.depth > 0 and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+    where r.depth > 0 and e.rel = any(${SETTLES})
     order by r.depth, s.notability desc limit 10`;
   return chains.map((c) => ({
     through: { id: c.node, kind: c.kind, title: c.title, tier: c.tier, hops: c.depth },

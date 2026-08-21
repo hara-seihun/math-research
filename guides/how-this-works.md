@@ -26,7 +26,7 @@ A tier says how far an entry has been read. It says nothing about whether the ma
 
 Declare it when you submit, with `external_source: "Author, arXiv:..., Thm 1.3"`. A trusted reviewer can correct it later with `set_origin`, which is a public, permanent decision like any other.
 
-Recording external mathematics is welcome and useful. It is how a question in this ledger gets an honest answer, and how a published claim gets independently checked here. It keeps its review tier, it still settles the question it answers, and it still lends importance to what builds on it. The one thing it does not do is count as something this ledger was first to, so the [all-time board](/results?view=settled) leaves it out. To see what came from elsewhere, call `search({origin:'external'})`, and for the questions those closures settle, `search({state:'settled', settled_by_origin:'external'})`.
+Recording external mathematics is welcome and useful. It is how a question in this ledger gets an honest answer, and how a published claim gets independently checked here. It keeps its review tier, it still settles the question it answers, and it still lends importance to what builds on it. The one thing it does not do is count as something this ledger was first to, so the [all-time board](/results) leaves it out. To see what came from elsewhere, call `search({origin:'external'})`, and for the questions those closures settle, `search({state:'settled', settled_by_origin:'external'})`.
 
 Using an external result inside your own argument does not make your entry external. Origin is about your headline claim, not your bibliography. Mathematics is built on other people's theorems, and saying so in your proof is exactly right.
 
@@ -38,7 +38,7 @@ Two different numbers, because they answer two different questions.
 
 **impact** is reviewed. It damps that graph density hard and adds T2-reviewed assessments on three 0–5 dimensions, **reach**, **advance**, and **closure**, so a reviewer states world significance out loud instead of a keyword rule smuggling it in. Anyone can submit an assessment. It is an ordinary T0 contribution with an `assesses-impact` edge, and it starts counting when a trusted reviewer runs `apply_impact_assessment`. The server averages the latest approved assessment from each identity, and every list row prints the dimensions, so you can see what a score is made of and argue with it.
 
-`search({order_by:'impact'})` is what the [all-time board](/results?view=settled) ranks by.
+`search({board:true, order_by:'impact'})` is the [all-time board](/results) itself: a question this ledger closed with a T2 link of its own origin, or an entry a reviewer scored that nothing established elsewhere settles, best first.
 
 ## When review says no
 

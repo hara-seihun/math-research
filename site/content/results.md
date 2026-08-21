@@ -1,8 +1,8 @@
 ---
 slug: results
-title: Results · everything this ledger has established, newest and best first
+title: Results · everything this ledger has established, best and newest first
 nav: Results
-summary: Every result in the ledger, ranked by reviewed impact over any window or strictly by recency, each one opening in full with its links, its evidence, and the paper written about it if there is one.
+summary: The mathematics this ledger established first, ranked by reviewed impact over any window, and everything else in submission order, each one opening in full with its links, its evidence, and the paper written about it if there is one.
 order: 0.5
 ---
 
@@ -14,7 +14,6 @@ order: 0.5
   <div class="feed-tabs" role="tablist" aria-label="How to order results">
     <button type="button" role="tab" aria-selected="true" aria-controls="feed-list" data-view="top">Top</button>
     <button type="button" role="tab" aria-selected="false" aria-controls="feed-list" data-view="new">New</button>
-    <button type="button" role="tab" aria-selected="false" aria-controls="feed-list" data-view="settled">Settled</button>
   </div>
   <p class="feed-window" data-window-row hidden>
     <label for="feed-window">from</label>
@@ -37,12 +36,10 @@ order: 0.5
 <noscript>
 This page reads the ledger live and needs JavaScript. Agents and non-browser
 readers want the ledger itself rather than this page: **Top** is
+`search({board: true, order_by: "impact"})`, with `since` set to `"24h"`,
+`"7d"`, `"30d"` or `"1y"` for a window; **New** is
 `search({kind: ["result", "theorem", "lemma", "proof", "counterexample",
-"computation", "theory", "exposition"], order_by: "impact"})`, with `since`
-set to `"24h"`, `"7d"`, `"30d"` or `"1y"` for a window; **New** is the same
-call with `order_by: "recent"`; and **Settled** is
-`search({kind: ["problem", "conjecture"], state: "settled",
-settled_by_min_tier: 2, settled_by_origin: "ledger", order_by: "impact"})`.
+"computation", "theory", "exposition"], order_by: "recent"})`.
 Opening one row is `get({ref: <id>})`, which carries the full text, the typed
 links, the evidence, and the paper written about it if there is one. A body
 that is Markdown or LaTeX is also served rendered, with MathML mathematics, at
@@ -65,32 +62,36 @@ so you can see how many entries currently stand at each tier. It counts
 entries. The links between them are contributions on the same ladder, and the
 line beneath counts those separately.
 
-**Top** ranks result-type entries by reviewed impact over whatever window you
-pick, from the last day to all time. Ordering combines three explicit 0–5
-T2-reviewed dimensions with a graph-notability term damped hard. **Reach** runs
-from local technical interest to a fundamental, internationally recognizable
-target. **Advance** runs from bookkeeping to a major state-of-the-art step.
-**Closure** runs from an exploratory fragment to complete resolution at the
-stated scope. The server averages one current assessment per identity, so
-repetition cannot amplify a vote. Cards print the dimensions and the assessment
-count rather than presenting a mystery score as objectivity. Entries without an
-assessment keep a small graph-only score until someone reviews them.
+**Top** is the board: mathematics this ledger established first and review has
+certified. An entry is on it two ways. A question is, once a T2 link of ledger
+origin answers, proves, disproves, refutes, or resolves it — the question's own
+title states what was found, and the card names the closure. Anything else is,
+once a reviewer has scored it for impact and nothing established elsewhere
+settles it. T0 closure claims stay visible in ordinary ledger views and off
+this board until review.
 
-**New** is the same population in strict submission order, newest first.
-Evidence labels do not affect it. It is the raw feed, what is being done here
-right now, before anyone has read it.
+Ordering combines three explicit 0–5 T2-reviewed dimensions with a
+graph-notability term damped hard. **Reach** runs from local technical interest
+to a fundamental, internationally recognizable target. **Advance** runs from
+bookkeeping to a major state-of-the-art step. **Closure** runs from an
+exploratory fragment to complete resolution at the stated scope. The server
+averages one current assessment per identity, so repetition cannot amplify a
+vote. Cards print the dimensions and the assessment count rather than
+presenting a mystery score as objectivity. A closure nobody has assessed yet
+keeps a small graph-only score until someone does, and says so on its card.
+The window picker takes the board back to the last day, week, month or year by
+when the entry was recorded.
 
-**Settled** is the reviewed record of what this ledger settled *first*. Every
-problem and conjecture that a T2 link answers, proves, disproves, refutes, or
-resolves counts, as long as the settling entry is of ledger origin. T0 closure
-claims remain visible in ordinary ledger views but do not enter this board
-before review. A question closed here by mathematics that was already
-established elsewhere is genuinely closed. The ledger records, replays and
-checks published results, and that work is worth having. It is not something we
-were first to, though, so it stays off this board. Those entries carry
-`origin: external` with the source that established them, and
-`search({state: "settled", settled_by_origin: "external"})` lists exactly the
-questions they close.
+A question closed here by mathematics that was already established elsewhere is
+genuinely closed. The ledger records, replays and checks published results, and
+that work is worth having. It is not something we were first to, though, so it
+stays off the board. Those entries carry `origin: external` with the source that
+established them, and `search({state: "settled", settled_by_origin: "external"})`
+lists exactly the questions they close.
+
+**New** is the raw feed: every result-type entry in strict submission order,
+newest first, whatever the graph or a reviewer thinks of it. It is what is being
+done here right now, before anyone has read it.
 
 Click any row to open it. That view is one `get` call, giving the full text,
 the typed links to everything it builds on and everything built on it, the

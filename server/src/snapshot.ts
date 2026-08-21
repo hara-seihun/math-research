@@ -1,4 +1,4 @@
-import { sql } from "./db.ts";
+import { impactScore, onBoard, sql } from "./db.ts";
 import { listRow } from "./read.ts";
 import { Refreshing } from "./refreshing.ts";
 
@@ -20,6 +20,7 @@ export type CorpusSnapshot = {
   by_tier: { tier: number; n: number }[];
   top_topics: { topic: string; n: number }[];
   programmes: Programme[];
+  established_here: ReturnType<typeof listRow>[];
   most_notable: ReturnType<typeof listRow>[];
   fresh_canon: ReturnType<typeof listRow>[];
   totals: {
@@ -37,7 +38,7 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
   // headline. The state vocabulary differs by kind, since a route is partial or
   // refuted while a problem is open or settled, so report what is actually there
   // rather than a fixed pair of columns that reads as "0 settled routes".
-  const [shape, programmes, notable, fresh, trails] = await Promise.all([
+  const [shape, programmes, board, notable, fresh, trails] = await Promise.all([
     sql<{ kind: string; state: string | null; tier: number | null; n: number; lean: number }[]>`
       select kind, state, tier, count(*)::int as n, count(*) filter (where lean_verified)::int as lean
       from contribution where status = 'active' group by kind, state, tier`,
@@ -52,6 +53,14 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
       where f.kind = 'front' and f.status = 'active'
       group by f.id, f.title, f.notability
       order by members desc, f.notability desc limit 10`,
+    // What this place has actually established, best first, which is the
+    // first thing anyone arriving wants and the one thing graph density
+    // cannot answer.
+    sql`select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
+               c.origin, c.origin_source, c.created_at, ${impactScore()} as impact_score
+        from contribution c
+        where c.status = 'active' and ${onBoard()}
+        order by impact_score desc, c.notability desc, c.created_at desc limit 5`,
     sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind not in ('edge', 'statement')
@@ -109,6 +118,7 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
       members: Number(p.members),
       open_problems: Number(p.open_problems),
     })),
+    established_here: board.map(listRow),
     most_notable: notable.map(listRow),
     fresh_canon: fresh.map(listRow),
     totals,

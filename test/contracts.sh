@@ -714,6 +714,11 @@ call search '{"kind":"problem","state":"settled","settled_by_min_tier":2,"limit"
 call search '{"kind":"problem","state":"settled","settled_by_min_tier":2,"settled_by_origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$XQ"'" for r in json.load(sys.stdin)["results"])' || fail "externally settled question entered the ledger-origin board"
 call search '{"kind":"problem","state":"settled","settled_by_origin":"external","limit":100}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$XQ"'" for r in json.load(sys.stdin)["results"])' || fail "externally settled question missing from an external-settlement browse"
 [[ $(call frontier "{\"ref\":\"$XQ\"}" | field '.state') == settled ]] || fail "an external closure did not settle the question"
+# Contract: the published board is a population, not a list of kinds. A
+# question this ledger closed with its own T2 link is on it whatever tier the
+# question itself sits at, and a question closed by mathematics established
+# elsewhere is not, so a board selected by kind cannot be substituted for it.
+call search '{"board":true,"order_by":"impact","limit":100}' | python3 -c 'import sys,json;ids={r["id"] for r in json.load(sys.stdin)["results"]};assert "'"$SQ"'" in ids, "our own T2 closure missing from the board";assert "'"$XQ"'" not in ids, "a published closure put a question on the board"' || fail "the all-time board admitted the wrong closures"
 
 # Contract: origin is a reviewed judgment, so review can correct it, only a
 # trusted key may, an external origin without a source is refused, and the
@@ -1164,6 +1169,12 @@ IMPACT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment
 call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(a["assessment_id"]=="'"$IMPACT"'" and a["proposed"]=={"reach":5,"advance":5,"closure":5} for a in d["impact_assessment_proposals"]) and d["backlog"]["impact_assessment_proposals"] >= 1' || fail "pending impact assessment missing from review queue"
 call apply_impact_assessment "{\"contributor_key\":\"$OPKEY\",\"assessment_id\":\"$IMPACT\",\"decision\":\"approve\",\"note\":\"Rubric values checked for the contract fixture.\"}" > /dev/null
 call search '{"kind":"problem","order_by":"impact","limit":1}' | python3 -c 'import sys,json;d=json.load(sys.stdin);r=d["results"][0];i=r["ranking"]["reviewed_impact"];assert r["id"]=="'"$EDIT_TARGET"'" and i["total"]==15 and i["assessments"]==1 and i["score"]>30' || fail "reviewed impact did not drive explained impact ordering"
+# An assessment a reviewer applied is the other way onto the board, and it puts
+# the entry at the top of it, which is the whole point of assessing anything.
+call search '{"board":true,"order_by":"impact","limit":1}' | python3 -c 'import sys,json;assert json.load(sys.stdin)["results"][0]["id"]=="'"$EDIT_TARGET"'"' || fail "an assessed entry did not lead the board"
+# The same board opens hello, because "what has this place established" is the
+# first question anyone arriving has and graph density cannot answer it.
+call hello '{}' | python3 -c 'import sys,json;assert json.load(sys.stdin)["established_here"][0]["id"]=="'"$EDIT_TARGET"'"' || fail "hello did not lead its record with the board"
 # One pending rejection lets the every-door census exercise that outcome too.
 IMPACT_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment\",\"title\":\"Bad impact assessment\",\"summary\":\"Reject me.\",\"content\":\"Unsupported scores.\",\"assesses_impact\":\"$EDIT_TARGET\",\"impact\":{\"reach\":0,\"advance\":0,\"closure\":0}}" | field '.id')
 

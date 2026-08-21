@@ -1,4 +1,4 @@
-import { sql } from "./db.ts";
+import { SETTLES, sql } from "./db.ts";
 import { normalizeText } from "./graph.ts";
 
 // --- References ------
@@ -154,7 +154,7 @@ export async function settlement(id: string) {
     from edge e join contribution ec on ec.id = e.contribution_id
     join contribution_overview s on s.id = e.src
     where e.dst = ${id} and ec.status = 'active' and s.status = 'active'
-      and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+      and e.rel = any(${SETTLES})
     order by ec.tier desc, s.notability desc limit 10`;
   return answers.map(listRow);
 }

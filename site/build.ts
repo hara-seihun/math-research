@@ -618,7 +618,7 @@ const broken: string[] = [];
 for (const page of pages) {
   const html = readFileSync(join(OUT, page.slug === "." ? "index.html" : `${page.slug}/index.html`), "utf8");
   // A fragment and a query string are arguments to a page, not part of the
-  // path that has to exist on disk: /results?view=settled is the results page.
+  // path that has to exist on disk: /results?view=new is the results page.
   for (const [, href] of html.matchAll(/(?:href|src)="(\/[^"#]*)/g)) {
     const link = href.split("?")[0];
     const local = BASE && link.startsWith(BASE) ? link.slice(BASE.length) : link;

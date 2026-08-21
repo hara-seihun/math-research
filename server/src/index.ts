@@ -3,7 +3,7 @@ import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, isInitializeRequest, McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { announceWrite, cacheKey, listenForWrites, shared } from "./cache.ts";
-import { drainRequestLog, logRequest, pruneRequestLog, sql } from "./db.ts";
+import { drainRequestLog, impactScore, logRequest, onBoard, pruneRequestLog, SETTLES, sql } from "./db.ts";
 import { guide, guideList, guideNames, guides as shelf } from "./guides.ts";
 import { leanVersion, mathlibVersion } from "./pinned.ts";
 import { corpus } from "./snapshot.ts";
@@ -175,7 +175,7 @@ async function addRankingSignals(rows: Record<string, unknown>[]): Promise<Recor
        join contribution target on target.id = e.dst
        where e.src = w.id and ec.status = 'active' and target.status = 'active'
          and target.kind in ('problem', 'conjecture')
-         and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')) as settles
+         and e.rel = any(${SETTLES})) as settles
     from unnest(${ids}::uuid[]) as w(id)`,
     sql<{ id: string; sid: string; kind: string; title: string; tier: number; origin: string; origin_source: string | null }[]>`
     select w.id, s.sid, s.kind, s.title, s.tier, s.origin, s.origin_source
@@ -187,7 +187,7 @@ async function addRankingSignals(rows: Record<string, unknown>[]): Promise<Recor
       join contribution ec on ec.id = e.contribution_id
       join contribution src on src.id = e.src
       where e.dst = w.id and ec.status = 'active' and src.status = 'active'
-        and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+        and e.rel = any(${SETTLES})
       group by src.id, src.kind, src.title, src.tier, src.notability, src.origin, src.origin_source
       order by max(ec.tier) desc, src.notability desc, src.id
       limit 3
@@ -439,7 +439,7 @@ defineTool(
     // when someone submits, so it is derived once for the whole instance on a
     // short cycle rather than by six full-corpus scans per greeting -- which
     // is what the first call of every session used to cost.
-    const { programmes, most_notable, fresh_canon } = await corpus.get();
+    const { programmes, established_here, most_notable, fresh_canon } = await corpus.get();
     return structured(HelloOut, {
       welcome:
         "This is lemma.ing, a shared, append-only ledger of mathematical work. Results, problems, refactors, and even the links between entries are all contributions on the same T0..T3 ladder. search finds things (with a query it ranks by relevance, without one it lists by importance), get shows one entry in full with its typed links, related finds nearby work, submit adds yours, link connects two entries, and query answers anything else with read-only SQL. Rough ideas are fine; review and verification only ever add labels, never delete work.",
@@ -456,10 +456,12 @@ defineTool(
       },
       what_is_here: await whatIsHere(),
       research_programmes: programmes,
+      established_here,
       most_notable,
       fresh_canon,
       how_to_ask: {
         "what is here at all": "this hello (kinds, tiers, topics), then fronts, since programmes are the top of the tree",
+        "what has this place established": "established_here above is the top of it; search({board:true, order_by:'impact'}) is the whole board, which is also lemma.ing/results",
         "what should I work on": "search({kind:'problem', state:'open'}), or fronts(<a programme>) for one campaign's open cells",
         "which parts of this classification are closed": "fronts(<programme>) lists every member with its state; frontier(<problem>) shows what settled a settled one",
         "where does this problem stand": "frontier(<problem>), which gives answers, live routes, sub-problems, and what has already been tried",
@@ -494,7 +496,7 @@ defineTool(
     title: "Search and browse the ledger",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact damps internal graph density hard and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, minimum tier, or origin. `origin:'ledger'` keeps only what was first established here, and for questions `settled_by_origin:'ledger'` keeps only the ones this ledger actually closed rather than recorded a published closure of. Returns short list rows; get(<ref>) has the full text.",
+      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact damps internal graph density hard and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, minimum tier, or origin. `origin:'ledger'` keeps only what was first established here, and for questions `settled_by_origin:'ledger'` keeps only the ones this ledger actually closed rather than recorded a published closure of. `board:true` with `order_by:'impact'` is the all-time board this ledger publishes. Returns short list rows; get(<ref>) has the full text.",
     inputSchema: z.object({
       query: z.string().optional().describe("What are you looking for? Plain language is fine; \"quote\" a phrase to require it. Leave it out to browse by importance or recency."),
       kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. ['theorem','result']."),
@@ -511,7 +513,10 @@ defineTool(
         .describe("Priority: 'ledger' keeps only entries whose headline claim was first established here, 'external' only those recording mathematics established elsewhere."),
       settled_by_origin: z
         .enum(["ledger", "external"]).optional()
-        .describe("For browse-mode questions: require the settling entry to be of this origin. 'ledger' is the honest all-time board, meaning questions this ledger actually closed rather than ones it recorded a published closure of."),
+        .describe("For browse-mode questions: require the settling entry to be of this origin. 'ledger' means questions this ledger actually closed rather than ones it recorded a published closure of."),
+      board: z
+        .boolean().optional()
+        .describe("The all-time board: T2 mathematics this ledger established first, meaning a question closed here by a T2 link of ledger origin, or any entry a reviewer has scored for impact and nothing established elsewhere settles. It is the population behind lemma.ing/results, and it is the population worth ordering by 'impact'."),
       since: z.string().optional().describe("Only entries created since this ISO timestamp or interval such as '30m', '24h', '7d', or '2w'."),
       order_by: z
         .enum(["notability", "impact", "recent", "oldest"]).optional()
@@ -520,7 +525,7 @@ defineTool(
       ...pageParams(100, 10),
     }),
   },
-  async ({ query, kind, state, topic, front, lean_verified, min_tier, settled_by_min_tier, origin, settled_by_origin, since, order_by, include_inactive, limit, offset }) => {
+  async ({ query, kind, state, topic, front, lean_verified, min_tier, settled_by_min_tier, origin, settled_by_origin, board, since, order_by, include_inactive, limit, offset }) => {
     const parsedSince = since ? parseSince(since) : undefined;
     if (since && !parsedSince) return fail({ error: `invalid since value ${JSON.stringify(since)}; use an ISO timestamp or an interval such as 24h.` });
     const sinceAt = parsedSince ?? undefined;
@@ -558,10 +563,11 @@ defineTool(
               select 1 from edge se
               join contribution sec on sec.id = se.contribution_id
               join contribution setter on setter.id = se.src
-              where se.dst = c.id and se.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+              where se.dst = c.id and se.rel = any(${SETTLES})
                 and sec.status = 'active' and setter.status = 'active'
                 and sec.tier >= ${settled_by_min_tier ?? 0}
                 and (${settled_by_origin ?? null}::text is null or setter.origin = ${settled_by_origin ?? null})))
+        and (not ${board ?? false}::bool or (${onBoard()}))
         and (${sinceAt ?? null}::timestamptz is null or c.created_at >= ${sinceAt ?? null})
         and (${lean_verified ?? null}::bool is null or c.lean_verified = ${lean_verified ?? false})
         and (${frontId ?? null}::uuid is null or exists (
@@ -576,8 +582,7 @@ defineTool(
         select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
                c.origin, c.origin_source,
                c.impact_reach, c.impact_advance, c.impact_closure, c.impact_assessments,
-               round((2 * (coalesce(c.impact_reach, 0) + coalesce(c.impact_advance, 0) + coalesce(c.impact_closure, 0))
-                      + 2 * ln(1 + greatest(c.notability, 0)))::numeric, 3)::real as impact_score,
+               ${impactScore()} as impact_score,
                c.tags, c.names, c.created_at
         from contribution c ${where}
         order by ${order_by === "recent" ? sql`c.created_at desc, c.id desc` : order_by === "oldest" ? sql`c.created_at asc, c.id asc` : order_by === "impact" ? sql`impact_score desc, c.notability desc, c.created_at desc, c.id desc` : sql`c.notability desc, c.created_at desc, c.id desc`}
@@ -656,7 +661,7 @@ defineTool(
              m.created_at, e.created_at as joined_at,
              (select count(*) from edge a join contribution ac on ac.id = a.contribution_id
               where a.dst = m.id and ac.status = 'active'
-                and a.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves'))::int as answers
+                and a.rel = any(${SETTLES}))::int as answers
       from edge e join contribution ec on ec.id = e.contribution_id
       join contribution_overview m on m.id = e.src
       where e.dst = ${f.id} and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active'
@@ -2207,12 +2212,12 @@ defineTool(
       join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
       join contribution q on q.id = e.dst and q.status = 'active'
       where e.src = ${id} and q.kind in ('problem', 'conjecture')
-        and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+        and e.rel = any(${SETTLES})
         and not exists (
           select 1 from edge se
           join contribution sec on sec.id = se.contribution_id and sec.status = 'active'
           join contribution setter on setter.id = se.src and setter.status = 'active'
-          where se.dst = q.id and se.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+          where se.dst = q.id and se.rel = any(${SETTLES})
             and setter.origin = 'ledger')`;
     return structured(SetOriginOut, {
       ok: true, id, title: target.title, origin, origin_source: origin === "external" ? citation : null,
@@ -2260,7 +2265,7 @@ defineTool(
       join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
       join contribution q on q.id = e.dst and q.status = 'active'
       where e.src = ${id} and q.kind in ('problem', 'conjecture')
-        and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')`;
+        and e.rel = any(${SETTLES})`;
     await sql.begin(async (tx) => {
       await tx`update contribution set status = 'rejected', updated_at = now() where id = ${id}`;
       await tx`insert into event (kind, contribution_id, identity_id, payload)

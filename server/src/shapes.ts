@@ -210,6 +210,7 @@ export const HelloOut = z.strictObject({
       open_problems: z.number().int(),
     }),
   ),
+  established_here: z.array(ListRow),
   most_notable: z.array(ListRow),
   fresh_canon: z.array(ListRow),
   how_to_ask: z.record(z.string(), z.string()),

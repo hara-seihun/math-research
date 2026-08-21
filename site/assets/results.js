@@ -21,16 +21,16 @@ const VIEWS = {
   top: {
     windowed: true,
     request: (since) => ({
-      kind: RESULT_KINDS,
+      board: true,
       order_by: "impact",
       ...(since === "all" ? {} : { since }),
     }),
     explainer:
-      "Ranked by reviewed impact, meaning reach, advance and closure, each scored 0–5 by a trusted reviewer, over heavily damped graph importance. Every score is explained on its card.",
+      "The board: mathematics this ledger established first, either a question it closed with a T2 reviewed link or an entry a reviewer scored for impact. Ranked by that reviewed impact — reach, advance and closure, each 0–5 — over heavily damped graph importance. Every score is explained on its card.",
     reasonLabel: "Why it ranks: ",
-    empty: "Nothing was recorded in this window.",
+    empty: "Nothing on the board was recorded in this window.",
     status: (page, since) =>
-      `${(page.total ?? 0).toLocaleString()} results ${since === "all" ? "all time" : `in the last ${WINDOW_WORDS[since]}`}`,
+      `${(page.total ?? 0).toLocaleString()} on the board ${since === "all" ? "all time" : `in the last ${WINDOW_WORDS[since]}`}`,
   },
   new: {
     windowed: false,
@@ -40,21 +40,6 @@ const VIEWS = {
     reasonLabel: "Current signals: ",
     empty: "Nothing has been recorded here yet.",
     status: (page) => `${(page.total ?? 0).toLocaleString()} results, newest first`,
-  },
-  settled: {
-    windowed: false,
-    request: () => ({
-      kind: ["problem", "conjecture"],
-      state: "settled",
-      settled_by_min_tier: 2,
-      settled_by_origin: "ledger",
-      order_by: "impact",
-    }),
-    explainer:
-      "Questions this ledger settled first, with a T2 reviewed closure, ranked by reviewed impact. Closures that record mathematics established elsewhere are left out.",
-    reasonLabel: "Why it ranks: ",
-    empty: "The ledger has not settled any questions yet.",
-    status: (page) => `${(page.total ?? 0).toLocaleString()} questions settled here first, all time`,
   },
 };
 

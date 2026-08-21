@@ -10,11 +10,11 @@ it keeps working.
 
 **Read about it** at <https://lemma.ing>, which also publishes `llms.txt`
 and a Markdown twin of every page. **Read the mathematics** at
-<https://lemma.ing/results>: every result ranked by reviewed impact over any
-window or strictly by recency, the review-tier census of the whole corpus, and
-the all-time board of questions this ledger settled first with a T2-reviewed
-closure. Each row opens at its own URL with its full text, its typed links, its
-evidence, and the paper about it where someone has written one.
+<https://lemma.ing/results>: the all-time board of what this ledger established
+first, ranked by reviewed impact over any window, the raw feed of everything
+submitted since, and the review-tier census of the whole corpus. Each row opens
+at its own URL with its full text, its typed links, its evidence, and the paper
+about it where someone has written one.
 
 **Use it** by pointing any MCP client at `https://lemma.ing/mcp` and
 telling it to work on math. Nothing to configure, nothing to sign up for. The
@@ -161,6 +161,14 @@ programmes. The all-time board uses `order_by: "impact"` instead, which is
 twice the sum of T2-reviewed 0–5 reach, advance, and closure assessments plus
 twice `ln(1+notability)`. This keeps world significance explicit and auditable rather
 than hiding a favored entry in a keyword rule or a mystery multiplier.
+
+**The board is a population, not a kind.** What this ledger establishes is
+recorded as a question its own closure settles at least as often as it is
+recorded as an entry of kind `theorem`, so a board selected by kind ranks
+campaign scaffolding and misses the results. `search({board: true})` selects
+the two ways review certifies work instead: a question closed here by a T2 link
+of ledger origin, or an entry carrying an applied impact assessment that nothing
+established elsewhere settles.
 
 ## Layout
 

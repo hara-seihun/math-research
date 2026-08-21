@@ -6,7 +6,7 @@
  *
  *   1. **Alpha normalization** rewrites a unit so that locally arbitrary
  *      choices — a bound variable called `n` instead of `k`, a lemma called
- *      `foo_bar`, whitespace, a constant that happens to be 7 — become
+ *      `foo_bar`, whitespace, or a prose constant that happens to be 7 — become
  *      positional placeholders, while everything that carries meaning
  *      (operators, connectives, control flow, library constants, real words)
  *      survives untouched. Two units that differ only in naming normalize to
@@ -28,7 +28,7 @@ import { createHash } from "node:crypto";
 /** Bumped whenever a normalizer changes what it produces. Stored rows carry
  *  it, so a change is a backfill the tooling can find rather than a corpus
  *  half-written in two conventions. */
-export const NORM_VERSION = 3;
+export const NORM_VERSION = 4;
 
 // --- Alpha normalization ------
 
@@ -236,7 +236,10 @@ export function alphaLean(source: string, opts?: { body?: boolean; limit?: numbe
       continue;
     }
     if (/^\d+$/.test(t)) {
-      out.push(meaningfulNumber(t) ? t : "#");
+      // A numeral in an elaborated Lean type is structure, not an arbitrary
+      // choice of notation: `Nat.Prime 7` and `Nat.Prime 3` are different
+      // propositions even though prose similarity benefits from folding 7.
+      out.push(t);
       continue;
     }
     if (f.collecting) {

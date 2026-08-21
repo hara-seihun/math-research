@@ -15,21 +15,45 @@
  * rebuild of the index.
  */
 import { sql } from "../server/src/db.ts";
-import { NORM_VERSION, normalizeDecl } from "../server/src/similarity.ts";
+import { NORM_VERSION, normalizeDecl, type NormalizedDecl } from "../server/src/similarity.ts";
 
 const all = process.argv.includes("--all");
-const BATCH = 5000;
+// Seven VALUES columns per row; 8,000 stays below PostgreSQL's 65,535
+// parameter ceiling while making a full 511k-row backfill finish under a minute.
+const BATCH = 8000;
+const workers = Array.from({ length: Math.min(8, navigator.hardwareConcurrency) }, () =>
+  new Worker(new URL("./normalize-lean-worker.ts", import.meta.url).href),
+);
+
+async function normalizeRows(rows: { name: string; statement: string }[]): Promise<NormalizedDecl[]> {
+  const width = Math.ceil(rows.length / workers.length);
+  const jobs = workers.map((worker, i) => {
+    const chunk = rows.slice(i * width, (i + 1) * width);
+    if (chunk.length === 0) return Promise.resolve([] as NormalizedDecl[]);
+    return new Promise<NormalizedDecl[]>((resolve, reject) => {
+      worker.onmessage = (event: MessageEvent<NormalizedDecl[]>) => resolve(event.data);
+      worker.onerror = (event) => reject(new Error(event.message));
+      worker.postMessage(chunk);
+    });
+  });
+  return (await Promise.all(jobs)).flat();
+}
 
 async function backfillDecls(): Promise<number> {
   let done = 0;
+  let afterModule: string | null = null;
+  let afterName: string | null = null;
   for (;;) {
     const rows = await sql<{ module: string; name: string; statement: string }[]>`
       select module, name, statement from lean_decl
-      where ${all} or norm_v is distinct from ${NORM_VERSION}
+      where (${all} or norm_v is distinct from ${NORM_VERSION})
+        and (${afterModule}::text is null or (module, name) > (${afterModule}, ${afterName}))
+      order by module, name
       limit ${BATCH}`;
     if (rows.length === 0) return done;
-    const values = rows.map((row) => {
-      const { norm, norm_hash, bands, generated } = normalizeDecl(row.name, row.statement);
+    const normalized = await normalizeRows(rows);
+    const values = rows.map((row, i) => {
+      const { norm, norm_hash, bands, generated } = normalized[i]!;
       return [row.module, row.name, norm, norm_hash, String(NORM_VERSION), `{${bands.join(",")}}`, String(generated)];
     });
     // Every column of a VALUES list arrives as text over the wire, so the
@@ -42,6 +66,8 @@ async function backfillDecls(): Promise<number> {
         as v(module, name, norm, norm_hash, norm_v, bands, generated)
       where d.module = v.module and d.name = v.name`;
     done += rows.length;
+    afterModule = rows.at(-1)!.module;
+    afterName = rows.at(-1)!.name;
     process.stdout.write(`\rlean_decl: ${done}`);
     if (rows.length < BATCH) return done;
   }
@@ -78,21 +104,43 @@ async function adoptChecks(): Promise<number> {
 }
 
 async function backfillUnits(): Promise<number> {
-  const rows = await sql<{ check_hash: string; name: string; statement: string }[]>`
-    select check_hash, name, statement from lean_unit
-    where ${all} or norm_v is distinct from ${NORM_VERSION}`;
-  for (const row of rows) {
-    const { norm, norm_hash, bands, generated } = normalizeDecl(row.name, row.statement);
-    await sql`update lean_unit set norm = ${norm}, norm_hash = ${norm_hash}, norm_v = ${NORM_VERSION},
-              bands = ${bands}, generated = ${generated}
-              where check_hash = ${row.check_hash} and name = ${row.name}`;
+  let done = 0;
+  let afterHash: string | null = null;
+  let afterName: string | null = null;
+  for (;;) {
+    const rows = await sql<{ check_hash: string; name: string; statement: string }[]>`
+      select check_hash, name, statement from lean_unit
+      where (${all} or norm_v is distinct from ${NORM_VERSION})
+        and (${afterHash}::text is null or (check_hash, name) > (${afterHash}, ${afterName}))
+      order by check_hash, name
+      limit ${BATCH}`;
+    if (rows.length === 0) return done;
+    const normalized = await normalizeRows(rows);
+    const values = rows.map((row, i) => {
+      const { norm, norm_hash, bands, generated } = normalized[i]!;
+      return [row.check_hash, row.name, norm, norm_hash, String(NORM_VERSION), `{${bands.join(",")}}`, String(generated)];
+    });
+    await sql`
+      update lean_unit u
+      set norm = v.norm, norm_hash = v.norm_hash, norm_v = v.norm_v::int,
+          bands = v.bands::int[], generated = v.generated::boolean
+      from (values ${sql(values as never)})
+        as v(check_hash, name, norm, norm_hash, norm_v, bands, generated)
+      where u.check_hash = v.check_hash and u.name = v.name`;
+    done += rows.length;
+    afterHash = rows.at(-1)!.check_hash;
+    afterName = rows.at(-1)!.name;
+    if (rows.length < BATCH) return done;
   }
-  return rows.length;
 }
 
 const started = Date.now();
-const adopted = await adoptChecks();
-const units = await backfillUnits();
-const decls = await backfillDecls();
-console.log(`\nnormalizer v${NORM_VERSION}: ${decls} library declarations, ${units} ledger units (${adopted} adopted from checks) in ${((Date.now() - started) / 1000).toFixed(1)}s`);
-await sql.end();
+try {
+  const adopted = await adoptChecks();
+  const units = await backfillUnits();
+  const decls = await backfillDecls();
+  console.log(`\nnormalizer v${NORM_VERSION}: ${decls} library declarations, ${units} ledger units (${adopted} adopted from checks) in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+} finally {
+  for (const worker of workers) worker.terminate();
+  await sql.end();
+}

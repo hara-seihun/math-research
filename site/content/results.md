@@ -9,8 +9,6 @@ order: 0.5
 # Results
 
 <section class="feed" data-feed>
-  <ul class="census" data-census hidden></ul>
-  <p class="census-note" data-census-note hidden></p>
   <div class="feed-tabs" role="tablist" aria-label="How to order results">
     <button type="button" role="tab" aria-selected="true" aria-controls="feed-list" data-view="top">Top</button>
     <button type="button" role="tab" aria-selected="false" aria-controls="feed-list" data-view="new">New</button>
@@ -56,11 +54,6 @@ move an entry between them are [how this ledger works](/guides/how-this-works#re
 A separate **Lean verified** badge means the pinned kernel accepted the formal
 declarations; it does not mean that the formal statement captures the intended
 claim.
-
-The census above the tabs is that ladder over the whole corpus, counted live,
-so you can see how many entries currently stand at each tier. It counts
-entries. The links between them are contributions on the same ladder, and the
-line beneath counts those separately.
 
 **Top** is the board: mathematics this ledger established first and review has
 certified. An entry is on it two ways. A question is, once a T2 link of ledger

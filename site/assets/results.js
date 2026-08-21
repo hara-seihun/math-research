@@ -50,8 +50,6 @@ const entryNode = document.querySelector("[data-entry]");
 if (!root || !entryNode) throw new Error("results page is missing its feed or entry container");
 
 const listNode = root.querySelector("[data-list]");
-const censusNode = root.querySelector("[data-census]");
-const censusNote = root.querySelector("[data-census-note]");
 const statusNode = root.querySelector("[data-status]");
 const explainerNode = root.querySelector("[data-explainer]");
 const moreButton = root.querySelector("[data-more]");
@@ -138,7 +136,6 @@ function element(tag, className, text) {
 }
 
 const tierLabel = (tier) => ["T0 recorded", "T1 confirmed", "T2 canon", "T3 published"][tier] ?? `T${tier}`;
-const count = (n) => n.toLocaleString();
 
 function relativeTime(iso) {
   const seconds = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
@@ -265,29 +262,6 @@ async function load({ append = false } = {}) {
     statusNode.textContent = `The ledger could not be read: ${error.message}`;
   } finally {
     loading = false;
-  }
-}
-
-async function loadCensus() {
-  try {
-    const here = (await callTool("hello", {})).what_is_here;
-    if (!here) return;
-    const counts = new Map((here.by_tier ?? []).map((row) => [row.tier, row.n]));
-    censusNode.replaceChildren(
-      ...[0, 1, 2, 3].map((tier) => {
-        const cell = element("li", `census-cell tier-${tier}`);
-        cell.append(element("span", "census-n", count(counts.get(tier) ?? 0)), element("span", "census-label", tierLabel(tier)));
-        return cell;
-      }),
-    );
-    censusNode.hidden = false;
-    const totals = here.totals;
-    if (!totals) return;
-    censusNote.textContent = `${count(totals.entries)} entries on the review ladder · ${count(totals.links)} links between them, which climb the same ladder · ${count(totals.open_questions)} questions still open`;
-    censusNote.hidden = false;
-  } catch {
-    // The census is context, not the page. A ledger that cannot answer hello
-    // will say so through the list's own status line rather than twice.
   }
 }
 
@@ -569,5 +543,4 @@ const opened = idFromPath();
 if (opened) void showEntry(opened);
 else showFeed();
 renderList();
-void loadCensus();
 void load();

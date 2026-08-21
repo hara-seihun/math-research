@@ -1218,6 +1218,10 @@ psql -q -h "$WORK" -d math -c "insert into lean_decl (module, name, library, kin
   ('MathlibPlus.Dup.Defs', 'MathlibPlus.Dup.Defs.second', 'MathlibPlus', 'def', 'Nat → Nat', false),
   ('Mathlib.Finset.Sum', 'Mathlib.Finset.bounded_sum', 'Mathlib', 'theorem',
    '∀ {γ : Type u_3} (u : Finset γ) (h : γ → ℝ) (b : ℝ), (∀ z ∈ u, h z ≤ b) → ∑ k ∈ u, h k ≤ u.card • b', true),
+  ('MathlibPlus.Dup.Numerals', 'MathlibPlus.Dup.Numerals.seven_prime', 'MathlibPlus', 'theorem',
+   'Fact (Nat.Prime 7)', true),
+  ('Mathlib.Data.Nat.Prime', 'Mathlib.fact_prime_three', 'Mathlib', 'theorem',
+   'Fact (Nat.Prime 3)', true),
   ('MathlibPlus.Dup.A', 'MathlibPlus.Dup.A.Config.mk.injEq', 'MathlibPlus', 'theorem',
    '∀ {α : Type u_1} (s : Finset α) (f : α → ℝ) (n : ℝ), (∀ x ∈ s, f x ≤ n) → ∑ i ∈ s, f i ≤ s.card • n', true)"
 bun run tools/normalize-lean.ts > "$WORK/normalize.log" 2>&1 || fail "normalize-lean failed: $(tail -3 "$WORK/normalize.log")"
@@ -1249,7 +1253,7 @@ call lean_similar '{"scan":true,"library":"MathlibPlus","proofs_only":true,"exac
   | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
-assert d["scanned"] == 3 and d["next_offset"] == 1, d
+assert d["scanned"] == 4 and d["next_offset"] == 1, d
 assert {m["name"] for m in d["identical"][0]["members"]} == {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum"}, d
 assert all(m["is_proof"] for m in d["identical"][0]["members"]), d
 ' || fail "exact-only scan did not cover the full proof scope or page duplicate groups"
@@ -1261,7 +1265,8 @@ assert len(d["identical"]) == 1, d
 members = d["identical"][0]["members"]
 assert {m["library"] for m in members} == {"MathlibPlus", "Mathlib"}, d
 assert {m["name"] for m in members} == {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum", "Mathlib.Finset.bounded_sum"}, d
-' || fail "cross-library scan did not find Mathlib proofs MathlibPlus repeats"
+assert all("prime" not in m["name"] for m in members), d
+' || fail "cross-library scan missed a duplicate or treated different numerals as alpha-equivalent"
 
 # Contract: a patch is a change to the library, verified by applying it and
 # building what it touches. A diff that does not apply is a failure with the

@@ -369,7 +369,7 @@ defineTool(
     // when someone submits, so it is derived once for the whole instance on a
     // short cycle rather than by six full-corpus scans per greeting -- which
     // is what the first call of every session used to cost.
-    const { kinds, by_tier: byTier, top_topics: topTopics, programmes, most_notable, fresh_canon } =
+    const { kinds, by_tier: byTier, top_topics: topTopics, programmes, most_notable, fresh_canon, totals } =
       await corpus.get();
     return structured(HelloOut, {
       welcome:
@@ -386,7 +386,8 @@ defineTool(
         how_identity_works: KEY_HELP,
       },
       what_is_here: {
-        note: "Active entries by kind (`state` is where a work item stands), the review-tier ladder, and the busiest subject areas. A topic works as a search filter.",
+        note: "Active entries by kind (`state` is where a work item stands), the review-tier ladder, and the busiest subject areas. A topic works as a search filter. `totals` counts entries and the links between them separately; links are contributions on the same ladder, and `by_tier` counts entries only.",
+        totals,
         kinds: kinds.map((k) => ({
           kind: k.kind,
           n: k.n,
@@ -432,7 +433,7 @@ defineTool(
     title: "Search and browse the ledger",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact strongly damps internal graph density and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, or minimum tier. Returns short list rows; get(<ref>) has the full text.",
+      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact strongly damps internal graph density and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, minimum tier, or origin — `origin:'ledger'` keeps only what was first established here, and for questions `settled_by_origin:'ledger'` keeps only the ones this ledger actually closed rather than recorded a published closure of. Returns short list rows; get(<ref>) has the full text.",
     inputSchema: z.object({
       query: z.string().optional().describe("What are you looking for? Plain language is fine; \"quote\" a phrase to require it. Leave it out to browse by importance or recency."),
       kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. ['theorem','result']."),
@@ -590,7 +591,7 @@ defineTool(
       from contribution_overview c join identity i on i.id = c.identity_id
       where c.id = ${f.id}`;
     const members = await sql`
-      select m.id, m.kind, m.title, m.summary, m.tier, m.state, m.notability, m.lean_verified, m.names,
+      select m.id, m.kind, m.title, m.summary, m.tier, m.state, m.notability, m.lean_verified, m.origin, m.origin_source, m.names,
              m.created_at, e.created_at as joined_at,
              (select count(*) from edge a join contribution ac on ac.id = a.contribution_id
               where a.dst = m.id and ac.status = 'active'
@@ -614,13 +615,13 @@ defineTool(
       where e.dst = ${f.id} and e.rel = 'in-front' and ec.status = 'active' and m.status = 'active'`;
     // Programmes nest: a campaign is part-of the broader front that covers it.
     const partOf = await sql`
-      select p.id, p.kind, p.title, p.summary, p.tier, p.state, p.notability, p.lean_verified, p.names, p.created_at
+      select p.id, p.kind, p.title, p.summary, p.tier, p.state, p.notability, p.lean_verified, p.origin, p.origin_source, p.names, p.created_at
       from edge e join contribution ec on ec.id = e.contribution_id
       join contribution_overview p on p.id = e.dst
       where e.src = ${f.id} and e.rel = 'part-of' and ec.status = 'active'
         and p.status = 'active' and p.kind = 'front' order by p.notability desc`;
     const subProgrammes = await sql`
-      select p.id, p.kind, p.title, p.summary, p.tier, p.state, p.notability, p.lean_verified, p.names, p.created_at
+      select p.id, p.kind, p.title, p.summary, p.tier, p.state, p.notability, p.lean_verified, p.origin, p.origin_source, p.names, p.created_at
       from edge e join contribution ec on ec.id = e.contribution_id
       join contribution_overview p on p.id = e.src
       where e.dst = ${f.id} and e.rel = 'part-of' and ec.status = 'active'
@@ -664,7 +665,7 @@ defineTool(
       from contribution_overview c join artifact a on a.hash = c.artifact_hash where c.id = ${id}`;
     const answers = await settlement(id);
     const progress = await sql`
-      select m.id, m.kind, m.title, m.summary, m.tier, m.state, m.notability, m.lean_verified, m.created_at,
+      select m.id, m.kind, m.title, m.summary, m.tier, m.state, m.notability, m.lean_verified, m.origin, m.origin_source, m.created_at,
              e.rel, ec.tier as edge_tier, e.created_at as linked_at
       from edge e join contribution ec on ec.id = e.contribution_id
       join contribution_overview m on m.id = e.src
@@ -853,7 +854,7 @@ defineTool(
     outputSchema: QueryOut,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases. Nothing else is visible to it.",
+      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases. Nothing else is visible to it.",
     inputSchema: z.object({
       sql: z
         .string().max(8000)
@@ -1251,7 +1252,7 @@ defineTool(
     const { identityId } = me;
     logRequest("my_submissions", identityId, {});
     const rows = await sql`
-      select c.id, c.kind, c.title, c.tier, c.status, c.notability, c.created_at, c.lean_verified,
+      select c.id, c.kind, c.title, c.tier, c.status, c.notability, c.created_at, c.lean_verified, c.origin, c.origin_source,
              (select coalesce(json_agg(json_build_object('method', v.method, 'outcome', v.outcome, 'detail', v.detail)), '[]')
               from verification v where v.contribution_id = c.id) as verifications
       from contribution_overview c
@@ -1612,7 +1613,7 @@ defineTool(
              or review_claim.identity_id = excluded.identity_id
         returning contribution_id, expires_at
       )
-      select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.lean_verified,
+      select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.lean_verified, c.origin, c.origin_source,
              rc.n as reviews, t.expires_at as claimed_until
       from candidate cand
       join contribution_overview c on c.id = cand.id

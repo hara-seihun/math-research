@@ -52,11 +52,11 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
       where f.kind = 'front' and f.status = 'active'
       group by f.id, f.title, f.notability
       order by members desc, f.notability desc limit 10`,
-    sql`select id, kind, title, summary, tier, state, notability, lean_verified, created_at
+    sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind not in ('edge', 'statement')
         order by notability desc, created_at desc limit 8`,
-    sql`select id, kind, title, summary, tier, state, notability, lean_verified, created_at
+    sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind <> 'edge' and tier >= 2
         order by created_at desc limit 5`,

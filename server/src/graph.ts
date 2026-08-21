@@ -320,7 +320,7 @@ export async function related(args: RelatedArgs) {
     const v = await embed(queryText);
     if (!v) return { error: "semantic search is warming up, so use method 'ncd' or 'lexical' for now." };
     const rows = await sql`
-      select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.created_at,
+      select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source, c.created_at,
              round((1 - (c.embedding <=> ${asVector(v)}::vector))::numeric, 4)::float8 as similarity
       from contribution c
       where c.kind <> 'edge' and c.status = 'active' and c.embedding is not null
@@ -335,7 +335,7 @@ export async function related(args: RelatedArgs) {
   const candidates = await sql.begin(async (tx: Tx) => {
     await tx`select set_config('pg_trgm.similarity_threshold', '0.15', true)`;
     return tx<({ id: string; content: string | null } & Record<string, unknown>)[]>`
-      select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.created_at,
+      select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source, c.created_at,
              case when ${wantsContent} then left(a.content, 4000) end as content
       from contribution c left join artifact a on ${wantsContent} and a.hash = c.artifact_hash
       where c.kind <> 'edge' and c.status = 'active'

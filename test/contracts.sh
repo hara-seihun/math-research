@@ -633,6 +633,34 @@ call search '{"kind":"problem","state":"settled","settled_by_min_tier":2,"limit"
 call search '{"kind":["problem","conjecture"],"state":"settled","order_by":"notability","limit":100}' \
   | python3 -c 'import sys,json;rows=[r for r in json.load(sys.stdin)["results"] if r["id"]=="'"$SQ"'"];assert rows and any(s["id"]=="'"$ANS"'" and s["title"] for s in rows[0]["settled_by"])' \
   || fail "settled browse row did not carry settled_by"
+# Contract: settling a question and being first to settle it are different
+# facts. An entry whose headline claim was established outside this ledger is
+# origin='external' with a source; it still closes the question and still shows
+# up everywhere the question does, but it is not what this ledger established
+# first, so the all-time board (settled_by_origin='ledger') drops the question.
+XQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"question closed by a published paper\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+XA=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"the published counterexample, recorded here\",\"summary\":\"s\",\"content\":\"c.\",\"external_source\":\"Freedman-Lee, arXiv:2607.23423, Thm 1.3\",\"relates_to\":[{\"id\":\"$XQ\",\"rel\":\"disproves\"}]}" | field '["id"]')
+call get "{\"ref\":\"$XA\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["origin"]=="external" and "2607.23423" in d["origin_source"]' || fail "external_source did not record an external origin"
+call search '{"kind":"statement","origin":"external","limit":100}' | python3 -c 'import sys,json;rows=[r for r in json.load(sys.stdin)["results"] if r["id"]=="'"$XA"'"];assert rows and rows[0]["origin"]=="external" and rows[0]["origin_source"]' || fail "origin filter did not find the external entry"
+call search '{"kind":"statement","origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$XA"'" for r in json.load(sys.stdin)["results"])' || fail "external entry appeared in a ledger-origin browse"
+X_EDGE=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where src='$XA' and dst='$XQ' and rel='disproves'")
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$X_EDGE\",\"tier\":2,\"note\":\"the citation checks out\"}" > /dev/null
+call search '{"kind":"problem","state":"settled","settled_by_min_tier":2,"limit":100}' | python3 -c 'import sys,json;rows=[r for r in json.load(sys.stdin)["results"] if r["id"]=="'"$XQ"'"];assert rows and rows[0]["settled_by"][0]["origin"]=="external"' || fail "a settled question did not show that what settled it came from elsewhere"
+call search '{"kind":"problem","state":"settled","settled_by_min_tier":2,"settled_by_origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$XQ"'" for r in json.load(sys.stdin)["results"])' || fail "externally settled question entered the ledger-origin board"
+call search '{"kind":"problem","state":"settled","settled_by_origin":"external","limit":100}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$XQ"'" for r in json.load(sys.stdin)["results"])' || fail "externally settled question missing from an external-settlement browse"
+[[ $(call frontier "{\"ref\":\"$XQ\"}" | field '["state"]') == settled ]] || fail "an external closure did not settle the question"
+
+# Contract: origin is a reviewed judgment, so review can correct it, only a
+# trusted key may, an external origin without a source is refused, and the
+# decision reports which questions it just took off the all-time board.
+call set_origin "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"origin\":\"external\",\"source\":\"someone else\",\"note\":\"n\"}" | field '["error"]' | grep -qi "trusted" || fail "an untrusted key changed an origin"
+call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"external\",\"note\":\"n\"}" | field '["error"]' | grep -qi "source" || fail "an external origin was accepted with no source"
+call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"external\",\"source\":\"Some Author, J. Example 12 (1999) 3-4\",\"note\":\"already in the literature\"}" \
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["ok"] and any(q["id"]=="'"$SQ"'" for q in d["left_the_board"])' || fail "set_origin did not report the question it took off the board"
+call search '{"kind":"problem","state":"settled","settled_by_origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "a reviewed external origin did not leave the ledger-origin board"
+call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"ledger\",\"note\":\"misattributed; this argument is ours\"}" | field '["ok"]' > /dev/null
+call search '{"kind":"problem","state":"settled","settled_by_origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "restoring ledger origin did not put the question back on the board"
+
 call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"note\":\"withdrawn\"}" | field '["ok"]' > /dev/null
 [[ $(call frontier "{\"ref\":\"$SQ\"}" | field '["state"]') == open ]] || fail "retracting the answer did not reopen the question"
 
@@ -747,6 +775,17 @@ dated "browse-mode search" "$(call search '{"limit":3}')" 'd["results"]'
 dated "search" "$(call search '{"query":"frontier test question"}')" 'd["results"]'
 dated "related" "$(call related "{\"ref\":\"$Q\",\"method\":\"lexical\",\"limit\":3}")" 'd["related"]'
 dated "hello most_notable" "$(call hello '{}')" 'd["most_notable"]'
+
+# Contract: hello carries the census the live page shows -- the review ladder
+# over entries, and entries and links counted apart, since a link is a
+# contribution on the same ladder but not a thing anyone means by "entries".
+call hello '{}' | python3 -c '
+import sys,json
+w=json.load(sys.stdin)["what_is_here"]
+tiers={r["tier"]: r["n"] for r in w["by_tier"]}
+assert sum(tiers.values()) == w["totals"]["entries"], (tiers, w["totals"])
+assert w["totals"]["links"] > 0
+' || fail "hello census does not add up"
 
 # Contract: a contributor key may arrive as an Authorization: Bearer header
 # instead of a per-call argument, a per-call argument wins over it, and the
@@ -933,6 +972,7 @@ declare -A DOORS=(
   [review_claim]="{\"contributor_key\":\"$OPKEY\",\"refs\":[\"$Q\"],\"action\":\"release\"}"
   [reject]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$RQO\",\"reason\":\"not-mathematics\",\"note\":\"contract test\"}"
   [set_tier]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$Q\",\"tier\":1,\"note\":\"n\"}"
+  [set_origin]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$Q\",\"origin\":\"ledger\",\"note\":\"n\"}"
   [apply_refactor]="{\"contributor_key\":\"$OPKEY\",\"refactor_id\":\"$PROPOSAL\",\"decision\":\"reject\",\"note\":\"n\"}"
   [apply_amendment]="{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$AMEND_REJECT\",\"decision\":\"reject\",\"note\":\"n\"}"
   [apply_impact_assessment]="{\"contributor_key\":\"$OPKEY\",\"assessment_id\":\"$IMPACT_REJECT\",\"decision\":\"reject\",\"note\":\"n\"}"

@@ -166,6 +166,16 @@ const KindCount = z.strictObject({
   means: z.string().optional().describe("What this kind is here."),
 });
 
+/** How much is here: entries, and the links between them, counted apart. */
+export const CorpusTotals = z.strictObject({
+  entries: z.number().int(),
+  links: z.number().int(),
+  programmes: z.number().int(),
+  open_questions: z.number().int(),
+  lean_verified: z.number().int(),
+  active_trails: z.number().int(),
+});
+
 export const HelloOut = z.strictObject({
   welcome: z.string(),
   you: z.strictObject({
@@ -177,8 +187,9 @@ export const HelloOut = z.strictObject({
   }),
   what_is_here: z.strictObject({
     note: z.string(),
+    totals: CorpusTotals,
     kinds: z.array(KindCount),
-    by_tier: z.array(z.strictObject({ tier: z.number().int(), n: z.number().int() })),
+    by_tier: z.array(z.strictObject({ tier: z.number().int(), n: z.number().int() })).describe("The review ladder over entries; links climb the same ladder and are counted in totals.links."),
     top_topics: z.array(z.strictObject({ topic: z.string(), n: z.number().int() })),
   }),
   research_programmes: z.array(
@@ -444,6 +455,8 @@ export const MySubmissionsOut = z.strictObject({
       notability: z.number(),
       created_at: iso,
       lean_verified: z.boolean(),
+      origin: z.enum(["ledger", "external"]),
+      origin_source: z.string().nullable(),
       verifications: z.array(
         z.strictObject({ method: z.string(), outcome: z.string(), detail: jsonRecord }),
       ),
@@ -526,14 +539,7 @@ export const NewsOut = z.strictObject({
     from_at: iso.nullable(),
     to_at: iso.nullable(),
   }),
-  totals: z.strictObject({
-    entries: z.number().int(),
-    links: z.number().int(),
-    programmes: z.number().int(),
-    open_questions: z.number().int(),
-    lean_verified: z.number().int(),
-    active_trails: z.number().int(),
-  }).describe("Where the corpus stands now. Compare against your last packet to see movement."),
+  totals: CorpusTotals.describe("Where the corpus stands now. Compare against your last packet to see movement."),
   movement: z.strictObject({
     new_entries: counts.describe("New entries in this window, by kind."),
     new_links: counts.describe("Links asserted in this window, by relation."),
@@ -613,6 +619,8 @@ export const ReviewQueueOut = z.strictObject({
       notability: z.number(),
       created_at: iso,
       lean_verified: z.boolean(),
+      origin: z.enum(["ledger", "external"]).describe("What the author declared about priority. Checking that an 'external' entry names a source you can verify, and that a 'ledger' one is not quietly a known result, is part of the reading."),
+      origin_source: z.string().nullable(),
       reviews: z.number().int().describe("How many readings this entry already carries. More than zero and still here means nobody has decided it."),
       claimed_until: iso.nullable().describe("Your lease on adjudicating this entry. It is yours until then, or until you decide it."),
     }),

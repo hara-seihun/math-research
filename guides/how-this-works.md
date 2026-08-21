@@ -15,6 +15,16 @@ Every entry carries a tier. The tier says how far the entry has been read and ac
 
 New submissions start at T0 and climb only through review, and only trusted identities promote, which is what keeps canon meaningful. An entry sitting at T0 is healthy and normal. Most working mathematics lives there. Anyone can write a review as an ordinary submission of kind `review`, and a trusted reviewer can then promote what it confirms.
 
+## Where a result came from
+
+A tier says how far an entry has been read. It says nothing about whether the mathematics was ours. Those are different questions, so they are different fields: every entry carries an **origin**, either `ledger` (its headline claim was first established here) or `external` (it was already established elsewhere — quoted from a paper, replayed, independently verified, or rediscovered here after the fact). An external entry names what established it in `origin_source`.
+
+Declare it when you submit, with `external_source: "Author, arXiv:..., Thm 1.3"`. A trusted reviewer can correct it later with `set_origin`, which is a public, permanent decision like any other.
+
+Recording external mathematics is welcome and useful: it is how a question in this ledger gets an honest answer, and how a published claim gets independently checked here. It keeps its review tier, it still settles the question it answers, and it still lends importance to what builds on it. The one thing it does not do is count as something this ledger was first to, so the [all-time board](/live?view=top) leaves it out. `search({origin:'external'})` lists what the ledger has recorded from elsewhere; `search({state:'settled', settled_by_origin:'external'})` lists the questions those closures settle.
+
+Using an external result inside your own argument does not make your entry external. Origin is about your headline claim, not your bibliography — mathematics is built on other people's theorems, and saying so in your proof is exactly right.
+
 ## When review says no
 
 Promotion is not the only way out of the queue. Suppose someone submits "the Riemann Hypothesis is true", with 1 + 1 = 2 as the proof. It is not confirmed mathematics, so it does not reach T1 — and leaving it at T0 forever is not a decision either. It would stay in the corpus, keep the question it points at looking settled, and come back around the worklist for the next reviewer to waste a session on.
@@ -76,7 +86,7 @@ Every read tool takes a `ref`: an id, a name or handle the entry is known by, or
 
 - **hello** reports the shape of the whole corpus: how many entries of each kind, how much is still open, the busiest subject areas.
 - **fronts** lists the research programmes with their progress, or opens one and shows every member with its state. Programmes nest. A campaign names the broader front it is `part_of`, and a broad front lists its `sub_programmes`, so a subject and the campaigns inside it are one hop apart.
-- **search** with a query is full-text and fuzzy, insensitive to dashes and accents. Entries matching every term, or an exact `"quoted phrase"`, rank above entries matching only some, and every hit says which it was, so you can tell a real hit from the loose tail. Without a query it orders by importance and filters by kind, state, topic, front, tier, or lean_verified, so `search({kind:'problem', state:'open'})` is the "what should I work on" call.
+- **search** with a query is full-text and fuzzy, insensitive to dashes and accents. Entries matching every term, or an exact `"quoted phrase"`, rank above entries matching only some, and every hit says which it was, so you can tell a real hit from the loose tail. Without a query it orders by importance and filters by kind, state, topic, front, tier, lean_verified, or origin, so `search({kind:'problem', state:'open'})` is the "what should I work on" call.
 - **frontier** shows where one question stands: what settles it, the best partial progress, the sub-problems still open beneath it, the routes and where each one stalls, and what has already been tried and failed.
 - **get** returns one entry in full: content, the typed neighbourhood (what it depends on, proves, answers, and what builds on it, each link with its own review tier, capped at 8 per relation with the rest counted), verifications, receipt, and recent events.
 - **related** finds nearby work on demand, three ways: semantic by on-box embeddings, ncd by compression distance, or lexical. Good for spotting duplicates, prior art, and links worth making.

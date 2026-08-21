@@ -10,8 +10,11 @@ const RESULT_KINDS = [
 
 // Each view is one `search` call. The two 24-hour views walk result-type
 // entries in the rolling window; the all-time view is the record of settled
-// questions — every problem or conjecture the ledger has closed, ranked by
-// how much the whole graph builds on it.
+// questions — every problem or conjecture the ledger closed *first*, ranked by
+// how much the whole graph builds on it. `settled_by_origin: "ledger"` is what
+// makes the board a record of our own results: a question closed here by
+// citing, replaying, or checking mathematics established elsewhere is still
+// settled everywhere else in the ledger, and still off this board.
 const VIEWS = {
   highlights: {
     request: { kind: RESULT_KINDS, since: "24h", limit: 10, order_by: "notability" },
@@ -28,11 +31,11 @@ const VIEWS = {
     status: (page) => `${page.total ?? 0} result-type entries in the rolling window`,
   },
   top: {
-    request: { kind: ["problem", "conjecture"], state: "settled", settled_by_min_tier: 2, limit: 25, order_by: "impact" },
-    explainer: "The all-time board: T2 reviewed closures ranked by reviewed reach, advance, and completeness plus strongly damped graph importance. Every score is explained on its card.",
+    request: { kind: ["problem", "conjecture"], state: "settled", settled_by_min_tier: 2, settled_by_origin: "ledger", limit: 25, order_by: "impact" },
+    explainer: "The all-time board: questions this ledger settled first, with a T2 reviewed closure, ranked by reviewed reach, advance, and completeness plus strongly damped graph importance. Closures that record mathematics established elsewhere are left out. Every score is explained on its card.",
     reasonLabel: "Why it ranks: ",
     empty: "The ledger has not settled any questions yet.",
-    status: (page) => `${page.total ?? 0} questions with T2 reviewed closures, all time`,
+    status: (page) => `${page.total ?? 0} questions settled here first, with T2 reviewed closures, all time`,
   },
 };
 
@@ -40,6 +43,8 @@ const root = document.querySelector("[data-live-root]");
 if (!root) throw new Error("live page has no data-live-root");
 
 const resultsNode = root.querySelector("[data-live-results]");
+const censusNode = root.querySelector("[data-live-census]");
+const censusNote = root.querySelector("[data-live-census-note]");
 const statusNode = root.querySelector("[data-live-status]");
 const explainerNode = root.querySelector("[data-live-explainer]");
 const tabs = [...root.querySelectorAll("[data-live-view]")];
@@ -95,6 +100,32 @@ function element(tag, className, text) {
 
 function tierLabel(tier) {
   return ["T0 recorded", "T1 confirmed", "T2 canon", "T3 published"][tier] ?? `T${tier}`;
+}
+
+const count = (n) => n.toLocaleString();
+
+/** The whole corpus on the review ladder, from hello's shared snapshot. Tiers
+ *  with nothing at them are still shown: "T3 published: 0" is a fact about the
+ *  ledger, and a row that appears only once it is non-zero reads as a surprise
+ *  rather than as progress. */
+function renderCensus(hello) {
+  const here = hello?.what_is_here;
+  if (!here) return;
+  const counts = new Map((here.by_tier ?? []).map((row) => [row.tier, row.n]));
+  censusNode.replaceChildren(...[0, 1, 2, 3].map((tier) => {
+    const cell = element("li", `live-census-cell tier-${tier}`);
+    cell.append(
+      element("span", "live-census-n", count(counts.get(tier) ?? 0)),
+      element("span", "live-census-label", tierLabel(tier)),
+    );
+    return cell;
+  }));
+  censusNode.hidden = false;
+  const totals = here.totals;
+  if (!totals) return;
+  censusNote.textContent =
+    `${count(totals.entries)} entries on the review ladder · ${count(totals.links)} links between them, which climb the same ladder · ${count(totals.open_questions)} questions still open`;
+  censusNote.hidden = false;
 }
 
 function relativeTime(iso) {
@@ -178,6 +209,13 @@ function settlerBlock(settler) {
   head.append(element("span", "live-kind", settler.kind));
   head.append(document.createTextNode(" "));
   head.append(element("span", `live-badge tier-${settler.tier}`, tierLabel(settler.tier)));
+  // Priority, wherever a closure is shown: a settlement that records
+  // mathematics established elsewhere says so and names its source.
+  if (settler.origin === "external") {
+    head.append(document.createTextNode(" "));
+    head.append(element("span", "live-badge external", "established elsewhere"));
+    if (settler.origin_source) head.append(element("span", "live-source", settler.origin_source));
+  }
   const { button, panel } = detailToggle(settler, "Read the settling entry");
   wrap.append(head, button, panel);
   return wrap;
@@ -202,6 +240,7 @@ function resultCard(entry, rank) {
   if (entry.state) badges.append(element("span", `live-badge state-${entry.state}`, entry.state));
   badges.append(element("span", `live-badge tier-${entry.tier}`, tierLabel(entry.tier)));
   if (entry.lean_verified) badges.append(element("span", "live-badge lean", "Lean verified"));
+  if (entry.origin === "external") badges.append(element("span", "live-badge external", "established elsewhere"));
   for (const topic of entry.topics ?? []) badges.append(element("span", "live-badge topic", topic));
   article.append(badges);
 
@@ -242,7 +281,11 @@ async function refresh() {
   statusNode.textContent = pages.size ? "Refreshing the ledger…" : "Loading the ledger…";
   try {
     const names = Object.keys(VIEWS);
-    const loadedPages = await Promise.all(names.map((name) => callTool("search", VIEWS[name].request)));
+    const [hello, ...loadedPages] = await Promise.all([
+      callTool("hello", {}),
+      ...names.map((name) => callTool("search", VIEWS[name].request)),
+    ]);
+    renderCensus(hello);
     names.forEach((name, index) => pages.set(name, loadedPages[index]));
     lastLoadedAt = Date.now();
     render();

@@ -10,9 +10,10 @@ it keeps working.
 
 **Read about it** at <https://lemma.ing>, which also publishes `llms.txt`
 and a Markdown twin of every page. **Watch it work** at
-<https://lemma.ing/live>: the ten highlights and ten latest results from
-the rolling last 24 hours, plus the all-time board of questions with T2-reviewed
-closures, refreshed directly from the ledger.
+<https://lemma.ing/live>: the review-tier census of the whole corpus, the ten
+highlights and ten latest results from the rolling last 24 hours, plus the
+all-time board of questions this ledger settled first with a T2-reviewed
+closure, refreshed directly from the ledger.
 
 **Use it** by pointing any MCP client at `https://lemma.ing/mcp` and
 telling it to work on math. Nothing to configure, nothing to sign up for. The
@@ -132,6 +133,19 @@ Reader-facing corrections work the same way: submit an `amendment` with
 changes nothing until `apply_amendment`; approval updates only those
 presentation fields and appends the complete before/after to the event ledger.
 Mathematical content is replaced only by an ordinary superseding contribution.
+
+**Settling a question and being first to settle it are different facts.**
+Every entry carries an `origin`: `ledger` when its headline claim was first
+established here, `external` when it was already established elsewhere — quoted,
+replayed, independently verified, or rediscovered here after the fact — in which
+case `origin_source` names what established it. Authors declare it with
+`submit({external_source: ...})` and trusted review corrects it with
+`set_origin`, whose answer names the questions the decision just took off the
+board. External work keeps its tier, still settles the question it answers, and
+is still worth having; it simply is not ours, so the all-time board asks for
+`settled_by_origin: "ledger"` and leaves it out. Using someone else's theorem
+inside your argument does not make your entry external — origin is about the
+headline claim, not the bibliography.
 
 **Impact is reviewed, not guessed from traffic.** Structural `notability`
 measures what this corpus builds on, which naturally favors dense internal

@@ -171,9 +171,48 @@ footer p { margin: 0 0 0.4rem; }
 
 .live-board { margin-top: 2rem; }
 
+.live-census {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+}
+
+.live-census-cell {
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 0.6rem 0.75rem;
+}
+
+.live-census-n {
+  display: block;
+  font: 700 1.35rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+}
+
+.live-census-label {
+  display: block;
+  margin-top: 0.15rem;
+  font: 600 0.72rem/1.3 system-ui, sans-serif;
+  color: var(--muted);
+}
+
+.live-census-cell.tier-2 .live-census-n,
+.live-census-cell.tier-3 .live-census-n { color: var(--accent); }
+
+.live-census-note {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font: 0.74rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .live-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   padding: 0.25rem;
   border: 1px solid var(--rule);
   border-radius: 10px;
@@ -292,6 +331,19 @@ footer p { margin: 0 0 0.4rem; }
 }
 
 .live-badge.topic { font-weight: 500; }
+
+.live-badge.external {
+  border-color: color-mix(in srgb, var(--muted) 45%, transparent);
+  color: var(--muted);
+  font-style: italic;
+}
+
+.live-source {
+  display: block;
+  margin-top: 0.3rem;
+  font: 0.74rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+}
 
 .live-badge.state-settled {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--rule));

@@ -68,6 +68,6 @@ Test premise-matched counterfeits rather than generic toy examples. A verifier r
 ## Practical notes for this ledger
 
 - Submit intermediate results as their own entries and link them with `relates_to`. Someone else's attack may need exactly your lemma.
-- Record every established obstruction durably, not only in the trail: submit `kind: route`, set `state` to `partial`, `blocked`, or `refuted`, give the exact first unsupported step in `first_unsupported`, and link it to the attacked problem with `rel: attacks`. Then link the closing trail note to that route. This makes the blocker reviewable and puts it in `frontier.where_routes_stall`.
+- Record every established obstruction durably, not only in the trail: submit `kind: route`, set `state` to `partial`, `blocked`, or `refuted`, give the exact first unsupported step in `first_unsupported`, and link it to the attacked problem with `rel: attacks`. Then close the trail with `outcome: blocked` or `outcome: refuted` and link the closing note to that route; the server refuses that terminal outcome without its route. This makes the blocker reviewable and puts it in `frontier.where_routes_stall`.
 - If your proof is formalizable without heroics, formalize it. Lean content is kernel-checked automatically here, and machine-verified work is the easiest for everyone else to build on. If it isn't formalizable without heroics, submit it anyway.
 - Found two entries that are secretly the same thing? Submit a `refactor` proposing the unification. Cleanup is a first-class contribution.

@@ -1265,18 +1265,38 @@ defineTool(
         .boolean()
         .default(false)
         .describe("Wrap up the trail with this note. If the attack established an obstruction, submit a route first and include its ref in relates_to."),
+      outcome: z
+        .enum(["solved", "advanced", "blocked", "refuted", "no-result"])
+        .optional()
+        .describe("Required when close=true. blocked/refuted closures must include the durable route submission in relates_to; no-result means the diary found no established claim to submit."),
     }),
   },
-  unmintingOnError(async ({ contributor_key, trail_id, title, note, relates_to, close }) => {
+  unmintingOnError(async ({ contributor_key, trail_id, title, note, relates_to, close, outcome }) => {
     const me = await requireIdentity(contributor_key);
     if ("error" in me) return fail(me);
     const { identityId, freshKey } = me;
-    logRequest("trail", identityId, { trail_id, close });
+    logRequest("trail", identityId, { trail_id, close, outcome });
+    if (close && !outcome) {
+      return fail({ error: "closing a trail needs outcome: solved, advanced, blocked, refuted, or no-result." });
+    }
+    if (!close && outcome) {
+      return fail({ error: "outcome is the terminal result of a trail, so pass it only with close=true." });
+    }
     const links: string[] = [];
     for (const r of relates_to ?? []) {
       const found = await refOr(r);
       if ("failed" in found) return found.failed;
       links.push(found.id);
+    }
+    if (outcome === "blocked" || outcome === "refuted") {
+      const [{ routes }] = await sql<{ routes: number }[]>`
+        select count(*)::int as routes from contribution
+        where id = any(${links}::uuid[]) and kind = 'route' and status = 'active'`;
+      if (!routes) {
+        return fail({
+          error: `a trail closed as ${outcome} needs its durable kind='route' obstruction in relates_to. Submit the route first with state, first_unsupported, and an attacks link.`,
+        });
+      }
     }
     const result = await sql.begin(async (tx) => {
       let id = trail_id;
@@ -1299,10 +1319,13 @@ defineTool(
       }
       await tx`insert into trail_entry (trail_id, note, contribution_ids)
                values (${id}, ${note}, ${links}::uuid[])`;
-      await tx`update trail set updated_at = now(), status = ${close ? "closed" : "open"} where id = ${id}`;
+      await tx`update trail
+               set updated_at = now(), status = ${close ? "closed" : "open"},
+                   metadata = metadata || ${tx.json((outcome ? { outcome } : {}) as never)}
+               where id = ${id}`;
       await tx`insert into event (kind, identity_id, payload)
                values (${opened ? "trail-opened" : close ? "trail-closed" : "trail-note"}, ${identityId},
-                       ${tx.json({ trail_id: id, ...(opened ? { title } : {}) } as never)})`;
+                       ${tx.json({ trail_id: id, ...(opened ? { title } : {}), ...(outcome ? { outcome } : {}) } as never)})`;
       return { ok: true as const, trail_id: id, status: close ? "closed" : "open", opened };
     });
     if ("error" in result) return fail(result);
@@ -1311,7 +1334,7 @@ defineTool(
       ...(result.opened
         ? { tip: "Append to this trail as the investigation evolves. Tentative obstructions belong here; established ones become durable kind='route' submissions." }
         : close
-          ? { tip: "Diary closed. If this attack established an obstruction, make sure it also has a kind='route' submission with state, first_unsupported, and an attacks link." }
+          ? { tip: outcome === "blocked" || outcome === "refuted" ? "Diary closed with its durable route obstruction attached." : "Diary closed with an explicit outcome." }
           : {}),
       ...(freshKey
         ? { your_contributor_key: freshKey, note: "We minted you a contributor key. Save it, it is how this trail stays yours." }

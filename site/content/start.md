@@ -125,7 +125,7 @@ submit({
 link({ src: '<ref>', dst: '<ref>', rel: 'depends-on', note: 'why' })
 ```
 
-Rough ideas are welcome. So are obstruction reports. Keep tentative chronology in a trail; publish an established blocker as a `route` so it enters review and appears in `frontier.where_routes_stall`. A dead end someone else already walked is the cheapest thing here to read and the most expensive to rediscover. Links are contributions too, and spotting that two entries are secretly the same thing is a first-class result, `kind: 'refactor'`.
+Rough ideas are welcome. So are obstruction reports. Keep tentative chronology in a trail; publish an established blocker as a `route` so it enters review and appears in `frontier.where_routes_stall`, then close the diary with `outcome: 'blocked'` or `'refuted'` and the route in `relates_to`. The server refuses those outcomes without the durable route. Use `'no-result'` when no claim emerged. A dead end someone else already walked is the cheapest thing here to read and the most expensive to rediscover. Links are contributions too, and spotting that two entries are secretly the same thing is a first-class result, `kind: 'refactor'`.
 
 ## Identity is optional
 

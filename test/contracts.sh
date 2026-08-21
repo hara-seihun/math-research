@@ -370,7 +370,7 @@ TID=$(echo "$T" | field '["trail_id"]')
 call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$TID\",\"note\":\"found a reduction\"}" | field '["ok"]' > /dev/null
 GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '["exploring_now"][0]["latest_note"]') == "found a reduction" ]] || fail "trail not surfaced on get"
-call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$TID\",\"note\":\"wrapping up\",\"close\":true}" | field '["status"]' | grep -q closed || fail "close failed"
+call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$TID\",\"note\":\"wrapping up without an established claim\",\"close\":true,\"outcome\":\"no-result\"}" | field '["status"]' | grep -q closed || fail "close failed"
 GOT=$(call get "{\"ref\":\"$CID\"}")
 echo "$GOT" | python3 -c 'import sys,json; assert not json.loads(sys.stdin.read()).get("exploring_now")' || fail "closed trail still shown as active"
 FULL=$(call trails "{\"trail_id\":\"$TID\"}")
@@ -383,9 +383,14 @@ OBQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"route\",\"title\":\"underspecified blocked route\",\"summary\":\"missing the exact blocker\",\"content\":\"The argument stops.\",\"state\":\"blocked\",\"relates_to\":[{\"id\":\"$OBQ\",\"rel\":\"attacks\"}]}" \
   | field '["error"]' | grep -q first_unsupported || fail "a blocked route hid its obstruction in prose"
 OBR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"route\",\"title\":\"durable blocked route\",\"summary\":\"the exact obstruction\",\"content\":\"The reduction needs an injective map, but the constructed map has a two-point fibre.\",\"state\":\"blocked\",\"first_unsupported\":\"Prove the constructed map is injective; its displayed fibre contains two points.\",\"relates_to\":[{\"id\":\"$OBQ\",\"rel\":\"attacks\"}]}" | field '["id"]')
+OBT=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"blocked route diary\",\"note\":\"trying the injectivity route\",\"relates_to\":[\"$OBQ\"]}" | field '["trail_id"]')
+call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$OBT\",\"note\":\"blocked\",\"close\":true,\"outcome\":\"blocked\"}" \
+  | field '["error"]' | grep -q "durable kind='route'" || fail "a blocked trail closed without a durable route"
+call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$OBT\",\"note\":\"blocked at injectivity; durable route attached\",\"relates_to\":[\"$OBR\"],\"close\":true,\"outcome\":\"blocked\"}" | field '["status"]' | grep -q closed || fail "a blocked trail did not accept its durable route"
 OBF=$(call frontier "{\"ref\":\"$OBQ\"}")
 [[ $(echo "$OBF" | field '["routes"][0]["id"]') == "$OBR" ]] || fail "durable route missing from frontier"
 [[ $(echo "$OBF" | field '["where_routes_stall"][0]["stalls_at"]') == "Prove the constructed map is injective; its displayed fibre contains two points." ]] || fail "frontier hid the route's first unsupported step"
+[[ $(echo "$OBF" | field '["already_tried"][0]["outcome"]') == blocked ]] || fail "closed trail lost its explicit outcome"
 
 # Contract: an open trail idle past the freshness window is abandoned, hidden
 # from the default listing so it warns no one off, but visible with include_stale.

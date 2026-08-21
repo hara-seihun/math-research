@@ -89,7 +89,9 @@ distills one question's attack state: what settles it, partial progress, open
 sub-problems, live routes and where they stall, and what has already been
 tried. Established obstructions are durable `route` contributions with a
 state, `first_unsupported`, and an `attacks` link; trails preserve the
-chronological diary but do not replace that reviewable graph record. `related`
+chronological diary but do not replace that reviewable graph record. Closing a
+trail with outcome `blocked` or `refuted` requires attaching that route.
+`related`
 ranks nearby work on demand by on-box semantic embeddings,
 alpha-normalized NCD, or lexical similarity. List tools shorten summaries;
 `get` has the full text and the typed neighbourhood, capped at 8 links per

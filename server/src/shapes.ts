@@ -992,7 +992,10 @@ export const SetOriginOut = z.strictObject({
   note: z.string(),
   left_the_board: z
     .array(z.strictObject({ id: z.string(), title: z.string() }))
-    .describe("Questions this entry settles that no longer count as first established here, because nothing of ledger origin settles them."),
+    .describe("Questions this entry settles that were on the all-time board before this decision and are not on it now, because nothing of ledger origin settles them any more."),
+  joined_the_board: z
+    .array(z.strictObject({ id: z.string(), title: z.string() }))
+    .describe("Questions this entry settles that reach the board because of this decision, which is what calling something ours again does."),
 });
 
 export const SetTierOut = z.strictObject({

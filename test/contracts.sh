@@ -729,8 +729,23 @@ call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"e
 call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"external\",\"source\":\"Some Author, J. Example 12 (1999) 3-4\",\"note\":\"already in the literature\"}" \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["ok"] and any(q["id"]=="'"$SQ"'" for q in d["left_the_board"])' || fail "set_origin did not report the question it took off the board"
 call search '{"kind":"problem","state":"settled","settled_by_origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "a reviewed external origin did not leave the ledger-origin board"
-call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"ledger\",\"note\":\"misattributed; this argument is ours\"}" | field '.ok' > /dev/null
+call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"ledger\",\"note\":\"misattributed; this argument is ours\"}" \
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["ok"] and any(q["id"]=="'"$SQ"'" for q in d["joined_the_board"])' || fail "set_origin did not report the question it put back on the board"
 call search '{"kind":"problem","state":"settled","settled_by_origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "restoring ledger origin did not put the question back on the board"
+
+# Contract: what set_origin reports is the board's own membership rule, not a
+# second copy of it. A closure filed under some other kind is still a board row
+# and must still be named when a reviewer takes it off, which a copy testing
+# kind in ('problem','conjecture') silently got wrong for an imported corpus
+# full of questions filed as results.
+MISKIND=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"A cell of the classification is realized\",\"summary\":\"s\",\"content\":\"The obligation, filed under the wrong kind.\"}" | field '.id')
+MISANS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"The realizing construction\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$MISKIND\",\"rel\":\"answers\"}]}" | field '.id')
+MIS_EDGE=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where src='$MISANS' and dst='$MISKIND' and rel='answers'")
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$MIS_EDGE\",\"tier\":2,\"note\":\"the construction closes the cell\"}" > /dev/null
+call search '{"board":true,"order_by":"impact","limit":100}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$MISKIND"'" for r in json.load(sys.stdin)["results"])' || fail "a closure filed under another kind never reached the board"
+call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$MISANS\",\"origin\":\"external\",\"source\":\"Someone Else, J. Example 13 (2001) 7-9\",\"note\":\"the construction is published\"}" \
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(q["id"]=="'"$MISKIND"'" for q in d["left_the_board"])' || fail "set_origin stayed silent about a board row filed under another kind"
+call search '{"board":true,"order_by":"impact","limit":100}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$MISKIND"'" for r in json.load(sys.stdin)["results"])' || fail "an externally settled closure stayed on the board"
 
 call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"note\":\"withdrawn\"}" | field '.ok' > /dev/null
 [[ $(call frontier "{\"ref\":\"$SQ\"}" | field '.state') == open ]] || fail "retracting the answer did not reopen the question"

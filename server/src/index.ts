@@ -2187,7 +2187,7 @@ defineTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
       "Record where an entry's headline claim was first established. 'ledger' means here; 'external' means it was already established outside this ledger, whether quoted from a paper, replayed, independently verified or rediscovered here after the fact, and then `source` must name what established it.",
-      "This is priority, not quality and not tier. External mathematics is welcome, keeps its review tier, and still settles the question it answers; it is simply not something this ledger was first to. The all-time board of settled questions reads this column, so marking an entry external takes the questions only it settles off that board while leaving them settled everywhere else. `left_the_board` names them.",
+      "This is priority, not quality and not tier. External mathematics is welcome, keeps its review tier, and still settles the question it answers; it is simply not something this ledger was first to. The all-time board of settled questions reads this column, so marking an entry external takes the questions only it settles off that board while leaving them settled everywhere else. `left_the_board` names them, and `joined_the_board` names the ones a move back to 'ledger' returns.",
       "Using an external result inside an argument does not make an entry external: origin is about the entry's own headline claim, not its bibliography. Authors declare it at submission with `external_source`; this is the reviewer's correction. Requires a trusted key.",
     ].join(" "),
     inputSchema: z.object({
@@ -2216,6 +2216,24 @@ defineTool(
     const [target] = await sql<{ title: string; origin: string; origin_source: string | null }[]>`
       select title, origin, origin_source from contribution where id = ${id}`;
     if (!target) return fail({ error: "no contribution with that id" });
+    // Which questions this decision moves on or off the all-time board, asked
+    // by evaluating the board's own membership rule either side of the write.
+    // Re-deriving that rule here instead once cost the caller the truth: the
+    // copy tested `kind in ('problem','conjecture')`, the board tests nothing
+    // of the kind, and every question filed as a `result` left the board in
+    // silence. A rule stated twice is a rule that disagrees with itself.
+    const settledByThis = await sql<{ id: string }[]>`
+      select distinct e.dst as id
+      from edge e
+      join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+      join contribution q on q.id = e.dst and q.status = 'active'
+      where e.src = ${id} and e.rel = any(${SETTLES})`;
+    const touched = settledByThis.map((r) => r.id);
+    const boardMembers = () =>
+      sql<{ id: string; title: string }[]>`
+        select c.id, c.title from contribution c
+        where c.id = any(${touched}::uuid[]) and c.status = 'active' and ${onBoard()}`;
+    const before = touched.length ? await boardMembers() : [];
     await sql.begin(async (tx) => {
       await tx`update contribution
                   set origin = ${origin}, origin_source = ${origin === "external" ? citation : null}, updated_at = now()
@@ -2226,24 +2244,14 @@ defineTool(
                                    before: { origin: target.origin, source: target.origin_source }, note } as never)})`;
       await releaseClaims(tx, [id]);
     });
-    // What this decision costs the all-time board: questions this entry
-    // settles that nothing of ledger origin settles any more.
-    const leftTheBoard = await sql<{ id: string; title: string }[]>`
-      select distinct q.id, q.title
-      from edge e
-      join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
-      join contribution q on q.id = e.dst and q.status = 'active'
-      where e.src = ${id} and q.kind in ('problem', 'conjecture')
-        and e.rel = any(${SETTLES})
-        and not exists (
-          select 1 from edge se
-          join contribution sec on sec.id = se.contribution_id and sec.status = 'active'
-          join contribution setter on setter.id = se.src and setter.status = 'active'
-          where se.dst = q.id and se.rel = any(${SETTLES})
-            and setter.origin = 'ledger')`;
+    const after = touched.length ? await boardMembers() : [];
+    const on = new Set(after.map((r) => r.id));
+    const was = new Set(before.map((r) => r.id));
     return structured(SetOriginOut, {
       ok: true, id, title: target.title, origin, origin_source: origin === "external" ? citation : null,
-      note, left_the_board: leftTheBoard,
+      note,
+      left_the_board: before.filter((r) => !on.has(r.id)),
+      joined_the_board: after.filter((r) => !was.has(r.id)),
     });
   },
 );

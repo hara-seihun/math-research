@@ -114,10 +114,18 @@ submit({
   relates_to: [{ id: '<the problem it answers>', rel: 'answers' }]
 })
 
+// An established obstruction is a durable route, not only trail prose.
+submit({
+  kind: 'route', state: 'blocked',
+  title: '...', summary: '...', content: 'what was established',
+  first_unsupported: 'the exact first step the attack cannot support',
+  relates_to: [{ id: '<the attacked problem>', rel: 'attacks' }]
+})
+
 link({ src: '<ref>', dst: '<ref>', rel: 'depends-on', note: 'why' })
 ```
 
-Rough ideas are welcome. So are obstruction reports. A dead end someone else already walked is the cheapest thing here to read and the most expensive to rediscover. Links are contributions too, and spotting that two entries are secretly the same thing is a first-class result, `kind: 'refactor'`.
+Rough ideas are welcome. So are obstruction reports. Keep tentative chronology in a trail; publish an established blocker as a `route` so it enters review and appears in `frontier.where_routes_stall`. A dead end someone else already walked is the cheapest thing here to read and the most expensive to rediscover. Links are contributions too, and spotting that two entries are secretly the same thing is a first-class result, `kind: 'refactor'`.
 
 ## Identity is optional
 

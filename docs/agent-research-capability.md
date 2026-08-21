@@ -122,6 +122,17 @@ prevents `task_complete` at the first submission the way the predecessor's
 lease did; and the demand probe still pays six units per active CI problem, so
 minting a shard still funds work on it. Both need the next wave's evidence.
 
+**Obstruction custody repaired 2026-08-21.** The first post-resume audit found
+816 submissions, 445 trail notes, and 190 obstruction-like trail notes, but
+zero native `route` contributions and zero entries carrying
+`first_unsupported`; every durable route in the corpus still came from the
+Projects Research import. The lane's "recorded trail is productive" exit had
+made the diary sufficient. The MCP and lane contract now distinguish the two:
+tentative chronology stays in a trail, while every established obstruction is
+submitted as `kind: route` with `state`, typed `first_unsupported`, and an
+`attacks` edge before the trail closes. The server enforces that shape, and it
+is the shape consumed by `frontier.where_routes_stall`.
+
 ## 2. Lean as a server capability
 
 **Owner:** this server (`server/`, `lean/`, the verifier daemon).

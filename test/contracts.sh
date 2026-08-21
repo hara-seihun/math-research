@@ -376,6 +376,17 @@ echo "$GOT" | python3 -c 'import sys,json; assert not json.loads(sys.stdin.read(
 FULL=$(call trails "{\"trail_id\":\"$TID\"}")
 [[ $(echo "$FULL" | field '["activity"]') == closed ]] || fail "trail history wrong"
 
+# Contract: an established obstruction is a durable route contribution, not
+# only trail prose. The route must name its attacked question, state, and exact
+# first unsupported step; frontier then exposes that step directly.
+OBQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"obstruction contract question\",\"summary\":\"a question for the route contract\",\"content\":\"Does the route close?\"}" | field '["id"]')
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"route\",\"title\":\"underspecified blocked route\",\"summary\":\"missing the exact blocker\",\"content\":\"The argument stops.\",\"state\":\"blocked\",\"relates_to\":[{\"id\":\"$OBQ\",\"rel\":\"attacks\"}]}" \
+  | field '["error"]' | grep -q first_unsupported || fail "a blocked route hid its obstruction in prose"
+OBR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"route\",\"title\":\"durable blocked route\",\"summary\":\"the exact obstruction\",\"content\":\"The reduction needs an injective map, but the constructed map has a two-point fibre.\",\"state\":\"blocked\",\"first_unsupported\":\"Prove the constructed map is injective; its displayed fibre contains two points.\",\"relates_to\":[{\"id\":\"$OBQ\",\"rel\":\"attacks\"}]}" | field '["id"]')
+OBF=$(call frontier "{\"ref\":\"$OBQ\"}")
+[[ $(echo "$OBF" | field '["routes"][0]["id"]') == "$OBR" ]] || fail "durable route missing from frontier"
+[[ $(echo "$OBF" | field '["where_routes_stall"][0]["stalls_at"]') == "Prove the constructed map is injective; its displayed fibre contains two points." ]] || fail "frontier hid the route's first unsupported step"
+
 # Contract: an open trail idle past the freshness window is abandoned, hidden
 # from the default listing so it warns no one off, but visible with include_stale.
 ST=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"stale exploration\",\"note\":\"start\"}" | field '["trail_id"]')

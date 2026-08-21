@@ -5,7 +5,7 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "verifier": "bun run verifier/verifier.ts",
-    "test": "bun test"
+    "test": "cd .. && ./test/contracts.sh"
   },
   "dependencies": {
     "postgres": "^3.4.5",

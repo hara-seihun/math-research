@@ -107,6 +107,11 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
       "supersedes recorded as a proposal. The targets stay active until the refactor is reviewed and applied.",
     );
   }
+  if (input.kind === "route" && input.metadata?.first_unsupported) {
+    notes.push(
+      "recorded as a durable route obstruction. It now participates in review and appears under where_routes_stall on the attacked problem's frontier.",
+    );
+  }
 
   if (input.signature !== undefined) {
     await sql`insert into verification (contribution_id, method, outcome, detail)

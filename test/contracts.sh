@@ -247,6 +247,15 @@ runner_says "$BHASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":
 [[ $(await_verification "$VID6") == passed ]] || fail "a statement with a proof about it did not pass"
 [[ $(call get "{\"ref\":\"$CID6\"}" | field '["lean_verified"]') == True ]] || fail "a proved statement did not earn lean_verified"
 
+# Contract: the stored lean_verified flag agrees with the verifications it
+# summarises, for every row. It is a cache of another table, maintained by
+# trigger, and a cache that can silently disagree with its source is worse
+# than the subquery it replaced. The first production backfill left five rows
+# disagreeing because the verifier kept writing during the pass, so schema.sql
+# reconciles on every apply -- this is what proves it.
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from contribution c where c.lean_verified <> exists (select 1 from verification v where v.contribution_id = c.id and v.method = 'lean-kernel' and v.outcome = 'passed')") == 0 ]] \
+  || fail "lean_verified disagrees with the verification table"
+
 # Contract: tier changes are trusted-only and land in the event ledger.
 DENIED=$(call set_tier "{\"contributor_key\":\"$KEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"x\"}")
 echo "$DENIED" | field '["error"]' | grep -qi trusted || fail "non-trusted was allowed to set tier"

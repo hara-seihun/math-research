@@ -682,14 +682,34 @@ end $$;
 -- not something to repeat for nothing.
 do $$ begin
   if not exists (select 1 from config where key = 'derived_columns_backfilled') then
-    update contribution c
-       set title = c.title,
-           lean_verified = exists (select 1 from verification v
-                                   where v.contribution_id = c.id
-                                     and v.method = 'lean-kernel' and v.outcome = 'passed');
+    update contribution c set title = c.title;
     insert into config (key, value) values ('derived_columns_backfilled', to_jsonb(now()))
       on conflict (key) do nothing;
   end if;
 end $$;
+
+-- Reconcile lean_verified with the table it summarises. Deliberately not
+-- guarded by the marker above, and deliberately not part of that pass: the
+-- backfill takes minutes on a corpus this size, the verifier keeps working
+-- throughout, and a verification that lands mid-pass fires the trigger only
+-- for the bulk UPDATE to overwrite it with the value it read at snapshot
+-- time. That is an ordinary lost update, it left five rows disagreeing on the
+-- first run, and no amount of care in the backfill removes it while there is
+-- a concurrent writer.
+--
+-- So this runs every time and repairs whatever drifted, from that race or any
+-- future one. It is cheap because it only considers rows that carry a Lean
+-- verification or claim to, and only writes the ones that actually disagree.
+update contribution c
+   set lean_verified = t.truth
+  from (select c2.id,
+               exists (select 1 from verification v
+                       where v.contribution_id = c2.id
+                         and v.method = 'lean-kernel' and v.outcome = 'passed') as truth
+        from contribution c2
+        where c2.lean_verified
+           or exists (select 1 from verification v where v.contribution_id = c2.id
+                                                    and v.method = 'lean-kernel')) t
+ where c.id = t.id and c.lean_verified is distinct from t.truth;
 
 analyze contribution;

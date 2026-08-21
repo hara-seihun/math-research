@@ -1603,7 +1603,16 @@ defineTool(
 // after every defineTool above has run.
 markAdvertised(TOOLS.map((t) => t.config.outputSchema).filter(Boolean) as never[]);
 
-const app = createMcpExpressApp({ host: "127.0.0.1", allowedHosts: ["math.seihun.com", "localhost", "127.0.0.1"] });
+// The onboarding site's live page calls this same-origin from a browser, which
+// necessarily sends Origin. The adapter defaults a localhost-bound app to
+// localhost-only origins even when allowedHosts includes the public hostname;
+// list both explicitly. (The runtime supports allowedOrigins; its published
+// option type in this release has not caught up yet.)
+const app = createMcpExpressApp({
+  host: "127.0.0.1",
+  allowedHosts: ["math.seihun.com", "localhost", "127.0.0.1"],
+  allowedOrigins: ["math.seihun.com", "localhost", "127.0.0.1"],
+} as Parameters<typeof createMcpExpressApp>[0] & { allowedOrigins: string[] });
 
 mountOAuth(app, process.env.PUBLIC_URL ?? "https://math.seihun.com");
 

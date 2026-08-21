@@ -20,22 +20,18 @@ const PAGE = 25;
 const FILTERS = {
   "top-all": {
     request: () => ({ board: true, order_by: "impact" }),
-    reasonLabel: "Why it ranks: ",
     empty: "Nothing is on the board yet.",
   },
   "top-week": {
     request: () => ({ board: true, order_by: "impact", since: "7d" }),
-    reasonLabel: "Why it ranks: ",
     empty: "Nothing reached the board this week.",
   },
   "top-day": {
     request: () => ({ board: true, order_by: "impact", since: "24h" }),
-    reasonLabel: "Why it ranks: ",
     empty: "Nothing reached the board in the last 24 hours.",
   },
   new: {
     request: () => ({ kind: RESULT_KINDS, order_by: "recent" }),
-    reasonLabel: "Current signals: ",
     empty: "Nothing has been recorded here yet.",
   },
 };
@@ -160,27 +156,6 @@ function badges(entry) {
   return wrap;
 }
 
-function rankingReasons(entry) {
-  const reasons = [];
-  const impact = entry.ranking?.reviewed_impact;
-  if (impact) {
-    reasons.push(
-      `reviewed impact ${impact.total}/15 (reach ${impact.reach}, advance ${impact.advance}, closure ${impact.closure}; ${impact.assessments} ${impact.assessments === 1 ? "assessment" : "assessments"})`,
-    );
-  }
-  if (entry.state === "settled") reasons.push("settled, because an active entry closes this question");
-  if (entry.ranking?.settles) {
-    reasons.push(`settles ${entry.ranking.settles} active ${entry.ranking.settles === 1 ? "question" : "questions"}`);
-  }
-  if (entry.ranking?.built_on_by) {
-    reasons.push(`built on by ${entry.ranking.built_on_by} active ${entry.ranking.built_on_by === 1 ? "entry" : "entries"}`);
-  }
-  if (entry.tier > 0) reasons.push(tierLabel(entry.tier).toLowerCase());
-  if (entry.lean_verified) reasons.push("Lean verified");
-  if (!reasons.length) reasons.push(`ranked from its ${entry.kind} prior and current graph evidence`);
-  return reasons;
-}
-
 // --- The list ------
 
 function card(entry, rank) {
@@ -199,7 +174,6 @@ function card(entry, rank) {
   if (entry.created_at) eyebrow.append(timeNode(entry.created_at));
   link.append(eyebrow, element("h2", "card-title", entry.title));
   if (entry.summary) link.append(element("p", "card-summary", entry.summary));
-  link.append(badges(entry));
 
   for (const settler of entry.settled_by ?? []) {
     const line = element("p", "card-settler");
@@ -208,16 +182,6 @@ function card(entry, rank) {
     if (settler.origin === "external") line.append(element("span", "badge external", "established elsewhere"));
     link.append(line);
   }
-
-  const reason = element("p", "card-reason");
-  if (query) {
-    reason.append(element("strong", "", "Text match: "));
-    reason.append(document.createTextNode(entry.matched ?? "relevant"));
-  } else {
-    reason.append(element("strong", "", FILTERS[filter].reasonLabel));
-    reason.append(document.createTextNode(rankingReasons(entry).join(" · ")));
-  }
-  link.append(reason);
 
   item.append(link);
   return item;

@@ -367,14 +367,6 @@ td:nth-child(2) { color: var(--muted); white-space: nowrap; }
 
 .card-settler strong { color: var(--accent); }
 
-.card-reason {
-  margin: 0.55rem 0 0;
-  color: var(--muted);
-  font: 0.76rem/1.5 system-ui, sans-serif;
-}
-
-.card-reason strong { color: var(--text); }
-
 .empty {
   padding: 1rem;
   border: 1px dashed var(--rule);

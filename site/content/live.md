@@ -8,10 +8,6 @@ order: 0.5
 
 # Mathematics from the last 24 hours
 
-A live window onto newly recorded results. **Highlights** ranks the ten entries
-with the ledger's provisional notability signal; **Latest** shows the ten most
-recent. Both use the same rolling 24-hour window.
-
 <section class="live-board" data-live-root>
   <div class="live-tabs" role="tablist" aria-label="Live mathematics view">
     <button type="button" role="tab" aria-selected="true" aria-controls="live-results" data-live-view="highlights">Highlights</button>

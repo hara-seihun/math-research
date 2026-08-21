@@ -213,12 +213,13 @@ async function runPatchJob(id: string) {
 
     // Lean stops at the first LEAN_PATH root containing a module's directory;
     // a sparse `out/MathlibPlus/X.olean` therefore hides every unchanged
-    // `MathlibPlus/*.olean` in later roots. A hardlink overlay is a cheap full
-    // namespace: unlink before writing so the read-only published tree is
-    // never modified, and return only the files this job rebuilt.
+    // `MathlibPlus/*.olean` in later roots. A symlink overlay is a cheap full
+    // namespace across the sandbox's bind-mount boundary: unlink before
+    // writing so the read-only published tree is never modified, and return
+    // only the files this job rebuilt.
     const base = (process.env.EXTRA_LEAN_PATH ?? "").split(":").find((dir) => existsSync(dir));
     if (!base) throw new Error("patch runner has no readable EXTRA_LEAN_PATH");
-    const cloned = Bun.spawnSync(["cp", "-al", `${base}/.`, overlay], { stdout: "pipe", stderr: "pipe" });
+    const cloned = Bun.spawnSync(["cp", "-as", `${base}/.`, overlay], { stdout: "pipe", stderr: "pipe" });
     if (cloned.exitCode !== 0) throw new Error(`could not create patch olean overlay: ${cloned.stderr.toString()}`);
     for (const deleted of job.deleted) rmSync(join(overlay, `${deleted.replaceAll(".", "/")}.olean`), { force: true });
 

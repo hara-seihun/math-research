@@ -428,10 +428,14 @@ create index if not exists lean_decl_norm_stale_idx on lean_decl (norm_v);
 -- Near matches come from the band signatures, not from a trigram index over
 -- `norm`: normalization is exactly what destroys trigram selectivity, since
 -- every normalized statement is mostly `§0`, brackets and arrows. Measured on
--- this corpus, `norm % query` recalled 355k rows in 6.7s; the band overlap
--- below answers the same question in single-digit milliseconds.
+-- this corpus, `norm % query` recalled 355k of 511k rows in 6.7s; band overlap
+-- nominates 1.6k in 5ms and orders them by how much they overlap.
+-- `intarray` is what makes that ordering a C function rather than a subquery
+-- per row, and its `&&` needs its own opclass to stay indexed.
+create extension if not exists intarray;
 drop index if exists lean_decl_norm_trgm_idx;
-create index if not exists lean_decl_bands_idx on lean_decl using gin (bands) where not generated;
+drop index if exists lean_decl_bands_idx;
+create index if not exists lean_decl_bands_int_idx on lean_decl using gin (bands gin__int_ops) where not generated;
 
 -- Every declaration the ledger itself contains, as data: one row per
 -- declaration the kernel reported for a checked source, keyed by that source's
@@ -456,7 +460,8 @@ alter table lean_unit add column if not exists bands integer[];
 create index if not exists lean_unit_norm_hash_idx on lean_unit (norm_hash) where not generated;
 create index if not exists lean_unit_norm_stale_idx on lean_unit (norm_v);
 drop index if exists lean_unit_norm_trgm_idx;
-create index if not exists lean_unit_bands_idx on lean_unit using gin (bands) where not generated;
+drop index if exists lean_unit_bands_idx;
+create index if not exists lean_unit_bands_int_idx on lean_unit using gin (bands gin__int_ops) where not generated;
 
 -- Which entries carry which checked declaration. A contribution reaches its
 -- units through the check it waited on, so this stays a view: nothing to keep

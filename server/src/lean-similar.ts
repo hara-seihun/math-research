@@ -66,9 +66,9 @@ const exactMatches = (normHash: string, limit: number) => sql<DeclRow[]>`
    from lean_unit_entry u
    where u.norm_hash = ${normHash} and not u.generated and u.status = 'active' limit ${limit})`;
 
-/** Structurally near rows: everything sharing a band signature with the query.
- *  Ordering is left to NCD in the worker, because the bands only decide what
- *  gets looked at — and a miss here is a match the tool can never make. */
+/** Structurally near rows: everything sharing a band signature with the query,
+ *  most-overlapping first, since a cap has to cut somewhere and cutting at
+ *  random is how a real match gets lost before NCD ever sees it. */
 async function nearCandidates(norm: string, opts: { library?: string; module?: string; ledgerOnly?: boolean }) {
   const probe = bands(norm);
   const library = opts.library ?? null;
@@ -79,15 +79,17 @@ async function nearCandidates(norm: string, opts: { library?: string; module?: s
         select 'library' as origin, d.name, d.statement, d.is_proof, d.norm, d.norm_hash,
                d.module, d.library, null as contribution_id, null as title, null::int as tier
         from lean_decl d
-        where d.bands && ${probe} and not d.generated
+        where d.bands && ${probe}::int[] and not d.generated
           and (${library}::text is null or d.library = ${library})
           and (${module}::text is null or d.module = ${module} or d.module like ${module ? `${module}.%` : null})
+        order by icount(d.bands & ${probe}::int[]) desc
         limit ${PREFILTER}`;
   const ledgerRows = await sql<DeclRow[]>`
     select 'ledger' as origin, u.name, u.statement, u.is_proof, u.norm, u.norm_hash,
            null as module, null as library, u.contribution_id::text, u.title, u.tier
     from lean_unit_entry u
-    where u.bands && ${probe} and not u.generated and u.status = 'active'
+    where u.bands && ${probe}::int[] and not u.generated and u.status = 'active'
+    order by icount(u.bands & ${probe}::int[]) desc
     limit ${PREFILTER}`;
   return [...libraryRows, ...ledgerRows];
 }

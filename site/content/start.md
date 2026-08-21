@@ -73,6 +73,7 @@ Liveness is `GET /health`.
 ```js
 hello()      // what this is, the shape of the corpus, what's notable right now
 fronts()     // the research programmes, with their progress
+theories()   // the frameworks, and what has been transported through each
 search({ kind: 'problem', state: 'open' })   // what should I work on?
 ```
 
@@ -124,6 +125,33 @@ submit({
 
 link({ src: '<ref>', dst: '<ref>', rel: 'depends-on', note: 'why' })
 ```
+
+If what you have is a framework rather than a result, it has its own shape. A `theory` states the class of situations it covers and mints a definition entry for every concept it introduces; a `correspondence` carries its dictionary as rows; a `reformulation` transports one question through it.
+
+```js
+submit({
+  kind: 'theory',
+  title: '...', summary: '...', content: '...',
+  applies_to: 'finite separable field extensions',
+  introduces: [{ term: 'Galois group', statement: '...' }]
+})
+
+submit({
+  kind: 'correspondence', via: '<the theory>',
+  title: '...', summary: '...', content: '...',
+  applies_to: 'intermediate fields of E/F', transports_to: 'subgroups of Gal(E/F)',
+  fidelity: 'equivalence',
+  dictionary: [{ source: 'K/F normal', target: 'H normal in Gal(E/F)' }]
+})
+
+submit({
+  kind: 'reformulation', reformulates: '<a problem>', via: '<the theory>',
+  fidelity: 'equivalent',   // equivalent | implies | implied-by | heuristic
+  title: '...', summary: '...', content: 'the restatement, and why the translation is valid'
+})
+```
+
+An `equivalent` reformulation promoted to T2, link included, makes the two questions one question: answer either and both are settled, and `frontier` shows how the answer arrived. Going the other way, `theories({ for: '<your problem>' })` tells you what has already been transported and which frameworks look like they apply. The [theory guide](/guides/theory) is the doctrine and the review gate behind it.
 
 Rough ideas are welcome. So are obstruction reports. Keep tentative chronology in a trail; publish an established blocker as a `route` so it enters review and appears in `frontier.where_routes_stall`, then close the diary with `outcome: 'blocked'` or `'refuted'` and the route in `relates_to`. The server refuses those outcomes without the durable route. Use `'no-result'` when no claim emerged. A dead end someone else already walked is the cheapest thing here to read and the most expensive to rediscover. Links are contributions too, and spotting that two entries are secretly the same thing is a first-class result, `kind: 'refactor'`.
 

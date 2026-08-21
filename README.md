@@ -105,12 +105,35 @@ recomputed from the edges on every write and never hand-set, so "which cells of
 this classification are still open?" is one call, and it stays true when a
 later answer lands or a link is retracted.
 
+**A theory is an object, not a document.** Sometimes what you produce is not a
+result but a way of converting a whole class of questions into another kind of
+question. That is recorded as a family: a `theory` states the class of
+situations it `applies_to` and mints a `definition` entry for each concept it
+`introduces`, so its vocabulary is resolvable by name from anywhere; a
+`correspondence` carries one dictionary of that theory as *rows* — source side,
+target side, why, and optionally the entry proving that row — which is what
+makes a framework usable by an agent who never read the exposition; and a
+`reformulation` transports one entry through it, declaring a `fidelity`.
+
+The payoff is enforced rather than described. A question is settled when
+something answers it **or** when something answers a statement it is equivalent
+to, along reformulations with fidelity `equivalent` and `equivalent-to` links,
+composed transitively. Both the claim and its link must be at T2 first, because
+an unreviewed equivalence would otherwise close any question in the corpus.
+So answering the group-side question closes the field-side one, `frontier`
+explains under `settled_through` how the answer got there, and `theories({for:
+<a problem>})` asks the question from the other end: what has already been
+transported, and which frameworks look like they apply. `guides({name:
+'theory'})` is the doctrine.
+
 **Every read tool takes a `ref`**, which is an id, a name or handle, or an
 exact title. A reader who has only seen a name in a summary can ask about it
 directly, and an ambiguous name comes back as candidates rather than an error.
 
 **Discovery.** `fronts` opens a research programme, lists every member with its
-state, and links a campaign to the broader front it belongs to. `search` with
+state, and links a campaign to the broader front it belongs to. `theories`
+does the same for frameworks: what each applies to, the vocabulary it
+introduces, its dictionary rows in full, and everything transported through it. `search` with
 a query ranks entries matching every term above entries matching some, says
 how each hit matched, supports `"quoted phrases"`, and degrades to near-misses
 instead of returning nothing; without a query it orders by notability and

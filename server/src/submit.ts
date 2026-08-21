@@ -19,12 +19,27 @@ export type SubmitInput = {
   relates_to?: { id: string; rel: string; note?: string }[];
   supersedes?: string[];
   signature?: string;
+  /** The vocabulary a theory introduces. Each becomes its own kind='definition'
+   *  entry, named and linkable, with an `introduces` edge from the theory: a
+   *  concept nobody can point at is a concept nobody can reuse, and asking an
+   *  author to make five more calls to mint five definitions is asking them
+   *  not to. */
+  definitions?: { term: string; statement: string; names: string[] }[];
 };
 
 const LEAN_HINT = /^\s*import\s+Mathlib|```lean|\btheorem\b[\s\S]*\bby\b/m;
 
 export type SubmitResult =
-  | { ok: true; id: string; tier: number; duplicate_of?: string; lean_queued: boolean; receipt: unknown; notes: string[] }
+  | {
+      ok: true;
+      id: string;
+      tier: number;
+      duplicate_of?: string;
+      lean_queued: boolean;
+      receipt: unknown;
+      notes: string[];
+      introduced?: { id: string; term: string }[];
+    }
   | { ok: false; error: string };
 
 export async function submit(identityId: string | null, input: SubmitInput): Promise<SubmitResult> {
@@ -67,6 +82,7 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
   const [existing] = await sql<{ id: string }[]>`
     select id from contribution where artifact_hash = ${hash} and status = 'active' limit 1`;
 
+  const minted: { id: string; term: string }[] = [];
   const result = await sql.begin(async (tx) => {
     await tx`insert into artifact (hash, media_type, content, size_bytes)
              values (${hash}, ${mediaType}, ${content}, ${Buffer.byteLength(content)})
@@ -95,6 +111,29 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
     for (const target of input.supersedes ?? []) {
       await createEdge(tx, { identityId, src: contribution!.id, dst: target, rel: "supersedes", note: "proposed refactor" });
     }
+    for (const d of input.definitions ?? []) {
+      const body = `${d.statement}\n`;
+      const defHash = sha256hex(`definition:${d.term}\n${body}`);
+      await tx`insert into artifact (hash, media_type, content, size_bytes)
+               values (${defHash}, 'text/markdown', ${body}, ${Buffer.byteLength(body)})
+               on conflict do nothing`;
+      const [def] = await tx<{ id: string }[]>`
+        insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id, tags, names,
+                                  origin, origin_source)
+        values ('definition', ${d.term}, ${d.statement.slice(0, 2000)}, ${defHash},
+                ${tx.json({ introduced_by: contribution!.id } as never)}, ${identityId},
+                classify_topics(${`${d.term}\n${d.statement}`}), ${d.names}::text[],
+                ${externalSource ? "external" : "ledger"}, ${externalSource ?? null})
+        returning id`;
+      await tx`insert into event (kind, contribution_id, identity_id, payload)
+               values ('submitted', ${def!.id}, ${identityId},
+                       ${tx.json({ kind: "definition", title: d.term, introduced_by: contribution!.id } as never)})`;
+      await createEdge(tx, {
+        identityId, src: contribution!.id, dst: def!.id, rel: "introduces",
+        note: `vocabulary introduced by this theory`,
+      });
+      minted.push({ id: def!.id, term: d.term });
+    }
     if (existing) {
       await createEdge(tx, { identityId, src: contribution!.id, dst: existing.id, rel: "duplicates", note: "identical artifact" });
     }
@@ -109,8 +148,15 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
       `recorded as external in origin, established by ${externalSource}. It counts as evidence and can settle a question here, but it stays off the all-time board of what this ledger established first.`,
     );
   }
-  const touched = [result.id, ...(input.relates_to ?? []).map((l) => l.id), ...(input.supersedes ?? [])];
+  const touched = [result.id, ...(input.relates_to ?? []).map((l) => l.id), ...(input.supersedes ?? []), ...minted.map((m) => m.id)];
   await refreshAround(touched);
+  if (minted.length) {
+    notes.push(
+      `minted ${minted.length} definition ${minted.length === 1 ? "entry" : "entries"} for the vocabulary this theory introduces (${minted
+        .map((m) => m.term)
+        .join(", ")}). Each is its own entry, resolvable by name from any tool that takes a ref.`,
+    );
+  }
 
   if ((input.supersedes ?? []).length > 0) {
     notes.push(
@@ -147,5 +193,14 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
   }
 
   const receipt = await issueReceipt(result);
-  return { ok: true, id: result.id, tier: 0, duplicate_of: existing?.id, lean_queued: leanQueued, receipt, notes };
+  return {
+    ok: true,
+    id: result.id,
+    tier: 0,
+    duplicate_of: existing?.id,
+    lean_queued: leanQueued,
+    receipt,
+    notes,
+    ...(minted.length ? { introduced: minted } : {}),
+  };
 }

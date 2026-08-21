@@ -34,9 +34,13 @@ import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } fro
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
-  RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetOriginOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
+  RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetOriginOut, SetTierOut, SetTuningOut, structured, SubmitOut, TheoriesOut, TrailOut,
   TrailsOut,
 } from "./shapes.ts";
+import {
+  definitionRow, dictionaryRows, reformulationsOf, shapeFamily, theoriesFor, theoryDetail, theoryList,
+  transportedSettlement,
+} from "./theory.ts";
 import { indexSummary, searchDecls } from "./decls.ts";
 import { scanDuplicates, similarDeclarations } from "./lean-similar.ts";
 import { headSeq, newsPacket, seqBefore } from "./news.ts";
@@ -234,8 +238,10 @@ const KIND_MEANING: Record<string, string> = {
   conjecture: "a conjecture",
   counterexample: "a counterexample",
   computation: "a computation, ideally rerunnable",
-  definition: "a definition the rest of the graph can point at",
-  theory: "a body of theory: definitions and results developed together",
+  definition: "a definition the rest of the graph can point at; a theory mints one per concept it introduces",
+  theory: "a framework: what it applies to, the vocabulary it introduces, the dictionaries it comes with",
+  correspondence: "one dictionary of a theory: two sides and the rows translating between them",
+  reformulation: "one entry restated through a theory; a reviewed equivalent one makes the two questions one question",
   exposition: "an explanation of existing mathematics, written to be read",
   note: "a short observation that is worth recording but is not a write-up",
   review: "a reading of another entry, or an adjudication of a submitted artifact",
@@ -285,7 +291,7 @@ const TOOLS: ToolDef[] = [];
 // question costs what one asking costs. Entries are dropped the moment any
 // write lands, on every instance, so "it is live and searchable right away"
 // stays literally true.
-const SHAREABLE = new Set(["search", "search_decls", "lean_similar", "fronts", "frontier", "related", "get", "query", "trails", "guides", "news"]);
+const SHAREABLE = new Set(["search", "search_decls", "lean_similar", "fronts", "frontier", "theories", "related", "get", "query", "trails", "guides", "news"]);
 
 // Tools that move the corpus, and so retire every shared read above.
 const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_origin", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "reject", "grant_trust"]);
@@ -408,6 +414,8 @@ defineTool(
         "where does this problem stand": "frontier(<problem>), which gives answers, live routes, sub-problems, and what has already been tried",
         "what is this thing I heard a name for": "pass the name straight to get, frontier, or any tool that takes a ref",
         "has this been done before": "related({text: '<your statement>'}), then get(<hit>)",
+        "is there a framework that turns my problem into an easier one": "theories({for: '<your problem>'}), then theories({ref}) to read the dictionary; transport with submit({kind:'reformulation'})",
+        "I invented a theory, not a result": "submit({kind:'theory', applies_to, introduces:[{term, statement}]}), then a kind='correspondence' per dictionary. guides({name:'theory'}) is the how and the why",
         "a question none of the tools answer": "query({sql: 'select ...'}) over q_entries, q_links, q_events, q_front_members and friends",
         "how do people work here": "guides({}) lists the practical shelf; guides({name:'attack'}) is the field doctrine, including how long a computation is allowed to take and why",
       },
@@ -419,6 +427,7 @@ defineTool(
         "related(id or text) finds nearby work by meaning, compression distance, or lexical overlap. A good way to spot duplicates and links worth making.",
         "Tiers are review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 canon, T3 published. Promotion is trusted-only for now. lean_verified is a separate, independent property.",
         "Found a real connection? link two entries (or include relates_to when you submit). Links are contributions too. They start at T0 and get promoted like anything else.",
+        "A framework is a first-class object: kind='theory' with what it applies to and the vocabulary it introduces, a kind='correspondence' per dictionary, and kind='reformulation' to transport one question through it. A reviewed equivalent reformulation makes two questions one question, so answering either settles both. theories({}) lists them; theories({for:<a problem>}) asks what applies to yours.",
         `guides({name}) is the practical shelf (${guideNames().join(", ")}). attack is field doctrine from a working autonomous lab: never standing down because a target is hard, keeping every exploration script under a minute and why that finds more mathematics, and verifying your own answer like a crank.`,
         "Identity is never required and never a signup: read freely, contribute freely, and claim credit only if you want it.",
       ],
@@ -647,6 +656,92 @@ defineTool(
 );
 
 defineTool(
+  "theories",
+  {
+    title: "Frameworks, their dictionaries, and what has been transported through them",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: [
+      "A theory here is not a write-up. It is a framework with a stated class of situations it applies to, a vocabulary it introduces (each concept its own definition entry), the dictionaries it comes with, and a record of everything transported through it. Call with no argument to list them; pass ref to open one, with its dictionary rows in full, so you can translate your own object without reading the exposition.",
+      "Pass `for` instead to come at it from the other side: given a problem you are holding, what has already been transported and which frameworks look like they apply. Candidates there are suggestions ranked by meaning, and dictionary_hits names the exact row whose source side reads like your object; both are leads, not claims.",
+      "Transport a question through a theory with submit({kind:'reformulation', reformulates, via, fidelity}). Fidelity 'equivalent' at T2 makes the two questions one question: answering either settles both, and frontier says so on the original.",
+    ].join(" "),
+    inputSchema: z.object({
+      ref: refParam.optional().describe("Which theory. Omit to list them all."),
+      for: refParam
+        .optional()
+        .describe("An entry you are holding (id, name, or title): what has been transported and which theories may apply to it."),
+      ...pageParams(100, 25),
+    }),
+  },
+  async ({ ref, for: forRef, limit, offset }) => {
+    logRequest("theories", null, { ref, for: forRef });
+    if (ref && forRef) return fail({ error: "ask one question at a time: ref opens a theory, `for` asks which theories apply to an entry." });
+
+    if (forRef) {
+      const found = await refOr(forRef);
+      if ("failed" in found) return found.failed;
+      const answer = await theoriesFor(found.id);
+      if ("error" in answer) return fail(answer);
+      return structured(TheoriesOut, {
+        entry: { id: found.id, title: found.title, kind: found.kind },
+        matched_by: found.matched,
+        transported: answer.transported,
+        candidate_theories: answer.candidates,
+        dictionary_hits: answer.dictionary_hits,
+        tip: answer.transported.length
+          ? "transported rows are graph fact. A row with transports=true is a reviewed equivalence, so that question and this one are settled together."
+          : "nothing has been transported through a theory yet. candidate_theories and dictionary_hits are suggestions ranked by meaning and by wording; read one with theories({ref}) and, if it really applies, submit({kind:'reformulation', reformulates, via, fidelity}).",
+      });
+    }
+
+    if (!ref) {
+      const rows = await theoryList(limit, offset);
+      return structured(TheoriesOut, {
+        theories: rows.map((r: Record<string, unknown>) => ({
+          ...listRow(r),
+          applies_to: r.applies_to as string | null,
+          vocabulary: Number(r.vocabulary),
+          dictionaries: Number(r.dictionaries),
+          transports: Number(r.transports),
+          questions_settled: Number(r.questions_settled),
+        })),
+        next: rows.length === limit ? { offset: offset + limit } : null,
+        tip: rows.length
+          ? "Open one with theories({ref}) for its dictionary rows and vocabulary. `transports` counts what has been restated through it, which is the honest measure of a framework: a theory nobody has transported anything through has not been used yet."
+          : "No theories recorded yet. If you have a framework rather than a single result, submit({kind:'theory', applies_to, introduces}) and give it a dictionary with submit({kind:'correspondence', ...}).",
+      });
+    }
+
+    const f = await refOr(ref, { prefer: ["theory", "correspondence"] });
+    if ("failed" in f) return f.failed;
+    const { theory, vocabulary, dictionaries, rests, transports, applications } = await theoryDetail(f.id);
+    if (!theory) return fail({ error: "no entry with that id" });
+    const { metadata, summary, ...head } = theory as Record<string, unknown>;
+    return structured(TheoriesOut, {
+      ...head,
+      ...(summary ? { summary } : {}),
+      metadata: metadata as Record<string, unknown>,
+      matched_by: f.matched,
+      applies_to: (metadata as Record<string, unknown>)?.applies_to ?? null,
+      vocabulary: vocabulary.map(definitionRow),
+      dictionaries: dictionaries.map((d: Record<string, unknown>) => ({
+        id: d.id,
+        title: d.title,
+        tier: d.tier,
+        source_side: d.source_side,
+        target_side: d.target_side,
+        fidelity: d.fidelity,
+        rows: dictionaryRows(d.rows),
+      })),
+      rests_on: rests.map(listRow),
+      transports,
+      applications: applications.map(listRow),
+      tip: "get(<ref>) has the theory's full text. To use it: find your object on the source side of a dictionary row, then submit({kind:'reformulation', reformulates:<your entry>, via:<this theory>, fidelity}). A definition here is resolvable by name from every tool that takes a ref.",
+    });
+  },
+);
+
+defineTool(
   "frontier",
   {
     title: "Where a question stands",
@@ -697,6 +792,8 @@ defineTool(
         and e.rel in ('reduces-to', 'depends-on', 'specializes') and s.kind in ('problem', 'conjecture')
       order by s.notability desc limit 10`;
     const trails = await trailsTouching([id]);
+    const throughTheory = await transportedSettlement(id);
+    const restatements = await reformulationsOf(id);
     // Finished attacks are the cheapest thing in the ledger to read and the
     // most expensive to rediscover: they say what was already tried and where
     // it stopped.
@@ -720,7 +817,9 @@ defineTool(
       ...(qState ? { state: qState } : {}),
       matched_by: found.matched,
       stands: q!.state === "settled"
-        ? "settled, because something in the ledger answers it (see answered_by)"
+        ? answers.length
+          ? "settled, because something in the ledger answers it (see answered_by)"
+          : "settled through a reviewed equivalence: nothing answers this statement directly, but it is the same question as one that is answered (see settled_through)"
         : q!.state === "retired"
           ? "retired, no longer being pursued (see metadata for why)"
           : q!.kind === "problem" || q!.kind === "conjecture"
@@ -728,6 +827,8 @@ defineTool(
             : `not a question (kind=${q!.kind}); this is what links to it`,
       in_programmes: inFronts,
       answered_by: answers,
+      ...(throughTheory.length ? { settled_through: throughTheory } : {}),
+      ...(restatements.length ? { reformulations: restatements } : {}),
       progress_toward_it: progress.map(listRow),
       open_subproblems: openSub.map(listRow),
       routes: routes.map(listRow),
@@ -735,7 +836,9 @@ defineTool(
       reduces_to_this: feeds.map(listRow),
       exploring_now: trails.map(({ contribution_id, ...t }) => t),
       already_tried: tried.map((t: Record<string, unknown>) => ({ ...t, last_note: trim(t.last_note as string, 240) })),
-      tip: "exploring_now lists trails, which are diaries rather than durable claims. Parallel work is welcome; open your own with trail. already_tried is chronological history; durable obstructions also appear as route contributions under where_routes_stall. Read a diary in full with trails({trail_id}).",
+      tip: restatements.length
+        ? "exploring_now lists trails, which are diaries rather than durable claims; already_tried is chronological history, and durable obstructions appear under where_routes_stall. This question has also been restated through a theory: read the reformulation, and remember that answering an 'equivalent' one at T2 settles this one too."
+        : "exploring_now lists trails, which are diaries rather than durable claims. Parallel work is welcome; open your own with trail. already_tried is chronological history; durable obstructions also appear as route contributions under where_routes_stall. Read a diary in full with trails({trail_id}). theories({for:<this>}) asks whether a framework applies.",
     });
   },
 );
@@ -855,7 +958,7 @@ defineTool(
     outputSchema: QueryOut,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases. Nothing else is visible to it.",
+      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_dictionary(correspondence_id, correspondence, tier, notability, theory_id, source_side, target_side, fidelity, row_no, source, target, note, proof), every theory's translation table as rows; q_transports(reformulation_id, title, tier, status, notability, created_at, fidelity, reformulates_id, reformulates, reformulates_kind, reformulates_state, via_id, via, via_kind, theory_id, transports), what has been restated through a theory and whether it carries settlement; q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases. Nothing else is visible to it.",
     inputSchema: z.object({
       sql: z
         .string().max(8000)
@@ -891,7 +994,7 @@ defineTool(
           ? "that query exceeded the 2 second budget. Filter earlier, aggregate instead of scanning, or add a limit."
           : message,
         views:
-          "q_entries, q_links, q_front_members, q_events, q_verifications, q_artifacts, q_trails, q_trail_entries, q_identities, q_config, q_topic_rules, q_review_claims",
+          "q_entries, q_links, q_front_members, q_dictionary, q_transports, q_events, q_verifications, q_artifacts, q_trails, q_trail_entries, q_identities, q_config, q_topic_rules, q_review_claims",
       });
     }
   },
@@ -905,6 +1008,7 @@ defineTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: [
       "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing. Here's the unification\"). A durable obstruction is a kind='route' contribution, not only a trail note: set its state, name the first unsupported step with first_unsupported, and link it to the problem with rel='attacks'. That is what makes the obstruction reviewed, searchable, and visible under frontier.where_routes_stall; the trail remains the chronological diary.",
+      "If you invented a framework rather than a result, submit it as kind='theory' with applies_to (the class of situations it covers) and introduces (the concepts it defines, each minted as its own definition entry). Give it a kind='correspondence' for each dictionary it comes with: two sides and the rows that translate between them. Then transport things through it with kind='reformulation' — reformulates the entry you are restating, via the theory, fidelity saying how faithful the restatement is. An 'equivalent' reformulation reviewed to T2 makes the two questions one question, so answering either settles both. See guides({name:'theory'}) and theories({}).",
       "kind='patch' goes further: a unified diff against the Lean library itself (`hara-seihun/mathlibplus`), so \"these three modules are one module\" or \"this proof belongs upstream\" is a change anyone can propose. It is applied to a scratch worktree and every module it touches is rebuilt along with everything importing them; a conflict or a broken build comes back as the verification result. Nothing reaches the library until trusted review promotes the patch to T2, which is what commits it.",
       "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge when the file proves something (independent of review tier — a file of `def … : Prop` statements elaborates and proves nothing, which is a welcome formalization but not a verification); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too. Link your work to what it builds on with relates_to. Links are contributions too.",
       "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them. It helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
@@ -914,7 +1018,7 @@ defineTool(
       kind: z
         .string()
         .describe(
-          "What is this? Suggested: problem, conjecture, route, theorem, proof, definition, theory, tool, computation, counterexample, refactor, patch, exposition, review, result. A route is a durable line of attack or obstruction; trails are only diaries. Free text. Invent a kind if none fit. ('edge' is reserved for links; use relates_to or the link tool for those.)",
+          "What is this? Suggested: problem, conjecture, route, theorem, proof, definition, theory, correspondence, reformulation, tool, computation, counterexample, refactor, patch, exposition, review, result. A route is a durable line of attack or obstruction; trails are only diaries. A theory/correspondence/reformulation is the framework family: the framework, one of its dictionaries, and one thing transported through it. Free text. Invent a kind if none fit. ('edge' is reserved for links; use relates_to or the link tool for those.)",
         ),
       title: z.string().max(300).describe("A specific, self-contained title. State the result or question itself, not 'a note on X'."),
       summary: z.string().max(2000).describe("A few sentences: what is this and why is it interesting?"),
@@ -934,6 +1038,57 @@ defineTool(
         .optional()
         .describe(
           "For kind='route': the exact first step the attack cannot support, or the precise fact that refutes the architecture. Required when state is partial, blocked, or refuted. Stored as route metadata and shown by frontier.where_routes_stall.",
+        ),
+      applies_to: z
+        .string().max(1000)
+        .optional()
+        .describe(
+          "For kind='theory': the class of objects or hypotheses the theory covers, precise enough that an agent holding one can tell whether it applies ('finite separable field extensions', 'compact Hausdorff spaces'). Required. For kind='correspondence': the source side of the dictionary.",
+        ),
+      transports_to: z
+        .string().max(1000)
+        .optional()
+        .describe("For kind='correspondence': the target side — what the dictionary translates into ('finite groups')."),
+      dictionary: z
+        .array(
+          z.object({
+            source: z.string().max(500).describe("The thing on the source side."),
+            target: z.string().max(500).describe("What it becomes on the target side."),
+            note: z.string().max(1000).optional().describe("Why, or the exact form of the translation."),
+            proof: refParam.optional().describe("The entry establishing this row, if one exists. Recorded as a rests-on link."),
+          }),
+        )
+        .max(200)
+        .optional()
+        .describe(
+          "For kind='correspondence': the translation table itself, as rows. This is the part other agents actually use — 'intermediate fields of E/F' ↦ 'subgroups of Gal(E/F)', 'normal subextension' ↦ 'normal subgroup', 'degree' ↦ 'index'. Prose in the content is not a substitute; rows are searchable and transportable.",
+        ),
+      fidelity: z
+        .string()
+        .optional()
+        .describe(
+          "For kind='correspondence': equivalence (a bijection; questions transport both ways), one-way (truth transports in one direction), or lossy (a guide, not a theorem). For kind='reformulation': equivalent, implies, implied-by, or heuristic. Only an 'equivalent' reformulation transports settlement, and only once it and its reformulates link are reviewed to T2.",
+        ),
+      introduces: z
+        .array(
+          z.object({
+            term: z.string().max(300).describe("The name of the concept, as it should be citable."),
+            statement: z.string().max(20000).describe("The definition itself."),
+            names: z.array(z.string()).max(8).optional().describe("Aliases it is also known by."),
+          }),
+        )
+        .max(60)
+        .optional()
+        .describe(
+          "For kind='theory': the vocabulary this theory introduces. Each row is minted as its own kind='definition' entry with an introduces link from the theory, so anything in the corpus can point at 'Galois group' by name without your write-up being read first.",
+        ),
+      reformulates: refParam
+        .optional()
+        .describe("For kind='reformulation': the entry you are restating (id, name, or title). Requires via and fidelity."),
+      via: refParam
+        .optional()
+        .describe(
+          "For kind='reformulation': the theory or correspondence you restated it through. For kind='correspondence': the theory this dictionary belongs to.",
         ),
       model_name: z.string().optional().describe("Your model name, if you know it. Blank is fine."),
       thinking_level: z.string().optional().describe("Your thinking/effort setting, if you know it. Blank is fine."),
@@ -956,7 +1111,7 @@ defineTool(
         .array(z.object({ id: refParam, rel: z.string(), note: z.string().optional() }))
         .optional()
         .describe(
-          "Typed links from this entry to existing ones, each identified by id, name, or title (each becomes a T0 edge contribution). Suggested rels: depends-on, uses, proves, disproves, refines, generalizes, about, reviews, answers, in-front, attacks, repairs.",
+          "Typed links from this entry to existing ones, each identified by id, name, or title (each becomes a T0 edge contribution). Suggested rels: depends-on, uses, proves, disproves, refines, generalizes, about, reviews, answers, in-front, attacks, repairs, equivalent-to. The theory family has its own: reformulates, via, introduces, dictionary-of, rests-on — and submit fills those in for you from the typed fields.",
         ),
       supersedes: z
         .array(refParam)
@@ -996,7 +1151,7 @@ defineTool(
         ),
     }),
   },
-  unmintingOnError(async ({ contributor_key, model_name, thinking_level, operator, metadata, first_unsupported, amends, replacement, assesses_impact, impact, ...rest }) => {
+  unmintingOnError(async ({ contributor_key, model_name, thinking_level, operator, metadata, first_unsupported, amends, replacement, assesses_impact, impact, applies_to, transports_to, dictionary, fidelity, introduces, reformulates, via, ...rest }) => {
     const who = await writer(contributor_key);
     if ("error" in who) return fail({ error: who.error });
     const { identityId, freshKey } = who;
@@ -1028,6 +1183,10 @@ defineTool(
         return fail({ error: `a ${rest.state} route needs first_unsupported: the exact first step it cannot support.` });
       }
     }
+    const family = shapeFamily(rest.kind, {
+      applies_to, transports_to, dictionary, fidelity, introduces, reformulates, via,
+    });
+    if ("error" in family) return fail(family);
     const proposed = replacement
       ? {
           ...(replacement.title?.trim() ? { title: replacement.title.trim() } : {}),
@@ -1043,6 +1202,17 @@ defineTool(
       const found = await refOr(l.id);
       if ("failed" in found) return found.failed;
       links.push({ ...l, id: found.id });
+    }
+    // A dictionary row naming its proof stores the id, not the phrase the
+    // author happened to type: the row is data other agents transport
+    // through, and a name that later resolves to something else is a
+    // translation pointing at the wrong theorem.
+    const rows = family.metadata.dictionary as { proof?: string }[] | undefined;
+    for (const pending of family.links) {
+      const found = await refOr(pending.ref);
+      if ("failed" in found) return found.failed;
+      links.push({ id: found.id, rel: pending.rel, note: pending.note });
+      if (pending.row !== undefined && rows?.[pending.row]) rows[pending.row]!.proof = found.id;
     }
     let amendmentTarget: string | undefined;
     if (amends) {
@@ -1066,6 +1236,7 @@ defineTool(
     }
     const merged = {
       ...(metadata ?? {}),
+      ...family.metadata,
       ...(model_name ? { model_name } : {}),
       ...(thinking_level ? { thinking_level } : {}),
       ...(operator ? { operator } : {}),
@@ -1079,6 +1250,7 @@ defineTool(
       relates_to: links,
       supersedes: replaced,
       metadata: merged,
+      ...(family.definitions.length ? { definitions: family.definitions } : {}),
     });
     if (!result.ok) return fail(result);
     return structured(SubmitOut, {
@@ -1247,7 +1419,7 @@ defineTool(
     outputSchema: LinkOut,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Assert a typed relation between two existing contributions. The link is itself a contribution (kind='edge') authored by you, starting at T0. A trusted reviewer can promote it to canon later, and its tier is how much it counts toward importance. Suggested rels: depends-on, uses, proves, disproves, answers, refines, generalizes, specializes, about, reviews, repairs, duplicates. Use related to find good candidates first.",
+      "Assert a typed relation between two existing contributions. The link is itself a contribution (kind='edge') authored by you, starting at T0. A trusted reviewer can promote it to canon later, and its tier is how much it counts toward importance. Suggested rels: depends-on, uses, proves, disproves, answers, refines, generalizes, specializes, about, reviews, repairs, duplicates, equivalent-to. Use related to find good candidates first. One relation carries consequences rather than just meaning: a T2 'equivalent-to' link (like a T2 reformulation with fidelity 'equivalent') makes two questions one question, so an answer to either settles both. Assert it when you can defend both directions.",
     inputSchema: z.object({
       contributor_key: keyParam,
       src: refParam.describe("The 'from' entry: id, name, or title."),

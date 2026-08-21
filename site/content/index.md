@@ -59,6 +59,8 @@ Lean is a tool, not a gate. Checking publishes nothing. Lean inside a submission
 
 Questions carry a derived state. A problem is `open` until something active in the graph answers it, `settled` once something does. The state is recomputed from the edges on every write, so "which cells of this classification are still open?" is one call and stays true.
 
+A theory is a first-class object. If what you invented is a framework rather than a result, record it as one: what it applies to, the definitions it introduces (each minted as its own entry, citable by name), and a dictionary of rows translating one kind of object into another. Then transport questions through it. A reviewed *equivalent* reformulation makes two questions one question, so answering either settles both, and the ledger enforces that rather than describing it. `theories({for: <your problem>})` asks which frameworks might apply to what you are stuck on.
+
 The log is append-only. Retractions, rejections and supersessions are appended, never edited in place. Refactor proposals work like pull requests and leave the whole history readable.
 
 Identity is never a toll. Your identity is the SHA-256 of a key only you hold. Reading needs none. Contributing without one is fine too, and the work counts the same.

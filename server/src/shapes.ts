@@ -271,6 +271,119 @@ export const FrontsOut = z
   })
   .describe("Without a ref: {fronts}. With one: the programme itself with progress and members_by_kind.");
 
+// --- The theory family ------
+// A dictionary row is the unit other agents transport through, so it is a
+// declared shape rather than free metadata: source, target, why, and the
+// entry that proves it.
+const DictionaryRow = z.strictObject({
+  source: z.string(),
+  target: z.string(),
+  note: z.string().optional(),
+  proof: z.string().optional().describe("Id of the entry establishing this row."),
+});
+
+const Transport = z.strictObject({
+  reformulation_id: z.string(),
+  title: z.string(),
+  tier: z.number().int(),
+  notability: z.number(),
+  fidelity: z.string().nullable().describe("equivalent | implies | implied-by | heuristic."),
+  transports_settlement: z
+    .boolean()
+    .nullable()
+    .describe("True when this restatement is equivalent and reviewed enough (T2 entry, T2 link) that settling either side settles both."),
+  reformulates_id: z.string(),
+  reformulates: z.string(),
+  reformulates_kind: z.string(),
+  reformulates_state: z.string().nullable(),
+  via_id: z.string(),
+  via: z.string(),
+  via_kind: z.string(),
+  created_at: iso,
+});
+
+export const TheoriesOut = z
+  .strictObject({
+    theories: z
+      .array(
+        ListRow.extend({
+          applies_to: z.string().nullable(),
+          vocabulary: z.number().int().describe("Definitions this theory introduces."),
+          dictionaries: z.number().int(),
+          transports: z.number().int().describe("Entries restated through it."),
+          questions_settled: z.number().int().describe("Distinct settled questions among the things transported through it."),
+        }),
+      )
+      .optional()
+      .describe("Present when called with neither ref nor `for`."),
+    id: z.string().optional(),
+    kind: z.string().optional(),
+    title: z.string().optional(),
+    summary: z.string().optional(),
+    tier: z.number().int().optional(),
+    notability: z.number().optional(),
+    names: z.array(z.string()).optional(),
+    tags: z.array(z.string()).optional(),
+    metadata: jsonRecord.optional(),
+    lean_verified: z.boolean().optional(),
+    origin: z.string().optional(),
+    origin_source: z.string().nullable().optional(),
+    created_at: iso.optional(),
+    updated_at: iso.optional(),
+    author: z.string().nullable().optional(),
+    matched_by: z.string().optional(),
+    applies_to: z.unknown().optional(),
+    vocabulary: z.array(ListRow.extend({ statement: z.string().nullable() })).optional(),
+    dictionaries: z
+      .array(
+        z.strictObject({
+          id: z.string(),
+          title: z.string(),
+          tier: z.number().int(),
+          source_side: z.string().nullable(),
+          target_side: z.string().nullable(),
+          fidelity: z.string().nullable(),
+          rows: z.array(DictionaryRow),
+        }),
+      )
+      .optional(),
+    rests_on: z.array(ListRow).optional(),
+    transports: z.array(Transport).optional(),
+    applications: z.array(ListRow).optional(),
+    entry: z.strictObject({ id: z.string(), title: z.string(), kind: z.string() }).optional().describe("Present for theories({for})."),
+    transported: z.array(Transport).optional(),
+    candidate_theories: z
+      .array(
+        z.strictObject({
+          id: z.string(),
+          title: z.string(),
+          tier: z.number().int(),
+          notability: z.number(),
+          applies_to: z.string().nullable(),
+          similarity: z.number(),
+        }),
+      )
+      .optional()
+      .describe("Suggestions ranked by meaning, not claims that the theory applies."),
+    dictionary_hits: z
+      .array(
+        z.strictObject({
+          correspondence_id: z.string(),
+          correspondence: z.string(),
+          theory_id: z.string().nullable(),
+          source: z.string(),
+          target: z.string(),
+          note: z.string().nullable(),
+          match: z.number(),
+        }),
+      )
+      .optional()
+      .describe("Dictionary rows whose source side reads like the entry you asked about."),
+    next: offsetCursor.nullable().optional(),
+    tip: z.string(),
+  })
+  .describe("Without arguments: {theories}. With ref: one framework with its vocabulary and dictionaries. With `for`: what applies to an entry.");
+
 export const FrontierOut = z.strictObject({
   id: z.string(),
   kind: z.string(),
@@ -291,6 +404,40 @@ export const FrontierOut = z.strictObject({
   stands: z.string().describe("Where the question stands, in words."),
   in_programmes: z.array(z.strictObject({ id: z.string(), title: z.string() })),
   answered_by: z.array(ListRow),
+  settled_through: z
+    .array(
+      z.strictObject({
+        through: z.strictObject({
+          id: z.string(),
+          kind: z.string(),
+          title: z.string(),
+          tier: z.number().int(),
+          hops: z.number().int().describe("Reviewed equivalences between this question and the statement that was answered."),
+        }),
+        answered_by: z.strictObject({
+          id: z.string(),
+          kind: z.string(),
+          title: z.string(),
+          tier: z.number().int(),
+          rel: z.string(),
+        }),
+      }),
+    )
+    .optional()
+    .describe("How an answer reached this question from an equivalent statement elsewhere."),
+  reformulations: z
+    .array(
+      z.strictObject({
+        id: z.string(),
+        title: z.string(),
+        tier: z.number().int(),
+        fidelity: z.string().nullable(),
+        transports_settlement: z.boolean().nullable(),
+        via: z.strictObject({ id: z.string(), title: z.string(), kind: z.string() }),
+      }),
+    )
+    .optional()
+    .describe("This question restated through a theory."),
   progress_toward_it: z.array(ListRow),
   open_subproblems: z.array(ListRow),
   routes: z.array(ListRow),
@@ -374,6 +521,10 @@ export const SubmitOut = z.strictObject({
   lean_queued: z.boolean(),
   receipt: Receipt,
   notes: z.array(z.string()),
+  introduced: z
+    .array(z.strictObject({ id: z.string(), term: z.string() }))
+    .optional()
+    .describe("Definition entries minted from a theory's `introduces` rows, each already linked to the theory."),
   thanks: z.string(),
   attributed_to: z.string(),
   your_contributor_key: z.string().optional().describe("Shown once when this call minted your identity. Save it."),

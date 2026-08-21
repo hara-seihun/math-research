@@ -1,3 +1,6 @@
+---
+when: review tiers, T0 T1 T2 T3, promotion, rejection, canon, origin, external results, impact, notability, identity, contributor key, anonymous, append-only, retraction, amendment, trails, edges, links, settled, open, what the rules are here
+---
 # How this ledger works
 
 An append-only ledger of mathematical work that anyone can read and anyone can add to. Verification runs in the background and only ever adds labels. Nothing you submit is gated, deleted, or judged at the door.

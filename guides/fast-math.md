@@ -1,3 +1,6 @@
+---
+when: fast numerical kernels, FLINT, Arb, interval arithmetic, exact arithmetic, arbitrary precision, GPU, CUDA, Metal, SIMD, big census, parameter sweep, too slow, speed up a computation, certificate
+---
 # fast-math: fast numerical kernels for mathematical experiments
 
 [fast-math](https://github.com/hara-seihun/fast-math) is a library of native mathematical kernels built for research-scale experimentation: exact and arbitrary-precision arithmetic backed by FLINT and Arb, affine arithmetic, and SIMD or GPU numerics with CPU, CUDA, Metal, and ROCm/HIP backends.

@@ -110,6 +110,12 @@ browser_call() { # browser_call <origin> <tool> <json-args> -> result text paylo
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3}}" \
     | sed -n 's/^data: //p' | jq -er '.result.content[0].text'
 }
+rpc() { # rpc <method> <params-json> -> the whole JSON-RPC result
+  curl -sf --max-time 10 -X POST "$MCP" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" \
+    | sed -n 's/^data: //p' | jq -er '.result'
+}
 identity_of() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
 field() { jq -cer "$1"; }
 fail() {
@@ -1131,6 +1137,85 @@ for tool in $REGISTERED; do
   [[ -v DOORS[$tool] ]] || fail "$tool is registered but no contract calls it"
   ANSWER=$(call "$tool" "${DOORS[$tool]}") || fail "$tool did not answer"
   echo "$ANSWER" | grep -q '"error"' && fail "$tool answered with an error: $(echo "$ANSWER" | head -c 300)"
+done
+
+# ——— A stranger with only the URL can find everything ————————————————————
+# The whole consumer story is: someone is handed https://…/mcp and nothing
+# else. So the three MCP surfaces are contracts, not decoration — a client that
+# reads resources but never calls a tool, and a person picking a prompt out of
+# a menu, both have to arrive at the same doctrine the tools serve.
+INIT=$(curl -sf --max-time 10 -X POST "$MCP" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"contracts","version":"1"}}}' \
+  | sed -n 's/^data: //p' | jq -er '.result')
+for capability in tools resources prompts; do
+  echo "$INIT" | jq -e ".capabilities.$capability" > /dev/null || fail "$capability is not advertised at initialize"
+done
+
+# Instructions are paid for on every connection, so they point rather than
+# tell: hello and the prompts carry what a session actually needs, and this
+# guard is what stops the doctrine from creeping back in here where it would
+# go stale.
+INSTRUCTIONS=$(echo "$INIT" | field '.instructions')
+[[ ${#INSTRUCTIONS} -lt 1200 ]] || fail "server instructions have grown into a document (${#INSTRUCTIONS} chars); the guides are where that belongs"
+grep -q "hello" <<< "$INSTRUCTIONS" || fail "server instructions never mention hello"
+grep -qi "prompts\|guides" <<< "$INSTRUCTIONS" || fail "server instructions never point at the guides"
+
+# Every resource this server offers answers, and answers with something.
+RESOURCES=$(rpc resources/list '{}' | field '.resources')
+[[ $(echo "$RESOURCES" | jq -r 'length') -ge 5 ]] || fail "the resource shelf is empty or tiny: $RESOURCES"
+for uri in $(echo "$RESOURCES" | jq -r '.[].uri'); do
+  BODY=$(rpc resources/read "{\"uri\":\"$uri\"}" | field '.contents[0].text') \
+    || fail "resource $uri did not read"
+  [[ ${#BODY} -gt 40 ]] || fail "resource $uri read back nearly empty"
+done
+
+# A template is a resource with a name in it, so each one is exercised with a
+# name this suite actually created — and a new template with no probe here
+# fails, exactly as a new tool with no contract call does.
+declare -A TEMPLATES=(
+  ["ledger://entry/{ref}"]="ledger://entry/$Q"
+  ["ledger://frontier/{ref}"]="ledger://frontier/$Q"
+  ["ledger://front/{ref}"]="ledger://front/$FR"
+  ["ledger://theory/{ref}"]="ledger://theory/$THEORY"
+)
+while read -r pattern; do
+  [[ -v TEMPLATES[$pattern] ]] || fail "resource template $pattern is registered but no contract reads it"
+  rpc resources/read "{\"uri\":\"${TEMPLATES[$pattern]}\"}" | field '.contents[0].text' > /dev/null \
+    || fail "resource template $pattern did not read ${TEMPLATES[$pattern]}"
+done < <(rpc resources/templates/list '{}' | jq -r '.resourceTemplates[].uriTemplate')
+
+# A title is the ref most people have, and a title has spaces in it, so the
+# variable arrives percent-encoded and has to be read as what the caller meant.
+TITLE_URI="ledger://entry/$(jq -rn --arg t 'frontier test question' '$t|@uri')"
+[[ $(rpc resources/read "{\"uri\":\"$TITLE_URI\"}" | field '.contents[0].text' | field '.title') == "frontier test question" ]] \
+  || fail "an entry resource addressed by title did not resolve: $TITLE_URI"
+
+# A ref that is not here is a resource that is not here, and the tool's own
+# sentence explains it rather than an empty document pretending to exist.
+MISSING=$(curl -sf --max-time 10 -X POST "$MCP" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"ledger://entry/no-such-entry-anywhere"}}' \
+  | sed -n 's/^data: //p')
+echo "$MISSING" | jq -e '.error' > /dev/null || fail "reading a nonexistent entry resource did not error"
+
+# Every guide is a prompt, and the prompt is the guide: one file, three doors.
+PROMPTS=$(rpc prompts/list '{}' | field '.prompts')
+for name in $(call guides '{}' | jq -r '.guides[].name'); do
+  echo "$PROMPTS" | jq -e --arg n "$name" 'map(select(.name == $n)) | length == 1' > /dev/null \
+    || fail "guide $name is not offered as a prompt"
+  # The description is a retrieval trigger, not a summary: it says when to
+  # reach for the guide, so it must not be the guide's own title back again.
+  DESC=$(echo "$PROMPTS" | jq -er --arg n "$name" '.[] | select(.name == $n) | .description')
+  TITLE=$(echo "$PROMPTS" | jq -er --arg n "$name" '.[] | select(.name == $n) | .title')
+  [[ -n $DESC && $DESC != "$TITLE" ]] || fail "prompt $name has no trigger description of its own"
+  [[ $DESC == *,* ]] || fail "prompt $name's description reads as prose, not as the conditions for loading it"
+  TOOL_TEXT=$(call guides "{\"name\":\"$name\"}")
+  PROMPT_TEXT=$(rpc prompts/get "{\"name\":\"$name\"}" | field '.messages[0].content.text')
+  [[ $PROMPT_TEXT == "$TOOL_TEXT" ]] || fail "prompt $name and the guides tool serve different text"
+  grep -q "^when:" <<< "$TOOL_TEXT" && fail "guide $name leaks its front matter into what readers are served"
+  RESOURCE_TEXT=$(rpc resources/read "{\"uri\":\"$PUBLIC_URL/guides/$name.md\"}" | field '.contents[0].text')
+  [[ $RESOURCE_TEXT == "$TOOL_TEXT" ]] || fail "guide $name reads differently as a resource than as a tool"
 done
 
 # ——— The import reconciles in both directions ————————————————————————————

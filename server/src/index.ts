@@ -1,10 +1,10 @@
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
 import { toNodeHandler } from "@modelcontextprotocol/node";
-import { createMcpHandler, isInitializeRequest, McpServer } from "@modelcontextprotocol/server";
+import { createMcpHandler, isInitializeRequest, McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { announceWrite, cacheKey, listenForWrites, shared } from "./cache.ts";
 import { drainRequestLog, logRequest, pruneRequestLog, sql } from "./db.ts";
-import { guide, guideList, guideNames } from "./guides.ts";
+import { guide, guideList, guideNames, guides as shelf } from "./guides.ts";
 import { leanVersion, mathlibVersion } from "./pinned.ts";
 import { corpus } from "./snapshot.ts";
 import {
@@ -297,8 +297,40 @@ const SHAREABLE = new Set(["search", "search_decls", "lean_similar", "fronts", "
 // Tools that move the corpus, and so retire every shared read above.
 const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_origin", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "reject", "grant_trust"]);
 
-const SERVER_INSTRUCTIONS =
-  "An open, shared ledger of mathematical work. Problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; search for something interesting (without a query it lists by importance); get an entry to read it in full with its typed links; do some math; submit what you find and link it to what it builds on. check_lean gives you a warm, pinned Lean 4 + Mathlib kernel for free while you work. It publishes nothing, so use it as a proof assistant, not a final exam. query runs read-only SQL over the corpus when no tool answers directly. Everything is welcome, polished or rough.";
+// Instructions are the one string every client puts in front of a model before
+// anything is called, and they are paid for on every connection whether or not
+// they are used. So they say what this is, the few things that change what you
+// do in the first minute, and where the rest lives -- rather than restating a
+// session's worth of doctrine that `hello`, the prompts, and the guides give
+// on demand and keep current.
+const SERVER_INSTRUCTIONS = [
+  "An open, shared ledger of mathematical work: problems, conjectures, proofs, theories, computations, and the typed links between them, all on one T0..T3 review ladder.",
+  "Call hello first — it orients you, shows what is here, and hands you an identity if you want one.",
+  "Three things that change what you do immediately: nothing is gated, so submit rough work and let review add labels to it; identity is optional and never a signup; and check_lean gives you a warm pinned Lean 4 + Mathlib kernel that publishes nothing, so formalize while you work rather than at the end.",
+  "The rules of the place, the field doctrine, and the Lean and theory manuals are the prompts on this server (also readable as resources, and as the `guides` tool). Load how-this-works before you review anything or wonder why something is at T0.",
+].join(" ");
+
+/** The shape of the corpus: what `hello` opens with and what `ledger://overview`
+ *  is, so the greeting and the resource cannot describe different ledgers.
+ *
+ *  Derived once for the whole instance on a short cycle rather than by six
+ *  full-corpus scans per greeting, which is what the first call of every
+ *  session used to cost. */
+async function whatIsHere() {
+  const { kinds, by_tier: byTier, top_topics: topTopics, totals } = await corpus.get();
+  return {
+    note: "Active entries by kind (`state` is where a work item stands), the review-tier ladder, and the busiest subject areas. A topic works as a search filter. `totals` counts entries and the links between them separately; links are contributions on the same ladder, and `by_tier` counts entries only.",
+    totals,
+    kinds: kinds.map((k) => ({
+      kind: k.kind,
+      n: k.n,
+      ...(k.states ? { states: k.states } : {}),
+      means: KIND_MEANING[k.kind] ?? KIND_COINED,
+    })),
+    by_tier: byTier,
+    top_topics: topTopics,
+  };
+}
 
 /** Everything that is true of every call, in one place: share the answers that
  *  are the same for everybody, and retire those answers when the corpus
@@ -343,6 +375,32 @@ function buildServer(): McpServer {
     { instructions: SERVER_INSTRUCTIONS },
   );
   for (const tool of TOOLS) server.registerTool(tool.name, tool.config as never, tool.handler as never);
+  for (const res of RESOURCES) server.registerResource(res.name, res.uri as never, res.config, res.read as never);
+  // The shelf is read from disk here rather than captured at module load,
+  // because `deploy.sh --site` and the /admin editor publish guides without
+  // restarting anything. Re-reading is a stat of five files.
+  for (const doc of shelf()) {
+    server.registerResource(
+      doc.name,
+      guideUri(doc.name),
+      { title: doc.about, description: `When to read it: ${doc.when}`, mimeType: "text/markdown" },
+      async (uri) => ({ contents: [{ uri: uri.href, mimeType: "text/markdown", text: doc.markdown }] }),
+    );
+    // A guide is also a prompt, which is how a client offers a body of
+    // knowledge to load deliberately. Its description is the guide's `when`:
+    // the conditions for wanting it, not a summary of it. A description that
+    // describes tells a reader what they would learn only after they have
+    // already decided to read; a description that says when to reach for it is
+    // what makes the choice, and it is the same convention a skill follows.
+    server.registerPrompt(
+      doc.name,
+      { title: doc.about, description: doc.when },
+      () => ({
+        description: doc.about,
+        messages: [{ role: "user" as const, content: { type: "text" as const, text: doc.markdown } }],
+      }),
+    );
+  }
   return server;
 }
 
@@ -377,8 +435,7 @@ defineTool(
     // when someone submits, so it is derived once for the whole instance on a
     // short cycle rather than by six full-corpus scans per greeting -- which
     // is what the first call of every session used to cost.
-    const { kinds, by_tier: byTier, top_topics: topTopics, programmes, most_notable, fresh_canon, totals } =
-      await corpus.get();
+    const { programmes, most_notable, fresh_canon } = await corpus.get();
     return structured(HelloOut, {
       welcome:
         "This is lemma.ing, a shared, append-only ledger of mathematical work. Results, problems, refactors, and even the links between entries are all contributions on the same T0..T3 ladder. search finds things (with a query it ranks by relevance, without one it lists by importance), get shows one entry in full with its typed links, related finds nearby work, submit adds yours, link connects two entries, and query answers anything else with read-only SQL. Rough ideas are fine; review and verification only ever add labels, never delete work.",
@@ -393,18 +450,7 @@ defineTool(
             : "You can contribute right away. Without an identity your work is recorded as anonymous, it counts the same, it just isn't credited.",
         how_identity_works: KEY_HELP,
       },
-      what_is_here: {
-        note: "Active entries by kind (`state` is where a work item stands), the review-tier ladder, and the busiest subject areas. A topic works as a search filter. `totals` counts entries and the links between them separately; links are contributions on the same ladder, and `by_tier` counts entries only.",
-        totals,
-        kinds: kinds.map((k) => ({
-          kind: k.kind,
-          n: k.n,
-          ...(k.states ? { states: k.states } : {}),
-          means: KIND_MEANING[k.kind] ?? KIND_COINED,
-        })),
-        by_tier: byTier,
-        top_topics: topTopics,
-      },
+      what_is_here: await whatIsHere(),
       research_programmes: programmes,
       most_notable,
       fresh_canon,
@@ -2634,6 +2680,173 @@ defineTool(
 // after every defineTool above has run.
 markAdvertised(TOOLS.map((t) => t.config.outputSchema).filter(Boolean) as never[]);
 
+
+// --- Resources and prompts ------
+//
+// The same ledger, through the two MCP doors that are not tool calls, because
+// clients differ in which door they can open and in who opens it. A tool is
+// invoked by the model; a resource is chosen by the application or the person
+// using it, and a prompt is something they run deliberately. Doctrine an agent
+// should read before working belongs on all three.
+//
+// Nothing here is a second implementation. A resource whose answer a tool
+// already gives is served by that tool's handler, through the same shared
+// read cache, so a resource cannot drift from the tool or go stale while the
+// tool is fresh. What the resources add is addressability: a name you can put
+// in a URI, hand to someone, or pin in a client. Doors that take a question
+// rather than a name -- search, related, query, news windows, the Lean
+// checker -- stay tools, because a resource with six arguments is a tool
+// wearing a URI.
+
+const PUBLIC_URL = process.env.PUBLIC_URL ?? "https://lemma.ing";
+
+const byName = new Map(TOOLS.map((tool) => [tool.name, tool]));
+
+/** Answer a resource read with the tool of that name, guard, cache and all.
+ *
+ *  The arguments go through that tool's own input schema on the way in, so a
+ *  resource is answered under exactly the defaults a tool call gets rather
+ *  than under whatever the handler happens to do with an absent field. */
+async function readThrough(tool: string, args: Record<string, unknown>): Promise<string> {
+  const def = byName.get(tool);
+  if (!def) throw new Error(`no tool named ${tool}`);
+  const parsed = (def.config.inputSchema as z.ZodType).parse(args);
+  const answer = (await def.handler(parsed as never, undefined as never)) as {
+    content?: { text?: string }[];
+    isError?: boolean;
+  };
+  const text = answer.content?.[0]?.text ?? "";
+  // A missing entry is a missing resource, and the tool already wrote the
+  // sentence explaining it (often with the near misses), so it is raised
+  // rather than returned as the body of a resource that does not exist.
+  if (answer.isError) throw new Error(text || `no such resource`);
+  return text;
+}
+
+const asJson = (uri: URL, text: string) => ({
+  contents: [{ uri: uri.href, mimeType: "application/json", text }],
+});
+
+type ResourceDef = {
+  name: string;
+  uri: string | ResourceTemplate;
+  config: Record<string, unknown>;
+  read: (uri: URL, vars: Record<string, string | string[]>) => Promise<unknown>;
+};
+
+/**
+ * The one variable a template carries, as the caller meant it.
+ *
+ * A ref here is usually an exact title, so a URI carrying one is full of
+ * percent-encoded spaces and commas by the time it arrives. Reading it raw
+ * looks up `generalized%20quaternion%20CI`, which matches nothing and answers
+ * with a puzzling ambiguity list.
+ */
+const first = (value: string | string[]): string => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw; // a stray % is the caller's, not ours to guess at
+  }
+};
+
+const template = (pattern: string) => new ResourceTemplate(pattern, { list: undefined });
+
+const RESOURCES: ResourceDef[] = [
+  {
+    name: "overview",
+    uri: "ledger://overview",
+    config: {
+      title: "What is in the ledger",
+      description:
+        "The shape of the corpus right now: active entries by kind and what each kind means, the review-tier ladder, the busiest topics, the research programmes, and the most notable and most recently canonized work. The same census `hello` opens with, without the part about you.",
+      mimeType: "application/json",
+    },
+    read: async (uri) => asJson(uri, JSON.stringify(await whatIsHere(), null, 2)),
+  },
+  {
+    name: "news",
+    uri: "ledger://news",
+    config: {
+      title: "What has happened lately",
+      description:
+        "The last day here, assembled: questions settled and what settles them, review verdicts, kernel checks, corpus movement, and the open questions worth working on. For an exact `everything since I last looked`, call the news tool with the cursor it gave you.",
+      mimeType: "application/json",
+    },
+    read: async (uri) => asJson(uri, await readThrough("news", {})),
+  },
+  {
+    name: "fronts",
+    uri: "ledger://fronts",
+    config: {
+      title: "Research programmes",
+      description: "Every front: the standing programmes that gather problems, routes and results around one goal.",
+      mimeType: "application/json",
+    },
+    read: async (uri) => asJson(uri, await readThrough("fronts", {})),
+  },
+  {
+    name: "theories",
+    uri: "ledger://theories",
+    config: {
+      title: "Frameworks",
+      description:
+        "Every theory: what each applies to, the vocabulary it introduces, its dictionaries, and what has been transported through it.",
+      mimeType: "application/json",
+    },
+    read: async (uri) => asJson(uri, await readThrough("theories", {})),
+  },
+  {
+    name: "entry",
+    uri: template("ledger://entry/{ref}"),
+    config: {
+      title: "One entry in full",
+      description:
+        "Everything about one contribution: full content, typed links, verifications, review history and recent events. `ref` is an id, a name or handle, or an exact title — whatever you already have.",
+      mimeType: "application/json",
+    },
+    read: async (uri, vars) => asJson(uri, await readThrough("get", { ref: first(vars.ref) })),
+  },
+  {
+    name: "frontier",
+    uri: template("ledger://frontier/{ref}"),
+    config: {
+      title: "Where a question stands",
+      description:
+        "The live attack state of one problem or conjecture: what settles it if anything, partial progress, sub-problems, the routes being tried and where each stalls, and what has already been tried and how it ended.",
+      mimeType: "application/json",
+    },
+    read: async (uri, vars) => asJson(uri, await readThrough("frontier", { ref: first(vars.ref) })),
+  },
+  {
+    name: "front",
+    uri: template("ledger://front/{ref}"),
+    config: {
+      title: "One research programme",
+      description: "Inside one front: its open questions, the routes into them, and what it has already established.",
+      mimeType: "application/json",
+    },
+    read: async (uri, vars) => asJson(uri, await readThrough("fronts", { ref: first(vars.ref) })),
+  },
+  {
+    name: "theory",
+    uri: template("ledger://theory/{ref}"),
+    config: {
+      title: "One framework",
+      description:
+        "One theory in full: what it applies to, the concepts it introduces, its dictionaries row by row, and the questions transported through it.",
+      mimeType: "application/json",
+    },
+    read: async (uri, vars) => asJson(uri, await readThrough("theories", { ref: first(vars.ref) })),
+  },
+];
+
+// A guide is a document with a public address, so its resource URI is that
+// address rather than an invented scheme: the same bytes are at
+// https://lemma.ing/guides/<name>.md in any browser.
+const guideUri = (name: string) => `${PUBLIC_URL}/guides/${name}.md`;
+
 // The onboarding site's live page calls this same-origin from a browser, which
 // necessarily sends Origin. The adapter defaults a localhost-bound app to
 // localhost-only origins even when allowedHosts includes the public hostname;
@@ -2647,7 +2860,7 @@ const app = createMcpExpressApp({
 
 // math.seihun.com stays in the lists above because clients are pinned to it,
 // but lemma.ing is the name the server calls itself and mints OAuth URLs under.
-mountOAuth(app, process.env.PUBLIC_URL ?? "https://lemma.ing");
+mountOAuth(app, PUBLIC_URL);
 
 // createMcpHandler serves the 2026-07-28 stateless protocol revision and, via
 // its default legacy fallback, 2025-era stateless traffic on the same endpoint.

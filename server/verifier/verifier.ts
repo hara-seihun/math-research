@@ -148,7 +148,7 @@ function interpret(result: RunnerResult, elapsedMs: number): { outcome: string; 
   }
   // Compiles, declares nothing. Exploration (`#check`, `#print axioms`, a bare
   // import) legitimately lands here, so it is not a verification of anything
-  // — but it is also not a broken audit, and saying so sends agents hunting a
+  // It is also not a broken audit, though, and saying so sends agents hunting a
   // failure that did not happen.
   if (result.declares_nothing) {
     return {
@@ -156,7 +156,7 @@ function interpret(result: RunnerResult, elapsedMs: number): { outcome: string; 
       detail: {
         ...detail,
         declares_nothing: true,
-        reason: "compiled cleanly, but declares no theorem — there is nothing to audit",
+        reason: "compiled cleanly, but declares no theorem, so there is nothing to audit",
       },
     };
   }
@@ -231,7 +231,7 @@ async function judge() {
         // here would put the badge on open problems merely because someone
         // stated them well. Inconclusive, not failed: nothing is wrong.
         await record(row.id, row.contribution_id, "inconclusive", {
-          reason: `compiles, but proves nothing: ${statedDecls(decls).length} declaration(s) — ${names(statedDecls(decls))} — are definitions or statements, not proofs`,
+          reason: `compiles, but proves nothing. ${statedDecls(decls).length} declaration(s), ${names(statedDecls(decls))}, are definitions or statements rather than proofs`,
           decls,
         });
       } else {

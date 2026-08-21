@@ -1,6 +1,6 @@
 // The results feed. Two things happen here: a list of entries ordered the way
 // you asked for them, and one entry opened in full at its own URL. Both are
-// the ledger's own tools called from the browser — there is no second copy of
+// the ledger's own tools called from the browser, so there is no second copy of
 // the corpus behind this page and no server rendering it, so what you read is
 // what an agent reading the same call reads a moment later.
 
@@ -26,7 +26,7 @@ const VIEWS = {
       ...(since === "all" ? {} : { since }),
     }),
     explainer:
-      "Ranked by reviewed impact — reach, advance and closure, each scored 0–5 by a trusted reviewer — over strongly damped graph importance. Every score is explained on its card.",
+      "Ranked by reviewed impact, meaning reach, advance and closure, each scored 0–5 by a trusted reviewer, over heavily damped graph importance. Every score is explained on its card.",
     reasonLabel: "Why it ranks: ",
     empty: "Nothing was recorded in this window.",
     status: (page, since) =>
@@ -194,7 +194,7 @@ function rankingReasons(entry) {
       `reviewed impact ${impact.total}/15 (reach ${impact.reach}, advance ${impact.advance}, closure ${impact.closure}; ${impact.assessments} ${impact.assessments === 1 ? "assessment" : "assessments"})`,
     );
   }
-  if (entry.state === "settled") reasons.push("settled — an active entry closes this question");
+  if (entry.state === "settled") reasons.push("settled, because an active entry closes this question");
   if (entry.ranking?.settles) {
     reasons.push(`settles ${entry.ranking.settles} active ${entry.ranking.settles === 1 ? "question" : "questions"}`);
   }
@@ -387,13 +387,23 @@ function linkList(entry) {
   return section;
 }
 
+/** Many entries summarise themselves by quoting their own opening, and some
+ *  are their whole content. Printing that above a typeset body shows the same
+ *  paragraph twice, the first time as raw TeX. */
+const restatesTheBody = (entry) => {
+  if (!entry.summary || !entry.content) return false;
+  const flat = (s) => s.replace(/\s+/g, " ").trim();
+  const summary = flat(entry.summary).replace(/…$/, "");
+  return summary.length > 40 && flat(entry.content).startsWith(summary);
+};
+
 function renderEntry(entry) {
   const header = element("header", "entry-header");
   const eyebrow = element("div", "card-eyebrow");
   eyebrow.append(element("span", "kind", entry.kind));
   eyebrow.append(timeNode(entry.created_at));
   header.append(eyebrow, element("h1", "entry-title", entry.title));
-  if (entry.summary) header.append(element("p", "entry-summary", entry.summary));
+  if (entry.summary && !restatesTheBody(entry)) header.append(element("p", "entry-summary", entry.summary));
   header.append(badges(entry));
   if (entry.author) header.append(element("p", "entry-author", `Contributed by ${entry.author}`));
   if (entry.origin === "external" && entry.origin_source) {
@@ -423,7 +433,7 @@ function renderEntry(entry) {
     choice.append(paperButton, sourceButton);
     const credit = element("p", "body-credit");
     credit.append(document.createTextNode(`Paper: ${entry.exposition.title}`));
-    if (entry.exposition.author) credit.append(document.createTextNode(` — ${entry.exposition.author}`));
+    if (entry.exposition.author) credit.append(document.createTextNode(`, ${entry.exposition.author}`));
     credit.append(document.createTextNode(" "));
     credit.append(element("span", `badge tier-${entry.exposition.tier}`, tierLabel(entry.exposition.tier)));
     if (entry.exposition.others) {

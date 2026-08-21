@@ -288,15 +288,15 @@ export async function neighbourhood(id: string, opts?: { rel?: string; offset?: 
 // --- Similarity oracle (NCD) ------
 // On-demand relatedness, never a stored backlog. A bounded pool of candidates
 // is nominated, and the method says how to rank it: cosine over the
-// embedding, term overlap, or alpha-normalized NCD — variables, constants and
-// names replaced by their first-occurrence position, then compression distance
+// embedding, term overlap, or alpha-normalized NCD, which replaces variables,
+// constants and names by their first-occurrence position, then takes compression distance
 // over what is left, so two entries doing the same thing with different
 // letters score as what they are. Agents call this, look, and decide what to
 // link. The tool proposes nothing on its own.
 //
 // Nomination is by nearest embedding, because an entry is not a query: an OR
 // over the terms of a write-up matches a third of the corpus, and Postgres
-// answers it by sequentially scanning and ranking all of it — 128ms typically,
+// answers it by sequentially scanning and ranking all of it, 128ms typically and
 // 33 seconds for entries whose vocabulary is common. The vector index returns
 // a fixed 150 in milliseconds no matter what the entry says. Term matching
 // stays available as `lexical`, where the probe is a title or a phrase the
@@ -357,7 +357,7 @@ export async function related(args: RelatedArgs) {
     // Words, for the caller who asked for words: a title or a typed phrase,
     // and the trigram index over `lower(title)` for the one they misspelled.
     // Every term is demanded first, because ranking an OR of common terms
-    // means ranking a third of the corpus — 300ms against 2ms — and the loose
+    // means ranking a third of the corpus, 300ms against 2ms, and the loose
     // query is only worth running when the strict one comes back short.
     const probeText = (args.text ?? aboutText.split("\n")[0] ?? "").slice(0, 300);
     const { all, any } = queryParts(probeText);

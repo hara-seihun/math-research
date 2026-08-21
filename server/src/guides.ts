@@ -5,7 +5,7 @@ import { expandPins } from "./pinned.ts";
 // Guides are files on disk published by two flows that do not restart the
 // server: `tools/deploy.sh --site` and the /admin content editor. The shelf
 // therefore re-reads whenever the directory's contents actually change,
-// detected by a stat fingerprint on every access — a handful of files, so the
+// detected by a stat fingerprint on every access. It is a handful of files, so the
 // check costs microseconds and no publish path can serve stale doctrine.
 //
 // Facts the code owns are holes in that prose rather than copies of it:
@@ -21,7 +21,7 @@ export type Guide = {
   about: string;
   /**
    * Its `when:` front matter: the words that should make a reader reach for
-   * it. This is a retrieval trigger, not a summary — the same convention a
+   * it. This is a retrieval trigger, not a summary, the same convention a
    * skill description follows, and the one nearly everybody gets wrong by
    * writing a description of the content instead of the conditions for
    * wanting it. It is what the MCP prompt for this guide advertises, so a

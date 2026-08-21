@@ -9,7 +9,7 @@ import { sql } from "./db.ts";
 //
 // So an exposition is its own object, not a field: a LaTeX document that
 // expounds one or more entries, carried by an `expounds` edge. Being an entry
-// rather than a column is what makes it work — several people may write up one
+// rather than a column is what makes it work, because several people may write up one
 // theorem and each write-up is its own contribution with its own author and
 // its own place on the review ladder, so "the canonical paper for this result"
 // is a T2 edge rather than whoever wrote last. A better paper does not
@@ -18,13 +18,13 @@ import { sql } from "./db.ts";
 // What it is not: an exposition makes no mathematical claim of its own. It
 // carries the argument that is already in the ledger, in the form a person
 // reads. That is why it scores low in notability and why it cannot settle a
-// question — the entry it expounds does that.
+// question, since the entry it expounds does that.
 
 export const EXPOSITION_KIND = "exposition";
 export const EXPOUNDS_REL = "expounds";
 
 export const EXPOUNDS_HELP =
-  "an exposition is a paper about something already here: pass `expounds` naming the entry (or entries) it writes up, by id, name, or title. If it stands on its own instead, it is a 'result' or a 'note' — those kinds carry their own claims, and an exposition deliberately does not.";
+  "an exposition is a paper about something already here: pass `expounds` naming the entry (or entries) it writes up, by id, name, or title. If it stands on its own instead, it is a 'result' or a 'note', because those kinds carry their own claims and an exposition deliberately does not.";
 
 /** Validate the exposition-specific field. Pure; ref resolution belongs to the
  *  caller, where every other ref in a submission is resolved. */
@@ -54,7 +54,7 @@ export type ExpositionRow = {
 
 /** The paper for each of these entries, and how many others there are. The
  *  best one is the most reviewed one, then the most strongly asserted link,
- *  then the newest — a later paper on a settled question is usually the one
+ *  then the newest, because a later paper on a settled question is usually the one
  *  worth reading. */
 export async function expositionsOf(
   ids: string[],

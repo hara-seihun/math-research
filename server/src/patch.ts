@@ -3,9 +3,9 @@
  * here is submitted.
  *
  * A refactor of the ledger says "these two entries are one thing". A patch
- * says the same about the Lean library the ledger is built on — "these three
+ * says the same about the Lean library the ledger is built on, as in "these three
  * modules are one module", "this proof belongs upstream of that one", "this
- * statement was wrong and here is the fix" — as an ordinary unified diff
+ * statement was wrong and here is the fix", as an ordinary unified diff
  * against `hara-seihun/mathlibplus`. It is verified by applying it and
  * rebuilding every module it touches and everything that imports them, and it
  * reaches the repository only when review promotes it to canon.
@@ -26,7 +26,7 @@ export const MAX_DIFF_BYTES = 512 * 1024;
  *
  * Only newlines are trimmed, never spaces. A hunk's context lines are a
  * leading space plus the line, so a diff whose last context line is blank ends
- * with a line that is exactly one space — and trimming it leaves a hunk one
+ * with a line that is exactly one space, and trimming it leaves a hunk one
  * line shorter than its own header says, which git rejects as a corrupt patch.
  */
 export function extractDiff(content: string): string {

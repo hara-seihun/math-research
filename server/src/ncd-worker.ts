@@ -31,7 +31,7 @@ function rank(job: Extract<NcdJob, { kind: "rank" }>): Scored[] {
 
 // All-pairs NCD over a module is quadratic in the thing agents most want
 // scanned. The band signatures make the pair count linear in what is actually
-// near-duplicate, and NCD then scores only those pairs — the same signatures
+// near-duplicate, and NCD then scores only those pairs, using the same signatures
 // the corpus is indexed by, so a scan here and a lookup in Postgres agree
 // about who is worth comparing.
 function cluster(job: Extract<NcdJob, { kind: "cluster" }>): { pairs: Pair[]; compared: number } {

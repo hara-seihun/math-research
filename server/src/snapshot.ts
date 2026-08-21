@@ -3,8 +3,8 @@ import { listRow } from "./read.ts";
 import { Refreshing } from "./refreshing.ts";
 
 // --- The corpus at a glance ------
-// hello and news both open with the same question — how big is this place and
-// what is worth looking at — and both used to answer it by re-aggregating the
+// hello and news both open with the same question, how big is this place and
+// what is worth looking at, and both used to answer it by re-aggregating the
 // whole corpus per call: six full scans for hello (178 ms) and one more for
 // news's totals (198 ms). None of it moves faster than a submission, so it is
 // derived once for everyone on a short cycle instead of once per caller.
@@ -34,8 +34,8 @@ export type CorpusSnapshot = {
 
 async function computeSnapshot(): Promise<CorpusSnapshot> {
   // One pass over the corpus feeds every count, instead of one scan per
-  // headline. The state vocabulary differs by kind — a route is partial or
-  // refuted, a problem is open or settled — so report what is actually there
+  // headline. The state vocabulary differs by kind, since a route is partial or
+  // refuted while a problem is open or settled, so report what is actually there
   // rather than a fixed pair of columns that reads as "0 settled routes".
   const [shape, programmes, notable, fresh, trails] = await Promise.all([
     sql<{ kind: string; state: string | null; tier: number | null; n: number; lean: number }[]>`

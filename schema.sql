@@ -6,7 +6,7 @@
 --     rebuildable by folding `event` from the beginning.
 --
 -- Everything is a contribution on one ladder. A theorem is a contribution; so
--- is a problem, a refactor proposal, a review — and so is an *edge*. A link
+-- is a problem, a refactor proposal, a review, and so is an *edge*. A link
 -- between two contributions is itself a contribution (kind='edge') with its
 -- own author, model/operator metadata, and tier. That means the graph climbs
 -- the same T0..T3 review ladder as the mathematics: a freshly asserted link is
@@ -28,7 +28,7 @@ create extension if not exists vector;
 --
 -- Identity is never a toll. Reading needs nothing, contributing needs
 -- nothing (unattributed work is recorded with identity_id null), and an
--- identity materializes only when someone actually claims authorship — by
+-- identity materializes only when someone actually claims authorship, whether by
 -- presenting a key, by authorizing over OAuth, or by contributing over an
 -- MCP session, which mints one key and hands it back exactly once.
 --
@@ -36,7 +36,7 @@ create extension if not exists vector;
 -- Only a *trusted* identity (role 'trusted' or 'operator') may move anything
 -- along the review ladder; 'operator' additionally administers trust and the
 -- server itself. To start, exactly one identity is an operator and there are
--- no other trusted identities — trust expands later by granting the role.
+-- no other trusted identities. Trust expands later by granting the role.
 create table if not exists identity (
   id           text primary key,          -- sha256(contributor_key), hex
   display_name text,
@@ -102,9 +102,9 @@ create trigger event_append_only
 -- Mathematics does not fit a closed enum and we would rather see a new kind
 -- than a shoehorned one.
 --
--- Evidence tiers — an editorial ladder, climbed only by trusted review:
+-- Evidence tiers, an editorial ladder climbed only by trusted review:
 --   0 recorded   submitted; visible and searchable immediately
---   1 triaged    a trusted reviewer confirmed it is actual mathematics —
+--   1 triaged    a trusted reviewer confirmed it is actual mathematics,
 --                well-formed, not spam or noise
 --   2 canon      a trusted reviewer confirmed the math and any artifacts are
 --                coherent; accepted as canon
@@ -131,9 +131,9 @@ create trigger event_append_only
 --
 -- `origin` is priority, and it is a different question from tier, status and
 -- state: was this entry's headline claim first established here, or was it
--- already established outside this ledger? 'external' means the second —
+-- already established outside this ledger? 'external' means the second,
 -- whether the claim was quoted from a paper, replayed, independently verified,
--- or rediscovered here after the fact — and `origin_source` must then name
+-- or rediscovered here after the fact, and `origin_source` must then name
 -- what established it. Recording external mathematics is welcome and is what
 -- makes a settled question legible; claiming it as ours is not, so the public
 -- all-time board of settled questions reads this column. Using an external
@@ -263,7 +263,7 @@ create index if not exists contribution_search_idx on contribution using gin (se
 -- lower() the server actually wrote, so it matched no query ever issued: 159
 -- MB carrying zero lifetime scans while every text search sequentially
 -- scanned the corpus. Over the summary too it is worse than useless even when
--- it does match — trigram similarity across a whole summary nominates a
+-- it does match, since trigram similarity across a whole summary nominates a
 -- quarter of the corpus and rechecks every candidate, 2.1 s to return two
 -- rows. A misspelling is a misremembered name, so titles are the surface
 -- worth searching that way.
@@ -356,7 +356,7 @@ create index if not exists review_claim_holder_idx on review_claim (identity_id,
 create index if not exists review_claim_expiry_idx on review_claim (expires_at);
 
 -- Exploration trails: append-only diaries agents keep while investigating.
--- Purely advisory — a trail never grants ownership and never blocks anyone.
+-- Purely advisory. A trail never grants ownership and never blocks anyone.
 create table if not exists trail (
   id          uuid primary key default gen_random_uuid(),
   identity_id text not null references identity(id),
@@ -435,8 +435,8 @@ create trigger verification_lean_verified
 -- pinned toolchain), so the same lemma checked by forty agents costs one
 -- kernel run. Both callers share this table: the `check_lean` tool, which
 -- creates nothing else, and contribution verification, whose `verification`
--- row records the judgement made from these facts. Rows are the raw facts —
--- what compiled, what was proven, which axioms it rests on — never a verdict.
+-- row records the judgement made from these facts. Rows are the raw facts,
+-- what compiled, what was proven, and which axioms it rests on, never a verdict.
 create table if not exists lean_check (
   source_hash text primary key,          -- sha256(extracted source)
   source      text not null,
@@ -454,8 +454,8 @@ create index if not exists lean_check_pending_idx on lean_check (created_at) whe
 -- trip. Written by tools/index-decls.sh (lean/DumpDecls.lean imports the built
 -- oleans and reports each declaration's module, pretty-printed type, and
 -- whether that type is a proposition); read by the `search_decls` tool and the
--- q_decls view. A library with duplicated declaration names across modules —
--- MathlibPlus has them, which is why it has no umbrella import — is why the
+-- q_decls view. A library with duplicated declaration names across modules,
+-- which MathlibPlus has, and which is why it has no umbrella import, is why the
 -- key is (module, name) rather than the name alone.
 create table if not exists lean_decl (
   module     text not null,
@@ -581,7 +581,7 @@ create index if not exists patch_publication_state_idx on patch_publication (sta
 
 -- Rendered artifact bodies, content-addressed. Turning a body into HTML is a
 -- pure function of (content, media type, renderer version), so the same paper
--- read by a thousand people costs one pandoc run — exactly the bargain
+-- read by a thousand people costs one pandoc run, exactly the bargain
 -- `lean_check` makes for the kernel. `renderer` is the version that produced
 -- the row: a pandoc upgrade makes every row stale rather than silently
 -- serving output the current renderer would not produce, and re-rendering is
@@ -608,7 +608,7 @@ create table if not exists receipt (
 -- setup path: the server issues an Mcp-Session-Id at initialize, and the
 -- first contribution over that connection mints one identity that the whole
 -- session then shares. OAuth is the durable path for clients that speak it
--- (there is nothing to log into — authorizing mints or adopts an identity).
+-- (there is nothing to log into, since authorizing mints or adopts an identity).
 -- A contributor key presented as a bearer token or a tool argument always
 -- wins over both.
 
@@ -745,7 +745,7 @@ declare
 begin
   -- Lock ordering. Two refreshes running at once update overlapping rows in
   -- whatever order the planner picked, take row locks in opposite orders, and
-  -- deadlock — seen live as "deadlock detected" on a burst of promotions. A
+  -- deadlock, seen live as "deadlock detected" on a burst of promotions. A
   -- scoped refresh therefore claims its rows up front in ascending id order,
   -- which every transaction agrees on; a whole-table refresh is short and rare
   -- enough to simply serialize.
@@ -774,7 +774,7 @@ begin
   ),
   -- Both endpoints must be live, not just the link. A rejected proof still
   -- carries its 'proves' edge, and counting that edge would let work review
-  -- has thrown out keep lending importance to what it pointed at — the
+  -- has thrown out keep lending importance to what it pointed at, and the
   -- rejection would be a label with no consequence.
   strongest_edges as (
     select distinct on (e.src, e.dst, e.rel) e.src, e.dst, e.rel, ec.tier
@@ -859,9 +859,9 @@ begin
 end $$;
 
 -- ——— Work-item state ———————————————————————————————————————————————————
--- A question is settled when something active in the graph answers it — or
--- when something answers a statement this question has been *reformulated*
--- into. That second clause is what makes a theory more than a document: the
+-- A question is settled when something active in the graph answers it, and
+-- also when something answers a statement this question has been *reformulated*
+-- into. That second clause is what makes a theory more than a document. The
 -- point of inventing Galois theory is that settling the group question
 -- settles the field question, and a ledger that leaves the field question
 -- reading 'open' has recorded the theory without believing it.
@@ -872,7 +872,7 @@ end $$;
 --     it restates with rel='reformulates'; or a bare rel='equivalent-to' link;
 --   * the entry and the link must both be at T2 (canon). One-directional
 --     fidelities ('implies', 'implied-by') and unreviewed claims transport
---     nothing — they are progress, and frontier shows them as such.
+--     nothing. They are progress, and frontier shows them as such.
 -- Equivalence is symmetric and composes, so this is the reachability closure
 -- of that reviewed relation, depth-capped because a chain of six reviewed
 -- equivalences is already further than any reader will follow.
@@ -955,7 +955,7 @@ begin
   -- Settlement transports along reviewed equivalences, which reach further
   -- than a link: an answer to the group-side question arrives attached to the
   -- reformulation, and the question it closes is the field-side one on the
-  -- other side of that equivalence — two hops from the write that landed, and
+  -- other side of that equivalence, two hops from the write that landed, and
   -- more when equivalences compose.
   select array_agg(distinct node) into targets from transport_closure(targets);
   -- One ordered claim covers both refreshes; each also claims its own, which

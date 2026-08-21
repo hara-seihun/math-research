@@ -85,7 +85,7 @@ const pool = new NcdPool();
 
 /**
  * Rank candidates by alpha-normalized compression distance against a query.
- * `normalized` says the texts are already in normal form — true for anything
+ * `normalized` says the texts are already in normal form, true for anything
  * read out of `lean_decl.norm` or `lean_unit.norm`, false for text that just
  * arrived.
  */

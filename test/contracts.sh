@@ -379,7 +379,7 @@ queue ",\"include_reviewed\":true,\"exclude_authors\":[\"$(identity_of "$KEY")\"
 # ——— Reviewers do not collide ————————————————————————————————————————————
 # Contract: the queue hands its rows out under a lease. Two reviewers asking
 # at once must get disjoint work, because two readings of one entry produce
-# one decision and waste a session — which is exactly what was happening on
+# one decision and waste a session, which is exactly what was happening on
 # the live ledger. The lease covers adjudication only: nothing here gates
 # submit, link, or any research door, since problems are meant to be attacked
 # in parallel.
@@ -409,7 +409,7 @@ assert all(e['claimed_until'] for e in d['unreviewed']), d['unreviewed']" || fai
 call review_claim "{\"contributor_key\":\"$TKEY\",\"refs\":[\"$LEASED\"]}" \
   | python3 -c "import sys,json; r=json.load(sys.stdin)['results'][0]; assert r['state']=='held-by-another' and r['holder']=='$OPID', r" \
   || fail "a claimed entry was handed to a second reviewer"
-# Contract: a decision ends the lease. This is the release that matters —
+# Contract: a decision ends the lease. This is the release that matters,
 # nobody should have to wait out a lease on work that is already decided.
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$LEASED\",\"tier\":1,\"note\":\"confirmed\"}" | field '.ok' > /dev/null
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from review_claim where contribution_id = '$LEASED'") == 0 ]] \
@@ -1259,7 +1259,7 @@ done
 
 # ——— A stranger with only the URL can find everything ————————————————————
 # The whole consumer story is: someone is handed https://…/mcp and nothing
-# else. So the three MCP surfaces are contracts, not decoration — a client that
+# else. So the three MCP surfaces are contracts rather than decoration. A client that
 # reads resources but never calls a tool, and a person picking a prompt out of
 # a menu, both have to arrive at the same doctrine the tools serve.
 INIT=$(curl -sf --max-time 10 -X POST "$MCP" -H 'Content-Type: application/json' \
@@ -1289,7 +1289,7 @@ for uri in $(echo "$RESOURCES" | jq -r '.[].uri'); do
 done
 
 # A template is a resource with a name in it, so each one is exercised with a
-# name this suite actually created — and a new template with no probe here
+# name this suite actually created, and a new template with no probe here
 # fails, exactly as a new tool with no contract call does.
 declare -A TEMPLATES=(
   ["ledger://entry/{ref}"]="ledger://entry/$Q"

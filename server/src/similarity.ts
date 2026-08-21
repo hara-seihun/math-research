@@ -5,8 +5,8 @@
  * Two halves, both pure and both testable without a database:
  *
  *   1. **Alpha normalization** rewrites a unit so that locally arbitrary
- *      choices — a bound variable called `n` instead of `k`, a lemma called
- *      `foo_bar`, whitespace, or a prose constant that happens to be 7 — become
+ *      choices, such as a bound variable called `n` instead of `k`, a lemma
+ *      called `foo_bar`, whitespace, or a prose constant that happens to be 7, become
  *      positional placeholders, while everything that carries meaning
  *      (operators, connectives, control flow, library constants, real words)
  *      survives untouched. Two units that differ only in naming normalize to
@@ -262,7 +262,7 @@ const CLOSER: Record<string, string> = { "(": ")", "{": "}", "[": "]", "⦃": "�
  * `∀ (h : P), Q` and `P → Q` are the same statement, and Lean's pretty printer
  * prints the second whenever the name is unused. Source written by hand names
  * the hypothesis anyway, so an explicit binder nobody refers to is folded into
- * an arrow here — on both sides, which is what lets a pasted theorem meet an
+ * an arrow here, on both sides, which is what lets a pasted theorem meet an
  * indexed one. Implicit and instance binders keep their brackets, because that
  * is what the pretty printer does with them.
  */
@@ -400,8 +400,8 @@ export function extractDecls(source: string): LeanDecl[] {
 // Normalization is what makes a trigram index useless: every normalized
 // statement is mostly `§0`, brackets and arrows, so `norm % query` recalls a
 // third of the corpus and takes seven seconds (measured, on 511k rows).
-// Banded minhash asks the opposite question — do these two share whole runs of
-// rare shingles — and answers it with one equality probe per band.
+// Banded minhash asks the opposite question, do these two share whole runs of
+// rare shingles, and answers it with one equality probe per band.
 
 const SKETCH = 64;
 const BAND = 4;
@@ -458,15 +458,15 @@ export function normalizeDecl(name: string, statement: string): NormalizedDecl {
 
 /**
  * The normal form with its numbering thrown away, which is the form to
- * *compare* — never the form to identify by.
+ * *compare*, never the form to identify by.
  *
  * Numbering by first occurrence is what makes `§0 + §1 = §1 + §0` different
- * from `§0 + §0 = §0 + §0`, so identity needs it. Similarity cannot afford it:
+ * from `§0 + §0 = §0 + §0`, so identity needs it. Similarity cannot afford it, because
  * one extra typeclass binder shifts every index after it, and two statements
  * that say the same thing stop sharing substrings. Measured against
  * `Finset.sum_le_card_nsmul` from a concrete instance of it, flattening moves
  * the true match from 0.27 to 0.46 while the best false match drops from 0.37
- * to 0.30 — a reordering, not a rescaling.
+ * to 0.30, a reordering rather than a rescaling.
  */
 export const flatten = (norm: string): string => norm.replace(/§\d+/g, "§");
 

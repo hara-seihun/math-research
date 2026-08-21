@@ -253,7 +253,7 @@ function toolReference(tools: any[]): string {
 // Tools are only one of the three doors, and the other two are the ones a
 // person opens rather than a model: resources are what an application attaches
 // or pins, prompts are what someone picks from a menu. Both are listed here
-// from the same live server for the same reason the tools are — a page that
+// from the same live server for the same reason the tools are, since a page that
 // described them by hand would be a second, slower copy of the server.
 function resourceReference(resources: any[], templates: any[]): string {
   const row = (r: any) =>
@@ -273,7 +273,7 @@ function promptReference(prompts: any[]): string {
   return [
     "## Prompts",
     "",
-    "The guides, offered the way a client offers something to load deliberately. Each description is a list of triggers — the conditions under which you want that guide — rather than a summary of it, because a summary only helps someone who has already decided to read.",
+    "The guides, offered the way a client offers something to load deliberately. Each description is a list of triggers, the conditions under which you want that guide, rather than a summary of it, because a summary only helps someone who has already decided to read.",
     "",
     ...prompts.flatMap((p: any) => [`### ${p.name}`, "", `*${p.title ?? ""}*`, "", `**When to load it:** ${p.description}`, ""]),
   ].join("\n");

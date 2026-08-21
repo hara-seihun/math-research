@@ -11,7 +11,7 @@ minutes.
 
 **Status 2026-08-20:** §1 is done as a prompt rewrite and §2 is built and
 live; §3 is untouched. Launches remain paused until a supervised wave shows
-whether session depth actually changed — the numbers below are the baseline to
+whether session depth actually changed, and the numbers below are the baseline to
 re-measure against.
 
 ## What the transcripts showed
@@ -22,7 +22,7 @@ and no timeout. They quit.
 - Median frontier run **6.9 minutes**; **86% of the session precedes the first
   submission**; the run ends **35 seconds after the last submit**. There is no
   second act.
-- **81% of everything an agent reads is ledger JSON** — 1121 reads (416 `get`,
+- **81% of everything an agent reads is ledger JSON.** 1121 reads (416 `get`,
   304 `search`, 158 `frontier`) against 57 writes, with a median of 22 reads
   before work starts. 28% of read payloads exceeded the 8 KB transcript cap, so
   the true volume is larger.
@@ -61,7 +61,7 @@ itself; the root problems from Aug 12 were attacked less.
 
 ## 1. The lane contract (orchestrator)
 
-**Owner:** `pi-orchestrator` task definitions — see
+**Owner:** `pi-orchestrator` task definitions, see
 [`../../pi-orchestrator/README.md`](../../pi-orchestrator/README.md) and the
 handbook's [standing math lanes](../../../machine/pi.md).
 
@@ -75,23 +75,23 @@ its own shallowness.
 The decommissioned predecessor solved this. Its artifacts were retired to
 external cold storage on 2026-08-21 and survive as provenance at
 `/mnt/cold-storage/projects-research/source/` (read-only, and never restored to
-the main system without a direct ask from Hara — see
+the main system without a direct ask from Hara, see
 [`AGENTS.md`](../../../AGENTS.md#external-cold-storage)); the doctrine itself
 lives on in [`guides/attack.md`](../guides/attack.md) and
 [`~/memory/frontier-math-one-shot-record.md`](../../../memory/frontier-math-one-shot-record.md).
 Worth reading before rewriting anything:
 
-- `tasks/frontier.md` — *"Publishing a partial theorem is not terminal: return
+- `tasks/frontier.md`, *"Publishing a partial theorem is not terminal: return
   immediately to the exact global blocker and continue"*; single-flight lease;
   *"Do not call `task_complete` while the exact scope is open and another
   attack on its global blocker is available."*
-- `docs/ATTACK.md` — the **anti-ladder rule** (*"Never replace the cell or
+- `docs/ATTACK.md`, the **anti-ladder rule** (*"Never replace the cell or
   obligation by the next finite slice… A bounded slice is proof material, not
   the answer"*), *"Do not stop at the first publishable fact"*, and the naming
   of why models flinch: *"a census or taxonomy always 'succeeds', so it
   functions as deliverable insurance"* and *"the flinch is about scope rather
   than about the target."*
-- `tools/dispatch.py` — work claimed and its context packet generated **before**
+- `tools/dispatch.py`, where work is claimed and its context packet generated **before**
   the agent starts, so *"the session's first tokens go to mathematics instead
   of orientation"*.
 - Doctrine bound structurally rather than by prompt curation: the lease grant
@@ -105,7 +105,7 @@ Worth reading before rewriting anything:
 
 Durations bear it out: old `cayley-ci-cells` leases ran a median 10.6 min, p75
 21.4, p90 32.4, with a deep tail (`cayley-ci-alignment` p90 was 120 min).
-Ours: median 6.9, max 20.6 — half the median and no tail at all.
+Ours: median 6.9, max 20.6, half the median and no tail at all.
 
 Open questions: whether depth is enforced by prompt, by a completion check
 command, or by a host-side continuation policy; how to keep collision avoidance
@@ -122,7 +122,7 @@ return to the exact blocker, and is given an honest-failure exit so a failed
 attack no longer needs a publishable crumb to feel productive. All three name
 `check_lean` and `fast-math`.
 
-Still open here: depth is only asked for, not enforced — nothing structurally
+Still open here. Depth is only asked for, not enforced, and nothing structurally
 prevents `task_complete` at the first submission the way the predecessor's
 lease did; and the demand probe still pays six units per active CI problem, so
 minting a shard still funds work on it. Both need the next wave's evidence.
@@ -145,7 +145,7 @@ shape consumed by `frontier.where_routes_stall`.
 **Owner:** this server (`server/`, `lean/`, the verifier daemon).
 
 The kernel checker already exists, is pinned to the Lean and Mathlib revisions in `lean/`, audits
-axioms, and is trusted — it is what `lean_verified` means. It is only reachable
+axioms, and is trusted, which is what `lean_verified` means. It is only reachable
 **by submitting**, which forces a permanent, public, attributed artifact into
 existence in order to run a check that should be throwaway. That single fact
 plausibly explains most of the missing formalization, and
@@ -172,8 +172,8 @@ disagrees with the authority that actually stamps `lean_verified`.
 - **It is a genuine public draw.** Free, zero-setup, no-signup Lean with
   Mathlib pinned and warm is scarce; setup cost is the single biggest barrier
   to casual Lean use, and every other agent on the internet has exactly the
-  problem ours have. It fits the server's posture — point a client at it,
-  nothing to configure — and an agent that arrives for a free proof checker is
+  problem ours have. It fits the server's posture, since you point a client at it
+  with nothing to configure, and an agent that arrives for a free proof checker is
   one step from submitting what it proved.
 
 Open question, and the real one: this is a public endpoint running a heavy
@@ -181,21 +181,21 @@ process that can be told to loop forever. Limits, timeouts, concurrency, and
 abuse are an actual external boundary and need designing rather than assuming.
 
 **Built 2026-08-20.** `check_lean` takes Lean source and returns the kernel's
-verdict — errors with line numbers, or the exact statements proven with the
-axioms each rests on — and creates nothing. `sorry` is allowed and reported
+verdict, either errors with line numbers or the exact statements proven with the
+axioms each rests on, and creates nothing. `sorry` is allowed and reported
 (a proof resting on `sorryAx` reads as `incomplete`, not `passed`), because a
 check you can only run on a finished proof is an exam, not a proof assistant.
 
 Caching landed as the design above: one `lean_check` table keyed by
 `sha256(source)`, with the tool and the submission path as its two callers.
 Submitting source you already checked resolves from cache without touching the
-kernel. Policy stayed on the submission path only — unsound tokens are refused
+kernel. Policy stayed on the submission path only, so unsound tokens are refused
 before they cost a kernel slot, and foreign axioms fail the badge.
 
 Measured on the live guest: ~6 s for a small check against warm Mathlib,
-~0.2 s cached. The external boundary is currently three limits — 64 KiB of
+~0.2 s cached. The external boundary is currently three limits, 64 KiB of
 source, 200 checks per identity per hour, 32 queued checks before the server
-sheds load — plus the existing 10-minute compile timeout and the runner's two
+sheds load, plus the existing 10-minute compile timeout and the runner's two
 lanes under a 16 GiB ceiling. Capacity, not the API, is what will bind first:
 the predecessor's `leancheck/daemon.py` (a persistent REPL pool with a pickled
 warm environment and per-worker RSS caps, and a comment recording that 6 lanes
@@ -215,9 +215,9 @@ Miller result *probably* says.
 
 The predecessor gave discovery a dedicated standing lane, recorded findings as
 typed external records (`claims-solution`, `baseline`, `prior-art`), and then
-forbade every other lane from open-ended searching — *"do not invoke Exa Search
+forbade every other lane from open-ended searching, *"do not invoke Exa Search
 or independently repeat its literature review, though you may fetch an
-already-known source locator directly"* — with two rules worth keeping
+already-known source locator directly"*, with two rules worth keeping
 verbatim: **external prose is never itself proof authority, verify anything you
 import**, and an open `claims-solution` on your target is a duplication
 warning, never permission to import prose as a theorem.
@@ -226,12 +226,12 @@ Keep that shape, move the storage into the ledger: a first-class `source`
 contribution (arXiv id, DOI, locator) on the same T0–T3 ladder, linked to
 mathematics by typed edges (`states`, `proves`, `baseline-for`,
 `claims-solution`, `contradicts`). "What is known about this problem" then
-becomes `context(id)` — a query agents already run — instead of a skill they
+becomes `context(id)`, a query agents already run, instead of a skill they
 must remember to invoke. Sources should be **cheap to add and expensive to
 trust**: T0 means "someone says this is relevant", and promotion is evidence
 about the literature, never about the mathematics.
 
-Retrieval is not the hard part — Exa is authenticated on this box and arXiv has
+Retrieval is not the hard part, since Exa is authenticated on this box and arXiv has
 an open API. Custody is: who fetches, where it lands, and how the next agent
 finds it without re-fetching. Fetching behind an MCP tool lets the server
 extract and cache once, exactly like the Lean case.

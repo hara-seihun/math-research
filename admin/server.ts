@@ -175,7 +175,7 @@ async function publish(message: string): Promise<Ran & { commit?: string }> {
   const staged = await git("add", "--", "site/content", "guides");
   if (!staged.ok) return staged;
   const pending = await git("diff", "--cached", "--name-only");
-  if (!pending.output) return { ok: true, output: `${built.output}\nlive — no text changed, so no commit` };
+  if (!pending.output) return { ok: true, output: `${built.output}\nlive, and no text changed, so no commit` };
 
   const committed = await run([
     "git",
@@ -208,7 +208,7 @@ function previewFile(pathname: string): Response {
   const target = resolve(PREVIEW_OUT, pathname.slice(PREVIEW_BASE.length).replace(/^\/+/, ""));
   const file = existsSync(target) && statSync(target).isFile() ? target : join(target, "index.html");
   if (!file.startsWith(PREVIEW_OUT) || !existsSync(file)) {
-    return new Response("no preview for this page yet — save it first", { status: 404 });
+    return new Response("no preview for this page yet, save it first", { status: 404 });
   }
   return new Response(Bun.file(file), {
     headers: { "content-type": MIME[file.split(".").pop()!] ?? "application/octet-stream", "cache-control": "no-store" },
@@ -232,7 +232,7 @@ Bun.serve({
     const path = url.pathname.replace(/\/+$/, "") || "/admin";
 
     if (path === "/admin/api/login") {
-      if (throttled()) return json({ error: "too many attempts — wait a minute" }, 429);
+      if (throttled()) return json({ error: "too many attempts, wait a minute" }, 429);
       const given = Buffer.from(String(((await request.json()) as { password?: string }).password ?? ""));
       const ok = given.length === SECRET.length && timingSafeEqual(given, SECRET);
       if (!ok) {
@@ -299,7 +299,7 @@ Bun.serve({
           const built = await build(PREVIEW_OUT, PREVIEW_BASE);
           return {
             ...built,
-            output: built.ok ? `deleted ${body.path} — publish to make that live` : built.output,
+            output: built.ok ? `deleted ${body.path}, publish to make that live` : built.output,
             ...(await state()),
           };
         }),

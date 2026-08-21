@@ -8,8 +8,8 @@ import { sql } from "./db.ts";
 // serving a crowd and serving a queue.
 //
 // Two things keep it honest. Entries are keyed by a corpus epoch that every
-// write bumps, so "it is live and searchable right away" stays literally true
-// — a submission invalidates every cached read across every instance before
+// write bumps, so "it is live and searchable right away" stays literally true.
+// A submission invalidates every cached read across every instance before
 // the submitter's next call. And the epoch is carried between instances by
 // Postgres NOTIFY, with a ttl underneath it so a lost listener bounds the
 // damage at seconds instead of forever.

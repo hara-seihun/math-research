@@ -10,7 +10,7 @@
 #
 # lean/DumpDecls.lean does the extraction: it imports already-built oleans and
 # writes one JSON object per declaration. Nothing is elaborated, so the cost is
-# olean loading and pretty-printing rather than a build — but pretty-printing
+# olean loading and pretty-printing rather than a build, but pretty-printing
 # half a million declarations is still tens of minutes, so the full pass runs
 # in batches, one process per batch.
 set -euo pipefail
@@ -49,7 +49,7 @@ RUN_STARTED=${DECL_INDEX_STARTED:-$(psql -d math -Atqc 'select clock_timestamp()
 # A batch that cannot be imported is bisected in fresh processes: MathlibPlus
 # declares the same name in more than one module, and two of those together are
 # a hard import error that says nothing about which pair is at fault.
-dump() { # <modules-file> <out.jsonl> — leaves the .jsonl only on success
+dump() { # <modules-file> <out.jsonl>, leaves the .jsonl only on success
   local mods=$1 out=$2 count
   if lean --run "$WORK/DumpDecls.lean" "$mods" "$out.part" 2>> "$mods.log"; then
     mv "$out.part" "$out"
@@ -68,7 +68,7 @@ dump() { # <modules-file> <out.jsonl> — leaves the .jsonl only on success
 }
 export -f dump
 
-load() { # <jsonl…> — replaces exactly the modules the dumps cover
+load() { # <jsonl…>, replaces exactly the modules the dumps cover
   local staged=()
   # A .part is a dump that was interrupted, and loading half a module's
   # declarations would replace good rows with a truncated set.

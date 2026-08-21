@@ -5,7 +5,7 @@ import { corpus } from "./snapshot.ts";
 // --- News ------
 // "What has happened here since I last looked?" derived in the database rather
 // than reassembled by every client. The cursor is the event ledger's own
-// sequence number, so a window is exactly the events a reader has not seen —
+// sequence number, so a window is exactly the events a reader has not seen,
 // never a guessed time interval, never a double-read, never a gap.
 //
 // Everything here is an aggregate or a bounded top-N over that window, so the
@@ -26,11 +26,11 @@ const TERMINAL_KINDS = ["retracted", "rejected", "restored", "superseded", "refa
 const TRAIL_FRESH = "2 hours";
 
 export const HOW_TO_READ = [
-  "This is evidence for a summary, not the summary. Custody first: every entry here, including every link, sits on one review ladder — T0 recorded (the author's claim, no review), T1 confirmed mathematics, T2 canon accepted by a trusted reviewer, T3 published externally. lean_verified is an independent machine check and never a tier: it says the listed declarations compile, not that they mean what the prose around them claims.",
+  "This is evidence for a summary, not the summary. Custody first. Every entry here, including every link, sits on one review ladder of T0 recorded (the author's claim, no review), T1 confirmed mathematics, T2 canon accepted by a trusted reviewer, and T3 published externally. lean_verified is an independent machine check and never a tier. It says the listed declarations compile, not that they mean what the prose around them claims.",
   "A question is settled when an active entry stands in an answers/proves/disproves/refutes/resolves relation to it. That is a fact about the graph: the settling entry and the settling link each still carry their own tier, and a fresh settlement is usually T0 until review reaches it. Say so, and treat a settlement as closing only the exact question the link points at, never a broader parent question or a whole programme.",
-  "Settling is not the same as being first. A settling entry marked origin: 'external' records mathematics established outside this ledger — origin_source names what established it — so the question is genuinely closed here but the result is not ours. Never report such a closure as this ledger's own result: name the source, and say the ledger recorded, replayed, or verified it.",
+  "Settling is not the same as being first. A settling entry marked origin: 'external' records mathematics established outside this ledger, with origin_source naming what established it, so the question is genuinely closed here but the result is not ours. Never report such a closure as this ledger's own result. Name the source, and say the ledger recorded, replayed, or verified it.",
   "Retractions, rejections, supersessions and rejected refactors are terminal decisions, not advances; give the recorded reason. A rejection is review's other verdict: a trusted reviewer read the entry and threw it out, which also reopens anything it was claiming to settle, so treat it as evidence the queue is working rather than as a loss. Trails are diaries: an active trail is what someone is exploring, not a reservation and not a result.",
-  "questions lists the open work worth forecasting: everything touched in this window, topped up by notability. Each carries where it stands, what partial progress exists and at which tier, where each distilled route stalls, who is exploring it now, and what was already tried — so a quiet window still supports a full forecast. If you are asked for the odds, give one whole-number subjective percentage per question that it will eventually be settled here, sorted high to low, alongside the recent advance, the concrete blocker, and the custody of the evidence. Those percentages are your judgment, not ledger fields; omit anything settled in this window and never write a 100% row.",
+  "questions lists the open work worth forecasting: everything touched in this window, topped up by notability. Each carries where it stands, what partial progress exists and at which tier, where each distilled route stalls, who is exploring it now, and what was already tried, so a quiet window still supports a full forecast. If you are asked for the odds, give one whole-number subjective percentage per question that it will eventually be settled here, sorted high to low, alongside the recent advance, the concrete blocker, and the custody of the evidence. Those percentages are your judgment, not ledger fields; omit anything settled in this window and never write a 100% row.",
 ].join("\n\n");
 
 const rels = (rows: { rel: string | null; n: number }[]) =>

@@ -1,5 +1,5 @@
 ---
-when: any math, a famous open problem, a conjecture, is this too hard, this is known to be very hard, decades of experts, out of reach, unlikely to succeed, how ambitious should I be, is it worth attempting, sizing an attempt, hopeless, crackpot, direct attack, should I build infrastructure first
+when: any math, any proof, before sizing a problem, attacking an open problem, stuck, hard conjecture, where to start, is this too hard, compute budget, 60 second rule, long-running script, timeout, search strategy, verifying your own answer, priors about difficulty, giving up
 ---
 # LLMs are really good at math now
 

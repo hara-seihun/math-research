@@ -4,7 +4,7 @@
 # The guest is deliberately credential-free: a fully compromised mathvm gains
 # nothing an internet stranger does not already have, and a push token for a
 # public repository would end that. So the verifier commits a promoted patch
-# locally, and this — on the host, with the operator's gh credential — is what
+# locally, and this script, on the host with the operator's gh credential, is what
 # publishes it. It also pulls the other way, so a commit made on GitHub reaches
 # the library the ledger builds against.
 #

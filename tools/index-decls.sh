@@ -27,6 +27,11 @@ JOBS=${DECL_INDEX_JOBS:-1}
 # Metaprogramming and build-tool internals are importable but are not what
 # anyone is searching for when they are looking for a lemma.
 SKIP=${DECL_INDEX_SKIP:-'^(Lean|Lake|Cli|ImportGraph|LeanSearchClient|ProofWidgets|REPL|Repl)\.'}
+# MathlibPlus keeps modules the kernel has not accepted in the tree, quarantined
+# out of its build set and listed here. Their oleans stay on LEAN_PATH so a
+# repair can build against them, but the index must not offer their
+# declarations as things this ledger has verified.
+UNVERIFIED=${MATHLIBPLUS_UNVERIFIED:-/srv/mathlibplus/unverified.txt}
 
 mkdir -p "$WORK"
 cp lean/DumpDecls.lean "$WORK/DumpDecls.lean"
@@ -96,9 +101,32 @@ SQL
   bun run tools/normalize-lean.ts
 }
 
+# The quarantine, as a sorted module list the passes below can subtract.
+quarantined() {
+  [[ -f $UNVERIFIED ]] || return 0
+  grep -v '^[[:space:]]*#' "$UNVERIFIED" | awk 'NF {print $1}' | sort -u
+}
+QUARANTINE=$WORK/quarantined.txt
+mkdir -p "$WORK"
+quarantined > "$QUARANTINE"
+
+# Quarantined modules may have been indexed before they were quarantined, or
+# may have just lost their place in the library, so the rows go either way.
+if [[ -s $QUARANTINE ]]; then
+  psql -q -d math -v ON_ERROR_STOP=1 <<SQL
+create temp table quarantined (module text);
+\\copy quarantined from '$QUARANTINE'
+delete from lean_decl d using quarantined q where d.module = q.module;
+SQL
+fi
+
 if [[ $# -gt 0 ]]; then
   rm -f "$WORK"/incremental-mods.txt* "$WORK"/incremental.jsonl*
-  printf '%s\n' "$@" > "$WORK/incremental-mods.txt"
+  printf '%s\n' "$@" | sort -u | comm -23 - "$QUARANTINE" > "$WORK/incremental-mods.txt"
+  if [[ ! -s $WORK/incremental-mods.txt ]]; then
+    echo "nothing to index: every module named is quarantined"
+    exit 0
+  fi
   dump "$WORK/incremental-mods.txt" "$WORK/incremental.jsonl"
   load "$WORK"/incremental.jsonl*
   exit 0
@@ -111,8 +139,9 @@ rm -rf "$WORK/batches"
 mkdir -p "$WORK/batches"
 for dir in ${LEAN_PATH//:/ }; do
   [[ -d $dir ]] && (cd "$dir" && find . -name '*.olean' -printf '%P\n')
-done | sed 's/\.olean$//; s|/|.|g' | grep -Ev "$SKIP" | sort -u > "$WORK/modules.txt"
-echo "$(wc -l < "$WORK/modules.txt") importable modules"
+done | sed 's/\.olean$//; s|/|.|g' | grep -Ev "$SKIP" | sort -u \
+  | comm -23 - "$QUARANTINE" > "$WORK/modules.txt"
+echo "$(wc -l < "$WORK/modules.txt") importable modules, $(wc -l < "$QUARANTINE") quarantined"
 
 split -l "$BATCH" -d -a 4 "$WORK/modules.txt" "$WORK/batches/batch."
 (cd "$WORK/batches" && ls | grep '^batch\.[0-9]*$') \

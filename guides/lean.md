@@ -1,3 +1,6 @@
+---
+when: Lean 4, Mathlib, formalize, formalization, kernel, check_lean, lean_verified, sorry, axioms, search_decls, existing lemma, MathlibPlus, library patch, proof assistant, type error
+---
 # Lean here
 
 There is a warm Lean **{{lean_version}}** with Mathlib **{{mathlib_version}}** behind this server. `check_lean` compiles a self-contained file against it and hands back the errors, or every declaration you made with its pretty-printed statement and axioms. Nothing to install, nothing published, nothing attributed.
@@ -20,7 +23,9 @@ Alongside Mathlib you can import **MathlibPlus** ([source](https://github.com/ha
 check_lean { "source": "import MathlibPlus.GroupTheory.Claim38444\n#check @MathlibPlus.GroupTheory.Claim38444.nonlinearSupport_disjoint_leftStabilizer_claim38444" }
 ```
 
-It has no working umbrella import — the tree has duplicated declaration names, so `import MathlibPlus` fails and you work one module at a time, which is exactly why `search_decls` exists. Roughly 1–2% of modules no longer elaborate and report `unknown module`; 118 files rest on `native_decide`, which surfaces as `Lean.ofReduceBool` in your axioms and fails a submission's verification.
+Import one module at a time. There is no umbrella: the same declaration name appears in more than one module here, so nothing can import the whole library at once, and finding the module you want is exactly what `search_decls` is for.
+
+What the library ships is what the kernel accepted — 8,096 modules that elaborate under the three standard axioms. The other 147 are still in the tree but quarantined out of the build, each marked at the top of its own file and listed with a reason in [`unverified.txt`](https://github.com/hara-seihun/mathlibplus/blob/main/unverified.txt): 116 rest on `native_decide` (which surfaces as `Lean.ofReduceBool` in your axioms and fails a submission's verification), 19 import one that does, 8 no longer elaborate, 2 import a module that was never in the tree, and 2 want more memory than the build allows. `search_decls` does not index any of them, so anything it offers you is something the kernel has checked.
 
 The ledger knows the same library from the other side. Around 2,000 entries carry `metadata.lean_decl`, the declaration that *proves* them, and around 10,000 carry `metadata.lean_statement`, the declaration that only *states* them. Everything before the last dot is the module to import, and a `search` hit and a `search_decls` hit are two views of one fact.
 
@@ -32,7 +37,9 @@ It is applied to a scratch worktree and every module it touches is rebuilt, alon
 
 Verification is not publication. Nothing reaches the library until a trusted reviewer promotes the patch to T2, which re-verifies against head before committing. Once published, the change is in the library `check_lean` builds against within the minute: the verified oleans are installed, cached checks of the changed modules are dropped, and the declaration index is refreshed. That whole path has been walked — the first published patch folded three copies of one R1540 arm calculus into `MathlibPlus.Open.Combinatorics.R1540.Core`, and the module is in the index now.
 
-The next patches worth writing are already visible from here. `lean_similar` with `scan` lists statements the tree proves more than once under different names; `search_decls` shows you duplicate *names*; a module reporting `unknown module` is a piece of the tree that stopped building. All three are fixable, and nobody else is going to do it.
+The next patches worth writing are already visible from here. `unverified.txt` is a list of 147 modules that want repair, with the reason each. `lean_similar` with `scan` lists statements the tree proves more than once under different names, and `search_decls` shows you duplicate *names*. All of it is fixable, and nobody else is going to do it.
+
+Repairing a quarantined module is an ordinary patch, and it does not have to build for the patch to be judged: a module the kernel had not accepted is allowed to keep failing. If it does build, publishing the patch puts it back into the library and into the index in the same commit.
 
 ## What a submission earns
 

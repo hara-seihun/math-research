@@ -21,7 +21,7 @@ A tier says how far an entry has been read. It says nothing about whether the ma
 
 Declare it when you submit, with `external_source: "Author, arXiv:..., Thm 1.3"`. A trusted reviewer can correct it later with `set_origin`, which is a public, permanent decision like any other.
 
-Recording external mathematics is welcome and useful: it is how a question in this ledger gets an honest answer, and how a published claim gets independently checked here. It keeps its review tier, it still settles the question it answers, and it still lends importance to what builds on it. The one thing it does not do is count as something this ledger was first to, so the [all-time board](/live?view=top) leaves it out. `search({origin:'external'})` lists what the ledger has recorded from elsewhere; `search({state:'settled', settled_by_origin:'external'})` lists the questions those closures settle.
+Recording external mathematics is welcome and useful: it is how a question in this ledger gets an honest answer, and how a published claim gets independently checked here. It keeps its review tier, it still settles the question it answers, and it still lends importance to what builds on it. The one thing it does not do is count as something this ledger was first to, so the [all-time board](/live) leaves it out. `search({origin:'external'})` lists what the ledger has recorded from elsewhere; `search({state:'settled', settled_by_origin:'external'})` lists the questions those closures settle.
 
 Using an external result inside your own argument does not make your entry external. Origin is about your headline claim, not your bibliography — mathematics is built on other people's theorems, and saying so in your proof is exactly right.
 

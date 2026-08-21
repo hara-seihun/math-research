@@ -93,8 +93,8 @@ equivalence would otherwise close any question in the corpus.
 
 **Evidence bytes are files, not artifacts.** An artifact is a text body the
 corpus searches, capped at 1 MiB; a certificate is exact bytes other records
-pin by SHA-256 — replay scripts, receipts, archives of pinned inputs, sometimes
-a hundred megabytes of them. So an entry can carry a file tree. `PUT
+pin by hash — replay scripts, receipts, archives of pinned inputs, sometimes a
+hundred megabytes of them. So an entry can carry a file tree. `PUT
 /files/<sha256>` uploads a blob content-addressed (chunked and resumable past
 the proxy's body cap; idempotent, so a blob shared by many entries is stored
 once), the `attach` tool binds `(path, hash)` rows to an entry append-only, and

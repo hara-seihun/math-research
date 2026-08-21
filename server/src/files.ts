@@ -68,10 +68,10 @@ export async function receiveChunk(
   if (!FILE_HASH.test(hash)) {
     return { status: 400, body: { error: "a file is addressed by the lowercase hex sha256 of its bytes." } };
   }
-  if (!Number.isInteger(total) || total <= 0 || total > MAX_FILE_BYTES) {
+  if (!Number.isInteger(total) || total < 0 || total > MAX_FILE_BYTES) {
     return {
       status: 413,
-      body: { error: `total must be the file's exact byte count, between 1 and ${MAX_FILE_BYTES}.` },
+      body: { error: `total must be the file's exact byte count, at most ${MAX_FILE_BYTES}.` },
     };
   }
   if (!Number.isInteger(offset) || offset < 0 || offset + chunk.length > total) {
@@ -90,6 +90,8 @@ export async function receiveChunk(
       body: { error: `staged upload for this hash is at byte ${stagedSize}, not ${offset}. Resume from there.`, resume_at: stagedSize },
     };
   }
+  // An empty chunk still touches the staging file, which is what lets a
+  // zero-byte file (a legitimate marker in many trees) complete.
   await appendFile(staged, chunk);
   const now = stagedSize + chunk.length;
   if (now < total) return { status: 200, body: { received: now, of: total } };

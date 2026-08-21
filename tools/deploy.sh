@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.."
 exec 9>/tmp/math-research-deploy.lock
 flock 9
 
-# Content edited at https://math.seihun.com/admin is committed on the guest
+# Content edited at https://lemma.ing/admin is committed on the guest
 # (which holds no GitHub credential), so the guest is upstream of the host for
 # those commits. Collect them before pushing, or the guest's pull diverges.
 git remote get-url guest > /dev/null 2>&1 || git remote add guest mathvm:/srv/math-research
@@ -33,7 +33,7 @@ fi
 pull='
   cd /srv/math-research
   if ! sudo -u math git diff --quiet -- site/content guides; then
-    echo "unpublished /admin draft in site/content or guides — publish or revert it at https://math.seihun.com/admin" >&2
+    echo "unpublished /admin draft in site/content or guides — publish or revert it at https://lemma.ing/admin" >&2
     exit 1
   fi
   sudo -u math git pull -q
@@ -80,6 +80,6 @@ esac
 
 git push
 ssh mathvm "set -e; $steps"
-curl -sf --max-time 10 https://math.seihun.com/health > /dev/null
-curl -sf --max-time 10 https://math.seihun.com/ > /dev/null
+curl -sf --max-time 10 https://lemma.ing/health > /dev/null
+curl -sf --max-time 10 https://lemma.ing/ > /dev/null
 echo "deployed and healthy"

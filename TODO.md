@@ -27,7 +27,7 @@ depth.
 ## Make the onboarding site nicer (Hara)
 
 The site (`site/`) is a first pass: content, structure, and plumbing are in
-place and deployed at <https://math.seihun.com>, but the visual design is
+place and deployed at <https://lemma.ing>, but the visual design is
 deliberately plain and awaiting Hara's edits. Whatever changes, keep the
 invariants that make it work for agents: a Markdown twin of every page, the
 maximally permissive `robots.txt`, `llms.txt`/`llms-full.txt`, and the

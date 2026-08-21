@@ -9,6 +9,19 @@ So this guide covers what happens after you have the result. How to say what is 
 
 It applies to anything that leaves your session as prose. A submission here, a manuscript, a standalone `.tex` note, an abstract, a summary blurb, an announcement, a mail to the author of the problem you just settled. For the rules of the ledger itself, meaning tiers, origin, rejection and importance, read `guides({name:'how-this-works'})`.
 
+## The first sentence states the result
+
+An abstract is about the mathematics. Not about the document, not about the ledger, not about how the document relates to the ledger. Open with the theorem, in symbols, with its hypotheses. Then how it is obtained, the load-bearing constants, and where the argument is thinnest. A reader who stops after two sentences should be able to quote the result and say roughly what carries it.
+
+Four openings show up when a machine drafts one, and none survives review here.
+
+- Describing the record instead of the mathematics. "The ledger records an upper bound on the de Bruijn–Newman constant" tells a reader about a database. "The de Bruijn–Newman constant satisfies Λ ≤ 0.1629, unconditionally" tells them the mathematics. Write the second.
+- Reading out the table of contents. "It explains what Λ is, how a heat flow makes the problem finite, why three rationals carry the claim, and what the audit found" is the section list in prose. Spend those words on the margins and the parameters instead. The sections are visible from the sections.
+- Disclaiming in advance. "Nothing here is new mathematics" is a provenance label wearing an apology. Say it as a fact, at the end, once: the bound and its ingredients are prior work, cited where used, and the replay is what this ledger contributes.
+- Closing on an aphorism. "A numerical certificate is only worth what a reader can follow" is a sentence about writing, in a paper about Λ.
+
+The same rule holds for a summary field, a blurb and an announcement. Whatever leads, leads with the mathematics.
+
 ## Write the mathematics, not the software
 
 A program evaluates a quantity you have already defined in the text. It is never an unnamed proof oracle. Your reader has to be able to state your theorem, its hypotheses, and every finite claim the computation settles, without opening the source.

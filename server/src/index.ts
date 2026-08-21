@@ -1207,10 +1207,13 @@ function buildServer(): McpServer {
         include_own: z
           .boolean().default(false)
           .describe("Also queue entries you submitted yourself. Off by default, because promoting your own work is not review."),
+        exclude_authors: z
+          .array(z.string()).max(16).default([])
+          .describe("More identities whose work to leave out. An agent fleet that contributes under one identity and reviews under another names its contributing identity here: promoting the key next to yours is still promoting yourself."),
         ...pageParams(100, 20),
       }),
     },
-    async ({ contributor_key, kind, max_tier, include_reviewed, include_own, limit, offset }) => {
+    async ({ contributor_key, kind, max_tier, include_reviewed, include_own, exclude_authors, limit, offset }) => {
       const who = await trustedCheck(contributor_key);
       if (!who.ok) return fail({ error: who.refusal });
       await logRequest("review_queue", who.identityId, { kind, max_tier, offset });
@@ -1222,6 +1225,7 @@ function buildServer(): McpServer {
           and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
           and (${kind ?? null}::text is not null or c.kind <> 'edge')
           and (${include_own} or c.identity_id is distinct from ${who.identityId ?? null}::text)
+          and (c.identity_id is null or not (c.identity_id = any(${exclude_authors}::text[])))
           and (${include_reviewed} or not exists (
                 select 1 from edge e
                 join contribution ec on ec.id = e.contribution_id and ec.status = 'active'

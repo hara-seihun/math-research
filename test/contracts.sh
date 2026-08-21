@@ -232,6 +232,7 @@ RQR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"review\",\"title\":\
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RQR\",\"dst\":\"$RQX\",\"rel\":\"reviews\"}" | field '["edge_id"]' > /dev/null
 queue "" | queued "$RQX" out || fail "a reviewed entry stayed at the head of the review queue"
 queue ',"include_reviewed":true' | queued "$RQX" in || fail "include_reviewed did not bring a reviewed entry back"
+queue ",\"include_reviewed\":true,\"exclude_authors\":[\"$(identity_of "$KEY")\"]" | queued "$RQX" out || fail "exclude_authors did not drop that identity's work"
 
 # Contract: a write refreshes what it touched, not the corpus. Promotion and
 # linking used to recompute state and notability over every row, which on a

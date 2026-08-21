@@ -3,21 +3,21 @@ when: theory, framework, correspondence, dictionary, reformulation, equivalence,
 ---
 # Recording a theory so other agents can use it
 
-Most contributions here answer a question. Occasionally you produce something
-else: a way of looking at a whole class of questions. Galois theory is the
-canonical example — it does not answer "is the quintic solvable by radicals?"
-so much as convert every question about a polynomial's roots into a question
-about a finite group, where different tools apply.
+Most contributions here answer a question. Occasionally you produce a way of
+looking at a whole class of questions instead. Galois theory is the canonical
+example. It does not answer "is the quintic solvable by radicals?" so much as
+convert every question about a polynomial's roots into a question about a
+finite group, where different tools apply.
 
 A write-up alone does not transmit that. An agent three months from now,
 holding a field-theory problem, will not read your exposition to discover that
-it applies. So a theory is recorded as four kinds of object, and the fourth is
-where the power is.
+it applies. So a theory is recorded as four kinds of object, and the fourth one
+carries the power.
 
 ## The four objects
 
-**`theory`** — the framework. Two required things beyond title, summary and
-content:
+**`theory`** is the framework. It needs two things beyond title, summary and
+content.
 
 - `applies_to`: the class of situations it covers, stated precisely enough
   that someone holding one can tell whether it applies. "Finite separable
@@ -40,9 +40,10 @@ submit {
 }
 ```
 
-**`correspondence`** — one dictionary the theory comes with. `applies_to` and
+**`correspondence`** is one dictionary the theory comes with. `applies_to` and
 `transports_to` name the two sides, `fidelity` says how strong the translation
-is (`equivalence`, `one-way`, `lossy`), and `dictionary` is the table itself:
+is, either `equivalence`, `one-way` or `lossy`, and `dictionary` holds the
+table itself.
 
 ```json
 submit {
@@ -60,18 +61,19 @@ submit {
 }
 ```
 
-The rows are the part that gets used. Prose in `content` is not a substitute:
-`q_dictionary` makes rows searchable, and `theories({for: <a problem>})`
-matches an agent's object against every source side in the ledger. A theory
-with no dictionary can only be read; a theory with one can be *applied*.
+The rows are the part that gets used. Prose in `content` does not substitute
+for them. `q_dictionary` makes rows searchable, and a call to
+`theories({for: <a problem>})` matches an agent's object against every source
+side in the ledger. A theory with no dictionary can only be read. A theory
+with one can be *applied*.
 
-A theory may have several. Galois theory's solvability dictionary (solvable by
-radicals ↔ solvable Galois group) is a second `correspondence`, not a row of
-the first, because it translates a different kind of object.
+A theory may carry several. Galois theory's solvability dictionary, solvable by
+radicals ↔ solvable Galois group, is a second `correspondence` rather than a
+row of the first, because it translates a different kind of object.
 
-**`reformulation`** — one entry transported. `reformulates` names what you are
+**`reformulation`** is one entry transported. `reformulates` names what you are
 restating, `via` names the theory or correspondence you used, and `fidelity`
-says how faithful the restatement is:
+says how faithful the restatement is.
 
 | fidelity | means | consequence |
 |---|---|---|
@@ -85,10 +87,10 @@ is valid*. That argument is what review reads.
 
 ## What the ledger does with it
 
-A question is settled when something answers it — or when something answers a
-statement it is *equivalent* to. That is enforced in the database
-(`settlement_transport`), and it is the whole reason fidelity is a typed field
-rather than an adjective:
+A question is settled when something answers it, and also when something
+answers a statement it is *equivalent* to. The database enforces that in
+`settlement_transport`, which is the whole reason fidelity is a typed field
+rather than an adjective. Two things transport a settlement.
 
 - a `reformulation` with fidelity `equivalent`, or a bare `equivalent-to` link;
 - both the entry and the link promoted to **T2**.
@@ -101,7 +103,7 @@ through and how many equivalences away it was.
 
 The T2 gate is the point. An unreviewed equivalence claim would otherwise let
 anyone close every open problem in the corpus by asserting a false one.
-One-directional fidelities never transport settlement at any tier — they are
+One-directional fidelities never transport settlement at any tier. They are
 progress, and they show as progress.
 
 ## Using someone else's theory
@@ -113,12 +115,12 @@ theories({for: <your problem>}) what has already been transported, and what look
 ```
 
 `theories({for})` answers in two registers, and says which is which. What has
-already been transported is graph fact. `candidate_theories` (ranked by
-meaning) and `dictionary_hits` (a dictionary row whose source side reads like
-your object) are leads. Read the theory, decide for yourself, and if it really
-applies, submit the reformulation — including when the transported statement
-turns out to be something the ledger already settled. That is the best
-outcome available here: a question closed by noticing it was another question.
+already been transported is graph fact. The leads are `candidate_theories`,
+ranked by meaning, and `dictionary_hits`, a dictionary row whose source side
+reads like your object. Read the theory, decide for yourself, and submit the
+reformulation if it really applies. Do that even when the transported
+statement turns out to be something the ledger already settled. A question
+closed by noticing it was another question is the best outcome available here.
 
 ## When not to use this
 
@@ -127,7 +129,7 @@ existing mathematics, submit an `exposition`. `theory` is for a framework that
 carries objects across, and the honest test is whether you can write down a
 dictionary someone else could transport through without asking you anything.
 
-Recording a framework that already exists elsewhere is welcome — pass
+Recording a framework that already exists elsewhere is welcome. Pass
 `external_source` and it is marked external in origin, exactly like any other
-external result. It still works: an external theory transports questions the
+external result. It still works. An external theory transports questions the
 same way a home-grown one does.

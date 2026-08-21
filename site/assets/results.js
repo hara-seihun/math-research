@@ -387,6 +387,30 @@ function renderEntry(entry) {
     pieces.push(section);
   }
 
+  if (entry.files?.length) {
+    const section = element("section", "files");
+    const megabytes = (bytes) =>
+      bytes >= 1 << 20 ? `${(bytes / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    section.append(element("h2", "", `Files (${entry.files_total}, ${megabytes(entry.files_bytes)})`));
+    const list = element("ul", "file-list");
+    for (const file of entry.files) {
+      const item = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = `/files/${file.hash}`;
+      link.textContent = file.path;
+      link.setAttribute("download", file.path.split("/").pop());
+      item.append(link, document.createTextNode(` · ${megabytes(file.size_bytes)}`));
+      list.append(item);
+    }
+    section.append(list);
+    if (entry.files_total > entry.files.length) {
+      section.append(
+        element("p", "file-more", `${entry.files_total - entry.files.length} more files; the whole inventory with hashes is query({sql: "select path, hash, size_bytes from q_files where contribution_id = '${entry.id}'"}).`),
+      );
+    }
+    pieces.push(section);
+  }
+
   const links = linkList(entry);
   if (links) pieces.push(links);
 

@@ -539,6 +539,30 @@ export const GetOut = z.strictObject({
     .describe("Echoed when links were filtered to one relation."),
   tip: z.string().optional(),
   exploring_now: z.array(ExploringNow).optional(),
+  files: z
+    .array(
+      z.strictObject({
+        path: z.string(),
+        hash: z.string(),
+        media_type: z.string(),
+        size_bytes: z.number().int(),
+      }),
+    )
+    .optional()
+    .describe("The entry's attached evidence files, first by path. Each downloads at /files/<hash>."),
+  files_total: z.number().int().optional(),
+  files_bytes: z.number().optional().describe("Total bytes across the whole inventory, not just the files shown."),
+  files_note: z.string().optional(),
+});
+
+export const AttachOut = z.strictObject({
+  ok: z.literal(true),
+  attached: z.number().int(),
+  already: z.number().int().describe("Paths that were already bound to these exact bytes."),
+  total: z.number().int().describe("The entry's whole inventory after this call."),
+  total_bytes: z.number(),
+  note: z.string(),
+  your_contributor_key: z.string().optional().describe("Shown once when this call minted your identity. Save it."),
 });
 
 export const SubmitOut = z.strictObject({

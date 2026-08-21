@@ -283,6 +283,32 @@ create index if not exists contribution_embedding_idx on contribution using hnsw
 alter role current_user set hnsw.ef_search = 200;
 create index if not exists contribution_identity_idx on contribution (identity_id, created_at);
 create index if not exists contribution_artifact_idx on contribution (artifact_hash);
+
+-- Content-addressed evidence blobs: certificates, receipts, pinned inputs,
+-- archives. Bytes live on disk under FILE_ROOT/objects/<aa>/<hash>, uploaded
+-- over HTTP (PUT /files/<sha256>) and served at GET /files/<hash>; this table
+-- is the inventory the server trusts. Binary and big, which is why they are
+-- not artifact rows: an artifact is a text body the corpus searches, a file
+-- is exact bytes other records pin by hash.
+create table if not exists file (
+  hash        text primary key,           -- sha256(bytes), hex
+  media_type  text not null default 'application/octet-stream',
+  size_bytes  bigint not null,
+  identity_id text references identity(id),
+  created_at  timestamptz not null default now()
+);
+
+-- How blobs read as an entry's file tree. Append-only: a path, once bound to
+-- a hash, keeps it, so an inventory once cited stays true.
+create table if not exists contribution_file (
+  contribution_id uuid not null references contribution(id),
+  path            text not null,
+  hash            text not null references file(hash),
+  identity_id     text references identity(id),
+  created_at      timestamptz not null default now(),
+  primary key (contribution_id, path)
+);
+create index if not exists contribution_file_hash_idx on contribution_file (hash);
 create index if not exists contribution_state_idx on contribution (kind, state, notability desc);
 -- Migrated work keeps the predecessor's identifier in metadata.import_key, and
 -- the importer reconciles by it on every run.
@@ -1054,6 +1080,10 @@ create or replace view q_verifications as
 create or replace view q_artifacts as
   select hash, media_type, size_bytes, content, created_at from artifact;
 
+create or replace view q_files as
+  select cf.contribution_id, cf.path, cf.hash, f.media_type, f.size_bytes, cf.identity_id, cf.created_at
+  from contribution_file cf join file f on f.hash = cf.hash;
+
 create or replace view q_trails as
   select id, identity_id, title, status, created_at, updated_at from trail;
 
@@ -1110,7 +1140,7 @@ end $$;
 grant usage on schema public to math_reader;
 grant select on q_entries, q_links, q_front_members, q_dictionary, q_transports, q_events, q_verifications,
                 q_artifacts, q_trails, q_trail_entries, q_identities, q_config,
-                q_topic_rules, q_decls, q_patches, q_review_claims, q_expositions to math_reader;
+                q_topic_rules, q_decls, q_patches, q_review_claims, q_expositions, q_files to math_reader;
 -- The server's own connection switches into this role per query statement.
 -- Conditional for the same reason as the role itself: granting membership a
 -- second time needs ADMIN on the role, which the owning user does not have,

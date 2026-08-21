@@ -33,7 +33,7 @@ export PGHOST="$WORK" PGDATABASE=math PGUSER="$(whoami)"
 # the same time, and a hardcoded port means each silently tests the other's
 # server against its own database.
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-export SERVER_KEY_PATH="$WORK/server.key" SPOOL_DIR="$WORK/spool" PORT
+export SERVER_KEY_PATH="$WORK/server.key" SPOOL_DIR="$WORK/spool" FILE_ROOT="$WORK/files" PORT
 # Response shapes are validated here rather than on every production call:
 # walking a 70 KB payload through a strict zod schema is real CPU, and this
 # suite exercises every tool, so drift fails here instead of costing every
@@ -171,6 +171,44 @@ CID=$(echo "$SUB" | field '.id')
 echo "$SUB" | field '.receipt.server_signature' > /dev/null || fail "no signed receipt"
 EV=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$EV" | field '.events[0].kind') == submitted ]] || fail "no submitted event"
+
+# Contract: evidence files. Bytes upload content-addressed and chunked with a
+# resumable staging protocol, bind to an entry append-only, list on get and
+# q_files, and download byte-identical. Wrong bytes and strangers both fail
+# closed.
+FILES="http://127.0.0.1:$PORT/files"
+FBLOB="$WORK/blob.bin"; head -c 300000 /dev/urandom > "$FBLOB"
+FHASH=$(sha256sum "$FBLOB" | cut -d' ' -f1)
+FTOTAL=$(stat -c %s "$FBLOB")
+code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT --data-binary @"$FBLOB" "$FILES/$FHASH")
+[[ $code == 401 ]] || fail "anonymous file upload was accepted (HTTP $code)"
+head -c 100000 "$FBLOB" > "$WORK/chunk1"; tail -c +100001 "$FBLOB" > "$WORK/chunk2"
+R1=$(curl -sf -X PUT -H "Authorization: Bearer $KEY" -H 'Content-Type: application/octet-stream' \
+  --data-binary @"$WORK/chunk1" "$FILES/$FHASH?offset=0&total=$FTOTAL")
+[[ $(echo "$R1" | field '.received') == 100000 ]] || fail "first chunk not staged: $R1"
+R2=$(curl -s -X PUT -H "Authorization: Bearer $KEY" --data-binary @"$WORK/chunk1" "$FILES/$FHASH?offset=0&total=$FTOTAL")
+[[ $(echo "$R2" | field '.resume_at') == 100000 ]] || fail "offset mismatch did not name the resume byte: $R2"
+R3=$(curl -sf -X PUT -H "Authorization: Bearer $KEY" -H 'Content-Type: application/octet-stream' \
+  --data-binary @"$WORK/chunk2" "$FILES/$FHASH?offset=100000&total=$FTOTAL")
+[[ $(echo "$R3" | field '.stored') == true ]] || fail "assembled upload was not stored: $R3"
+LIAR=${FHASH:0:63}0; [[ $LIAR == "$FHASH" ]] && LIAR=${FHASH:0:63}1
+code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $KEY" --data-binary @"$WORK/chunk1" "$FILES/$LIAR")
+[[ $code == 422 ]] || fail "bytes that miss their declared hash were kept (HTTP $code)"
+AT=$(call attach "{\"contributor_key\":\"$KEY\",\"ref\":\"$CID\",\"files\":[{\"path\":\"evidence/blob.bin\",\"sha256\":\"$FHASH\"}]}")
+[[ $(echo "$AT" | field '.attached') == 1 ]] || fail "author could not attach an uploaded file: $AT"
+AT2=$(call attach "{\"contributor_key\":\"$KEY\",\"ref\":\"$CID\",\"files\":[{\"path\":\"evidence/blob.bin\",\"sha256\":\"$FHASH\"}]}")
+[[ $(echo "$AT2" | field '.attached') == 0 && $(echo "$AT2" | field '.already') == 1 ]] || fail "re-attaching the same bytes was not idempotent: $AT2"
+call attach "{\"contributor_key\":\"$KEY\",\"ref\":\"$CID\",\"files\":[{\"path\":\"evidence/blob.bin\",\"sha256\":\"$LIAR\"}]}" \
+  | field '.error' | grep -q . || fail "a path was silently rebound to different bytes"
+call attach "{\"contributor_key\":\"mrk_$(openssl rand -hex 32)\",\"ref\":\"$CID\",\"files\":[{\"path\":\"intruder.bin\",\"sha256\":\"$FHASH\"}]}" \
+  | field '.error' | grep -qi author || fail "a stranger attached files to someone else's entry"
+GF=$(call get "{\"ref\":\"$CID\"}")
+[[ $(echo "$GF" | field '.files[0].hash') == "$FHASH" && $(echo "$GF" | field '.files_bytes') == "$FTOTAL" ]] || fail "get does not carry the file inventory: $GF"
+call query "{\"sql\":\"select count(*) from q_files where contribution_id = '$CID'\"}" | field '.rows[0][0]' | grep -qx 1 || fail "q_files does not list the attachment"
+curl -sf "$FILES/$FHASH" -o "$WORK/blob.back"
+cmp -s "$FBLOB" "$WORK/blob.back" || fail "downloaded file differs from the uploaded bytes"
+code=$(curl -s -o /dev/null -w '%{http_code}' "$FILES/$LIAR")
+[[ $code == 404 ]] || fail "an unstored hash did not 404 (HTTP $code)"
 
 # The runner is a separate sandboxed process; these tests stand in for it.
 # Checks are spooled under the hash of their source, which is the whole point:
@@ -1290,6 +1328,7 @@ declare -A DOORS=(
   [submit]='{"kind":"result","title":"every door","summary":"s","content":"c."}'
   [check_lean]="{\"contributor_key\":\"$KEY\",\"source\":\"$CHECK_SRC\"}"
   [link]="{\"contributor_key\":\"$KEY\",\"src\":\"$Q\",\"dst\":\"$SQ\",\"rel\":\"uses\"}"
+  [attach]="{\"contributor_key\":\"$KEY\",\"ref\":\"$CID\",\"files\":[{\"path\":\"evidence/blob.bin\",\"sha256\":\"$FHASH\"}]}"
   [my_submissions]="{\"contributor_key\":\"$KEY\"}"
   [trail]="{\"contributor_key\":\"$KEY\",\"title\":\"every door\",\"note\":\"n\"}"
   [trails]='{}'

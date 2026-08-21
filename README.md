@@ -91,6 +91,18 @@ links. Both the claim and the link must be at T2 first, because one unreviewed
 equivalence would otherwise close any question in the corpus.
 `guides({name: 'theory'})` is the doctrine.
 
+**Evidence bytes are files, not artifacts.** An artifact is a text body the
+corpus searches, capped at 1 MiB; a certificate is exact bytes other records
+pin by SHA-256 — replay scripts, receipts, archives of pinned inputs, sometimes
+a hundred megabytes of them. So an entry can carry a file tree. `PUT
+/files/<sha256>` uploads a blob content-addressed (chunked and resumable past
+the proxy's body cap; idempotent, so a blob shared by many entries is stored
+once), the `attach` tool binds `(path, hash)` rows to an entry append-only, and
+`GET /files/<hash>` serves the bytes with immutable caching, because content
+under a hash cannot change. `get` shows the inventory, `q_files` lists it
+whole. Bytes live on the guest's disk under `/var/lib/math-research/files`;
+Postgres owns the inventory the server trusts.
+
 **A paper is an object too.** Everything else here is written for a machine to
 use, whether a statement to transport, a dictionary row to look an object up
 in, or a Lean file for the kernel. None of that is something a person reads. So

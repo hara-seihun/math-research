@@ -1,4 +1,5 @@
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
+import express from "express";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, isInitializeRequest, McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { z } from "zod";
@@ -33,7 +34,7 @@ import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
 import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
 import {
-  ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
+  ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
   RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetOriginOut, SetTierOut, SetTuningOut, structured, SubmitOut, TheoriesOut, TrailOut,
   TrailsOut,
@@ -46,6 +47,7 @@ import {
   annotateExpositions, EXPOSITION_KIND, EXPOUNDS_HELP, EXPOUNDS_REL, expositionsOf, shapeExposition,
 } from "./exposition.ts";
 import { renderArtifact } from "./render.ts";
+import { attachFiles, badPath, FILE_HASH, filesOf, MAX_CHUNK_BYTES, receiveChunk, storedFile } from "./files.ts";
 import { indexSummary, searchDecls } from "./decls.ts";
 import { scanDuplicates, similarDeclarations } from "./lean-similar.ts";
 import { headSeq, newsPacket, seqBefore } from "./news.ts";
@@ -299,7 +301,7 @@ const TOOLS: ToolDef[] = [];
 const SHAREABLE = new Set(["search", "search_decls", "lean_similar", "fronts", "frontier", "theories", "related", "get", "query", "trails", "guides", "news"]);
 
 // Tools that move the corpus, and so retire every shared read above.
-const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_origin", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "reject", "grant_trust"]);
+const WRITES = new Set(["submit", "link", "attach", "trail", "set_tier", "set_origin", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "reject", "grant_trust"]);
 
 // Instructions are the one string every client puts in front of a model before
 // anything is called, and they are paid for on every connection whether or not
@@ -941,7 +943,7 @@ defineTool(
     title: "Get one entry in full",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Everything about one entry: full content, typed links (capped at 8 per relation, with `more` counting the rest), verification history, receipt, and its most recent events. Takes an id, name, or title. To page through one relation of a heavily linked entry, pass rel (and links_offset); the query tool (q_links) reaches everything at once. If someone has written the entry up as a paper, `exposition` names it; any body that is Markdown or LaTeX is also served rendered to HTML with MathML mathematics at `/render/<artifact_hash>` on this host, which is what the website reads.",
+      "Everything about one entry: full content, typed links (capped at 8 per relation, with `more` counting the rest), verification history, receipt, attached evidence files, and its most recent events. Takes an id, name, or title. To page through one relation of a heavily linked entry, pass rel (and links_offset); the query tool (q_links) reaches everything at once. If someone has written the entry up as a paper, `exposition` names it; any body that is Markdown or LaTeX is also served rendered to HTML with MathML mathematics at `/render/<artifact_hash>` on this host, which is what the website reads. `files` is the entry's evidence inventory (certificates, receipts, pinned inputs); each downloads at `/files/<hash>`, and q_files lists an inventory the cap truncates.",
     inputSchema: z.object({
       ref: refParam.describe("The entry: id, name, or title."),
       rel: z.string().optional().describe("Show only this link relation, uncapped (50 a page)."),
@@ -974,6 +976,7 @@ defineTool(
     const [{ n: eventTotal }] = await sql<{ n: number }[]>`
       select count(*)::int as n from event where contribution_id = ${id}`;
     const activeTrails = await trailsTouching([id]);
+    const attached = await filesOf(id);
     const paper = (await expositionsOf([id])).get(id);
     // An exposition's own reading is the other way round: what is it a paper
     // about? It is in `links`, but a reader of a paper wants the mathematics
@@ -1024,6 +1027,14 @@ defineTool(
         ? { exposition: { ...paper.best, ...(paper.total > 1 ? { others: paper.total - 1 } : {}) } }
         : {}),
       ...(expounds.length ? { expounds } : {}),
+      ...(attached
+        ? {
+            ...attached,
+            ...(attached.files_total > attached.files.length
+              ? { files_note: "showing the first files by path; q_files(contribution_id) has the whole inventory. Each downloads at /files/<hash>." }
+              : {}),
+          }
+        : {}),
     });
   },
 );
@@ -1035,7 +1046,7 @@ defineTool(
     outputSchema: QueryOut,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_dictionary(correspondence_id, correspondence, tier, notability, theory_id, source_side, target_side, fidelity, row_no, source, target, note, proof), every theory's translation table as rows; q_transports(reformulation_id, title, tier, status, notability, created_at, fidelity, reformulates_id, reformulates, reformulates_kind, reformulates_state, via_id, via, via_kind, theory_id, transports), what has been restated through a theory and whether it carries settlement; q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases; q_expositions(exposition_id, title, tier, status, notability, identity_id, artifact_hash, media_type, size_bytes, created_at, edge_tier, expounds_id, expounds, expounds_kind, expounds_tier), every paper and the entry it writes up. Nothing else is visible to it.",
+      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_dictionary(correspondence_id, correspondence, tier, notability, theory_id, source_side, target_side, fidelity, row_no, source, target, note, proof), every theory's translation table as rows; q_transports(reformulation_id, title, tier, status, notability, created_at, fidelity, reformulates_id, reformulates, reformulates_kind, reformulates_state, via_id, via, via_kind, theory_id, transports), what has been restated through a theory and whether it carries settlement; q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases; q_files(contribution_id, path, hash, media_type, size_bytes, identity_id, created_at), every attached evidence file, downloadable at /files/<hash>; q_expositions(exposition_id, title, tier, status, notability, identity_id, artifact_hash, media_type, size_bytes, created_at, edge_tier, expounds_id, expounds, expounds_kind, expounds_tier), every paper and the entry it writes up. Nothing else is visible to it.",
     inputSchema: z.object({
       sql: z
         .string().max(8000)
@@ -1568,6 +1579,64 @@ defineTool(
       ...(freshKey ? { your_contributor_key: freshKey } : {}),
     });
   }),
+);
+
+defineTool(
+  "attach",
+  {
+    title: "Attach evidence files to an entry",
+    outputSchema: AttachOut,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: [
+      "Bind uploaded files to an entry as its evidence tree: certificates, receipts, replay scripts, pinned inputs, archives. This is how a bound like \u039b \u2264 0.1629 ships the bytes a stranger reruns rather than a narrative about them.",
+      "Upload first, attach second. Each file is PUT to /files/<sha256-of-its-bytes> on this host with your key as `Authorization: Bearer mrk_\u2026` (an OAuth token works too). A body over ~64 MB goes up in sequential chunks with ?offset=<byte>&total=<bytes>; the reply names the byte to resume from if you are interrupted. Uploads are content-addressed and idempotent, so a blob shared by many entries is stored and sent once.",
+      "Then call this with the entry and the (path, sha256) rows of its file tree. Paths are relative and append-only: once bound, a path keeps its bytes forever, so correct a file by attaching it under a new path or a new entry. Attaching to someone else's entry is reserved for its author and trusted reviewers; evidence for another's claim is welcome as your own entry linked with relates_to.",
+      "Everything attached is public immediately at /files/<hash>, listed by get and q_files.",
+    ].join(" "),
+    inputSchema: z.object({
+      contributor_key: keyParam,
+      ref: refParam.describe("The entry receiving the files: id, name, or title."),
+      files: z
+        .array(
+          z.object({
+            path: z.string().max(512).describe("Relative path within this entry's file tree, e.g. 'evidence/receipt.json'."),
+            sha256: z.string().describe("The sha256 of the already-uploaded bytes, 64 lowercase hex characters."),
+          }),
+        )
+        .min(1)
+        .max(400)
+        .describe("The file tree rows to bind. Call again for more than 400."),
+    }),
+  },
+  async ({ contributor_key, ref, files }) => {
+    const me = await requireIdentity(contributor_key);
+    if ("error" in me) return fail(me);
+    const { identityId, freshKey } = me;
+    logRequest("attach", identityId, { ref, files: files.length });
+    const found = await refOr(ref);
+    if ("failed" in found) return found.failed;
+    const [target] = await sql<{ identity_id: string | null }[]>`
+      select identity_id from contribution where id = ${found.id}`;
+    if (target!.identity_id !== identityId) {
+      const trusted = await trustedCheck(contributor_key);
+      if (!trusted.ok) {
+        return fail({
+          error:
+            "an entry's file tree belongs to its author, because files carry its claim's evidence. Submit your own entry with these files attached and link it here with relates_to, or ask a trusted reviewer.",
+        });
+      }
+    }
+    const outcome = await attachFiles(identityId, found.id, files);
+    if (!outcome.ok) return fail(outcome);
+    return structured(AttachOut, {
+      ...outcome,
+      note:
+        outcome.attached === 0
+          ? "every one of those paths was already bound to those exact bytes, so there was nothing to do."
+          : `attached. Each file is public at /files/<hash>; get(${JSON.stringify(found.title).slice(0, 60)}\u2026) lists the inventory.`,
+      ...(freshKey ? { your_contributor_key: freshKey } : {}),
+    });
+  },
 );
 
 defineTool(
@@ -3069,6 +3138,57 @@ app.get("/render/:hash", async (req: import("express").Request, res: import("exp
     res.status(422).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
+
+// Evidence bytes, addressed by their own sha256. Immutable by construction,
+// so cached forever everywhere. The MCP carries inventories and hashes; this
+// is the pipe the bytes themselves ride, in both directions, because a JSON
+// tool call is the wrong vehicle for a hundred-megabyte pinned input.
+app.get("/files/:hash", async (req: import("express").Request, res: import("express").Response) => {
+  const found = await storedFile(String(req.params.hash));
+  if (!found) {
+    res.status(404).json({ error: "no file with that sha256. q_files lists every attached file with its hash." });
+    return;
+  }
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Content-Type", found.media_type);
+  res.sendFile(found.path);
+});
+
+app.put(
+  "/files/:hash",
+  (req, res, next) => {
+    void (async () => {
+      const bearer = bearerOf(req.headers.authorization);
+      if (!bearer) {
+        res.status(401).json({ error: `uploading needs an identity, so the staging area has an owner. ${KEY_HELP}` });
+        return;
+      }
+      const who = await withRequestContext({ bearer }, () => caller());
+      if (who.kind !== "identity") {
+        res.status(401).json({ error: who.kind === "invalid" ? who.error : `that credential resolved to nobody. ${KEY_HELP}` });
+        return;
+      }
+      (req as unknown as { uploader: string }).uploader = who.identityId;
+      next();
+    })();
+  },
+  express.raw({ type: () => true, limit: MAX_CHUNK_BYTES }),
+  async (req: import("express").Request, res: import("express").Response) => {
+    const chunk = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const offset = Number(req.query.offset ?? 0);
+    const total = Number(req.query.total ?? chunk.length);
+    const outcome = await receiveChunk(
+      (req as unknown as { uploader: string }).uploader,
+      String(req.params.hash),
+      chunk,
+      offset,
+      total,
+      req.headers["content-type"],
+    );
+    res.status(outcome.status).json(outcome.body);
+  },
+);
 
 app.get("/health", async (_req: import("express").Request, res: import("express").Response) => {
   await sql`select 1`;

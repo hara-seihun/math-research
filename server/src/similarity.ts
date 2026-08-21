@@ -28,7 +28,7 @@ import { createHash } from "node:crypto";
 /** Bumped whenever a normalizer changes what it produces. Stored rows carry
  *  it, so a change is a backfill the tooling can find rather than a corpus
  *  half-written in two conventions. */
-export const NORM_VERSION = 1;
+export const NORM_VERSION = 2;
 
 // --- Alpha normalization ------
 
@@ -301,7 +301,10 @@ function arrowize(tokens: string[]): string[] {
     if (group.open !== "(" || group.names.some(used)) telescope.push(group);
     else {
       flush();
-      out.push(...group.type, "→");
+      // The pretty printer brackets a hypothesis whose own scope would
+      // otherwise swallow the arrow, and this has to agree with it.
+      const binds = group.type.some((t) => t === "→" || BINDER_HEAD.has(t));
+      out.push(...(binds ? ["(", ...group.type, ")"] : group.type), "→");
     }
   });
   flush();
@@ -390,16 +393,62 @@ export function extractDecls(source: string): LeanDecl[] {
   return out.map((d) => ({ ...d, source: d.source.trimEnd() }));
 }
 
+// --- Shingle sketches ------
+// Normalization is what makes a trigram index useless: every normalized
+// statement is mostly `§0`, brackets and arrows, so `norm % query` recalls a
+// third of the corpus and takes seven seconds (measured, on 511k rows).
+// Banded minhash asks the opposite question — do these two share whole runs of
+// rare shingles — and answers it with one equality probe per band.
+
+const SKETCH = 64;
+const BAND = 4;
+
+function shingleHashes(s: string): Set<number> {
+  const out = new Set<number>();
+  for (let i = 0; i + 6 <= s.length; i++) {
+    let h = 2166136261;
+    for (let j = i; j < i + 6; j++) h = Math.imul(h ^ s.charCodeAt(j), 16777619);
+    out.add(h >>> 0);
+  }
+  return out;
+}
+
+export function sketch(s: string): Int32Array {
+  const out = new Int32Array(SKETCH).fill(0x7fffffff);
+  for (const h of shingleHashes(s)) {
+    for (let i = 0; i < SKETCH; i++) {
+      const v = Math.imul(h ^ (i * 0x9e3779b1), 0x85ebca6b) >>> 1;
+      if (v < out[i]!) out[i] = v;
+    }
+  }
+  return out;
+}
+
+/** The sketch as `SKETCH / BAND` band signatures. Two units that agree on any
+ *  one band are worth comparing properly; the rest of the corpus is not. */
+export function bands(normalized: string): number[] {
+  const sk = sketch(normalized);
+  const out: number[] = [];
+  for (let b = 0; b < SKETCH / BAND; b++) {
+    let h = Math.imul(b + 1, 0x9e3779b1);
+    for (let i = 0; i < BAND; i++) h = Math.imul(h ^ sk[b * BAND + i]!, 0x85ebca6b);
+    out.push(h | 0);
+  }
+  return [...new Set(out)];
+}
+
 /** The stored form of one declaration: what it says with every arbitrary name
  *  replaced by its position, the hash that makes alpha-equality an indexed
- *  lookup, and whether Lean wrote it rather than a person. */
-export type NormalizedDecl = { norm: string; norm_hash: string; generated: boolean };
+ *  lookup, the band signatures that make near-equality one, and whether Lean
+ *  wrote it rather than a person. */
+export type NormalizedDecl = { norm: string; norm_hash: string; bands: number[]; generated: boolean };
 
 export function normalizeDecl(name: string, statement: string): NormalizedDecl {
   const norm = alphaLean(statement);
   return {
     norm,
     norm_hash: createHash("sha256").update(norm).digest("hex"),
+    bands: bands(norm),
     generated: isGenerated(name),
   };
 }

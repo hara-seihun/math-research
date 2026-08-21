@@ -1,5 +1,5 @@
 import { parentPort } from "node:worker_threads";
-import { alphaLean, alphaProse, prepare, similarity } from "./similarity.ts";
+import { alphaLean, alphaProse, bands, prepare, similarity } from "./similarity.ts";
 
 // Alpha normalization and compression distance are the one stretch of request
 // handling that is pure CPU with no await in it: a hundred and fifty units
@@ -29,40 +29,16 @@ function rank(job: Extract<NcdJob, { kind: "rank" }>): Scored[] {
   }));
 }
 
-// Shingle sketches decide who is worth compressing against whom. All-pairs NCD
-// over a module is quadratic in the thing agents most want scanned; banded
-// minhash makes the pair count linear in what is actually near-duplicate, and
-// NCD then scores only those pairs. The sketch is never the answer: it decides
-// what to look at.
-const SKETCH = 64;
-const BAND = 4;
-
-function sketch(s: string): Int32Array {
-  const seen = new Set<number>();
-  for (let i = 0; i + 6 <= s.length; i++) {
-    let h = 2166136261;
-    for (let j = i; j < i + 6; j++) h = Math.imul(h ^ s.charCodeAt(j), 16777619);
-    seen.add(h >>> 0);
-  }
-  const out = new Int32Array(SKETCH).fill(0x7fffffff);
-  for (const h of seen) {
-    for (let i = 0; i < SKETCH; i++) {
-      const v = Math.imul(h ^ (i * 0x9e3779b1), 0x85ebca6b) >>> 1;
-      if (v < out[i]!) out[i] = v;
-    }
-  }
-  return out;
-}
-
+// All-pairs NCD over a module is quadratic in the thing agents most want
+// scanned. The band signatures make the pair count linear in what is actually
+// near-duplicate, and NCD then scores only those pairs — the same signatures
+// the corpus is indexed by, so a scan here and a lookup in Postgres agree
+// about who is worth comparing.
 function cluster(job: Extract<NcdJob, { kind: "cluster" }>): { pairs: Pair[]; compared: number } {
   const texts = job.units.map((u) => (job.normalized ? u.text : normalize(job.mode, u.text)));
-  const buckets = new Map<string, number[]>();
+  const buckets = new Map<number, number[]>();
   texts.forEach((text, i) => {
-    const sk = sketch(text);
-    for (let b = 0; b < SKETCH / BAND; b++) {
-      const key = `${b}:${sk[b * BAND]},${sk[b * BAND + 1]},${sk[b * BAND + 2]},${sk[b * BAND + 3]}`;
-      (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(i);
-    }
+    for (const band of bands(text)) (buckets.get(band) ?? buckets.set(band, []).get(band)!).push(i);
   });
 
   const seen = new Set<number>();

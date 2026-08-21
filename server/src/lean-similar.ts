@@ -8,12 +8,13 @@
  *
  *   - **the same statement, differently named** is an indexed equality on
  *     `norm_hash` — free, exact, and the strongest thing this can say;
- *   - **nearly the same statement** is a trigram prefilter over that same
- *     normalized column (so the prefilter sees structure rather than the names
- *     it is about to discard) followed by alpha-normalized NCD in the worker;
- *   - **a whole namespace at once** is banded-minhash bucketing inside the
- *     worker, so a scan of a module is linear in what is actually similar
- *     rather than quadratic in what it contains.
+ *   - **nearly the same statement** is a band-overlap lookup against the
+ *     minhash signatures of that same normalized form (so the prefilter sees
+ *     structure rather than the names it is about to discard) followed by
+ *     alpha-normalized NCD in the worker, which does the ranking;
+ *   - **a whole namespace at once** is the same banding inside the worker, so
+ *     a scan of a module is linear in what is actually similar rather than
+ *     quadratic in what it contains.
  *
  * Lean's own generated declarations — `.injEq`, `.mk`, match equations,
  * recursors — are classified out of every answer here. They are structurally
@@ -21,9 +22,8 @@
  * them, and nobody can deduplicate them.
  */
 import { sql } from "./db.ts";
-import type { Tx } from "./graph.ts";
 import { clusterBySimilarity, rankBySimilarity } from "./ncd.ts";
-import { alphaLean, extractDecls, NORM_VERSION, normalizeDecl, statementForm } from "./similarity.ts";
+import { alphaLean, bands, extractDecls, NORM_VERSION, normalizeDecl, statementForm } from "./similarity.ts";
 
 export type LeanMatch = {
   origin: "library" | "ledger";
@@ -66,35 +66,31 @@ const exactMatches = (normHash: string, limit: number) => sql<DeclRow[]>`
    from lean_unit_entry u
    where u.norm_hash = ${normHash} and not u.generated and u.status = 'active' limit ${limit})`;
 
-/** Structurally near rows, nominated by trigram overlap on the normalized
- *  statement. The threshold is deliberately low: this only decides what NCD
- *  gets to look at, and a miss here is a match the tool can never make. */
-const nearCandidates = (norm: string, opts: { library?: string; module?: string; ledgerOnly?: boolean }) =>
-  sql.begin(async (tx: Tx) => {
-    await tx`select set_config('pg_trgm.similarity_threshold', '0.35', true)`;
-    const probe = norm.slice(0, 1500);
-    const library = opts.library ?? null;
-    const module = opts.module ?? null;
-    const libraryRows = opts.ledgerOnly
-      ? []
-      : await tx<DeclRow[]>`
-          select 'library' as origin, d.name, d.statement, d.is_proof, d.norm, d.norm_hash,
-                 d.module, d.library, null as contribution_id, null as title, null::int as tier
-          from lean_decl d
-          where d.norm % ${probe} and not d.generated
-            and (${library}::text is null or d.library = ${library})
-            and (${module}::text is null or d.module = ${module} or d.module like ${module ? `${module}.%` : null})
-          order by similarity(d.norm, ${probe}) desc
-          limit ${PREFILTER}`;
-    const ledgerRows = await tx<DeclRow[]>`
-      select 'ledger' as origin, u.name, u.statement, u.is_proof, u.norm, u.norm_hash,
-             null as module, null as library, u.contribution_id::text, u.title, u.tier
-      from lean_unit_entry u
-      where u.norm % ${probe} and not u.generated and u.status = 'active'
-      order by similarity(u.norm, ${probe}) desc
-      limit ${PREFILTER}`;
-    return [...libraryRows, ...ledgerRows];
-  });
+/** Structurally near rows: everything sharing a band signature with the query.
+ *  Ordering is left to NCD in the worker, because the bands only decide what
+ *  gets looked at — and a miss here is a match the tool can never make. */
+async function nearCandidates(norm: string, opts: { library?: string; module?: string; ledgerOnly?: boolean }) {
+  const probe = bands(norm);
+  const library = opts.library ?? null;
+  const module = opts.module ?? null;
+  const libraryRows = opts.ledgerOnly
+    ? []
+    : await sql<DeclRow[]>`
+        select 'library' as origin, d.name, d.statement, d.is_proof, d.norm, d.norm_hash,
+               d.module, d.library, null as contribution_id, null as title, null::int as tier
+        from lean_decl d
+        where d.bands && ${probe} and not d.generated
+          and (${library}::text is null or d.library = ${library})
+          and (${module}::text is null or d.module = ${module} or d.module like ${module ? `${module}.%` : null})
+        limit ${PREFILTER}`;
+  const ledgerRows = await sql<DeclRow[]>`
+    select 'ledger' as origin, u.name, u.statement, u.is_proof, u.norm, u.norm_hash,
+           null as module, null as library, u.contribution_id::text, u.title, u.tier
+    from lean_unit_entry u
+    where u.bands && ${probe} and not u.generated and u.status = 'active'
+    limit ${PREFILTER}`;
+  return [...libraryRows, ...ledgerRows];
+}
 
 const asMatch = (row: DeclRow, similarity: number, exact: boolean): LeanMatch => ({
   origin: row.origin,
@@ -289,7 +285,7 @@ export async function scanDuplicates(args: ScanArgs): Promise<ScanResult | { err
 export async function recordUnits(checkHash: string, decls: { name: string; type: string; proof?: boolean }[]): Promise<void> {
   if (decls.length === 0) return;
   const rows = decls.map((d) => {
-    const { norm, norm_hash, generated } = normalizeDecl(d.name, d.type);
+    const { norm, norm_hash, bands, generated } = normalizeDecl(d.name, d.type);
     return {
       check_hash: checkHash,
       name: d.name,
@@ -298,12 +294,14 @@ export async function recordUnits(checkHash: string, decls: { name: string; type
       norm,
       norm_hash,
       norm_v: NORM_VERSION,
+      bands,
       generated,
     };
   });
   await sql`insert into lean_unit ${sql(rows as never)} on conflict (check_hash, name) do update set
               statement = excluded.statement, is_proof = excluded.is_proof, norm = excluded.norm,
-              norm_hash = excluded.norm_hash, norm_v = excluded.norm_v, generated = excluded.generated`;
+              norm_hash = excluded.norm_hash, norm_v = excluded.norm_v, bands = excluded.bands,
+              generated = excluded.generated`;
 }
 
 /** The normalized form of arbitrary Lean, for callers who want to see what the

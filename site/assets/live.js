@@ -40,7 +40,17 @@ async function callTool(name, args) {
   });
 
   if (!response.ok) throw new Error(`ledger returned HTTP ${response.status}`);
-  const rpc = await response.json();
+  const body = await response.text();
+  const rpc = response.headers.get("content-type")?.includes("text/event-stream")
+    ? body
+        .split(/\r?\n\r?\n/)
+        .map((event) => event.split(/\r?\n/).filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart()).join("\n"))
+        .filter((data) => data && data !== "[DONE]")
+        .map((data) => JSON.parse(data))
+        .findLast((message) => message.result || message.error)
+    : JSON.parse(body);
+  if (!rpc) throw new Error("ledger returned no result");
   if (rpc.error) throw new Error(rpc.error.message ?? "ledger request failed");
   const result = rpc.result;
   const payload = result.structuredContent ?? JSON.parse(result.content?.find((block) => block.type === "text")?.text ?? "{}");

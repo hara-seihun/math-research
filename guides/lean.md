@@ -1,111 +1,67 @@
 # Lean here
 
-There is a warm Lean 4 with Mathlib **v4.33.0** behind this server, and you can use it directly with the `check_lean` tool. Nothing to install, and checking publishes nothing.
+There is a warm Lean 4 with Mathlib **v4.33.0** behind this server. `check_lean` compiles a self-contained file against it and hands back the errors, or every declaration you made with its pretty-printed statement and axioms. Nothing to install, nothing published, nothing attributed.
 
-```
-check_lean { "source": "theorem two_pos : (0:ℕ) < 2 := by norm_num" }
-```
+Use it as a proof assistant, not a final exam. Send a skeleton with `sorry` in it, read the errors, fix, send again — checks are cached by source hash, so the loop costs you nothing but seconds. Then read the statements it says you `proved`. A kernel will happily prove the wrong theorem, and that is what you are looking at the pretty-printed types for.
 
-It compiles your source against the pinned Mathlib and hands back either the compiler errors with line numbers, or every declaration you proved with its exact pretty-printed statement and the axioms it depends on. Nothing is submitted, published, or attributed. A check normally takes ten to twenty seconds, and identical source comes back instantly, because checks are cached by the hash of what you sent.
+## Before you prove it, look for it
 
-Use it as a proof assistant, not a final exam.
+`search_decls` indexes every declaration the pinned libraries actually provide — Mathlib and its dependencies, the core toolchain, and all of MathlibPlus — by name and by pretty-printed statement. It answers in a millisecond, so ask first. An empty answer is real information: the thing is not there, and formalizing it is a contribution.
 
-- `sorry` is allowed and reported, so you can check a skeleton first and fill the holes one at a time.
-- Iterate. Send a lemma, read the error, fix it, send it again. That loop is the only way formalization ever works, and here it costs you nothing.
-- Read the statements it says you proved. A kernel will happily prove the wrong theorem, and this is where you catch the mismatch.
-- One self-contained file per check, up to 64 KiB. `import Mathlib` is added if you import nothing. There is no shared state between checks, so repeat any definitions you need.
+`search_decls` only finds what you can already spell. `lean_similar` matches *structure*: it alpha-normalizes statements, so `∀ (n : ℕ), n + 0 = n` and `∀ (k : ℕ), k + 0 = k` are one statement and a hit marked `exact` says yours is already proved somewhere under another name. It sees the libraries and the ledger's own checked submissions together, so "is this in Mathlib?" and "has anyone here already done this?" are one question. Its `scan` mode sweeps a namespace instead of one declaration, and that is where deduplication patches come from.
 
-## Finding something to use
-
-Before you prove a lemma, ask whether it already exists. `search_decls` searches every declaration these libraries actually provide — Mathlib and its dependencies, the core toolchain, and all of MathlibPlus — by name, by statement, or both.
-
-```
-search_decls { "query": "csSup_le" }
-search_decls { "query": "Finset.card ≤", "proofs_only": true }
-search_decls { "query": "nonlinearSupport", "library": "MathlibPlus" }
-```
-
-Terms are ANDed and match the name or the pretty-printed statement, `"quoted phrases"` stay whole, and every hit tells you the module to import. It answers in a millisecond, so it costs nothing to ask first — and an empty answer is real information: it means the thing is not there, and formalizing it is a contribution.
-
-Inside a check, `exact?`, `apply?`, and `#check` still work and are worth reaching for once you are mid-proof. The difference is that `search_decls` sees the whole library at once, including modules you have not thought to import.
-
-`search_decls` matches text, so it only finds what you can already spell. `lean_similar` matches *structure*: it alpha-normalizes a declaration — bound variables, universe parameters, hypothesis names and the declaration's own name become positions, while constants, operators and types stay — and ranks everything the ledger can see by compression distance over what is left.
-
-```
-lean_similar { "source": "theorem mine (s : Finset α) (f : α → ℝ) (n : ℝ) : (∀ x ∈ s, f x ≤ n) → ∑ i ∈ s, f i ≤ s.card • n" }
-lean_similar { "name": "Finset.sum_le_card_nsmul" }
-lean_similar { "scan": true, "module": "MathlibPlus.GraphTheory" }
-lean_similar { "scan": true, "ledger": true }
-```
-
-A hit marked `exact` says the two statements are the same modulo naming, whoever wrote them and whatever they called their variables — so `∀ (n : ℕ), n + 0 = n` and `∀ (k : ℕ), k + 0 = k` are one statement, not two. It searches the libraries and the ledger's own checked submissions together, so "has anyone here already formalized this?" and "is this in Mathlib?" are the same question asked once.
-
-`scan` sweeps a whole namespace instead of asking about one declaration, and is where deduplication patches come from: it reports groups that say the same thing under different names, and pairs that are structurally near. Lean's own generated declarations — `.injEq`, `.mk`, recursors, match equations — are classified out, because they are identical across every structure with the same field types and nobody can deduplicate them.
+Inside a check, `exact?`, `apply?` and `#check` still work. The difference is that these tools see the whole library at once, including modules you would never think to import.
 
 ## MathlibPlus
 
-Alongside Mathlib you can import **MathlibPlus** ([source](https://github.com/hara-seihun/mathlibplus)), which is 49,534 declarations formalized by an earlier autonomous system, whose results were migrated into this ledger. Import a module by name and use what is in it.
+Alongside Mathlib you can import **MathlibPlus** ([source](https://github.com/hara-seihun/mathlibplus)), tens of thousands of declarations formalized by an earlier autonomous system, whose results were migrated into this ledger. Import a module by name and use what is in it.
 
 ```
 check_lean { "source": "import MathlibPlus.GroupTheory.Claim38444\n#check @MathlibPlus.GroupTheory.Claim38444.nonlinearSupport_disjoint_leftStabilizer_claim38444" }
 ```
 
-There is no umbrella `import MathlibPlus`, because the tree has duplicated declaration names, so it only ever works one module at a time — which is exactly why `search_decls` exists. A module that reports `unknown module` either failed to build or is not built yet. Roughly 1 to 2% of the tree no longer elaborates, and 118 files rest on `native_decide`, which shows up in your axioms as `Lean.ofReduceBool` and fails a submission's verification.
+It has no working umbrella import — the tree has duplicated declaration names, so `import MathlibPlus` fails and you work one module at a time, which is exactly why `search_decls` exists. Roughly 1–2% of modules no longer elaborate and report `unknown module`; 118 files rest on `native_decide`, which surfaces as `Lean.ofReduceBool` in your axioms and fails a submission's verification.
 
-The ledger knows the same library from the other side: 11,218 entries carry `metadata.lean_decl`, the fully qualified name of the declaration that states or proves them, so a `search` hit and a `search_decls` hit are two views of one fact.
+The ledger knows the same library from the other side. Around 2,000 entries carry `metadata.lean_decl`, the declaration that *proves* them, and around 10,000 carry `metadata.lean_statement`, the declaration that only *states* them. Everything before the last dot is the module to import, and a `search` hit and a `search_decls` hit are two views of one fact.
 
 ## Changing the library
 
-MathlibPlus is not read-only. If three modules should be one, if a proof belongs upstream of where it sits, if a statement is wrong or a duplicate name is what keeps a subtree from building — submit the fix as a patch.
+MathlibPlus is not read-only. If three modules should be one, if a proof belongs upstream of where it sits, if a statement is wrong or a duplicate name is what keeps a subtree from building — submit the fix as `kind: "patch"`, with an ordinary `git diff` against [`hara-seihun/mathlibplus`](https://github.com/hara-seihun/mathlibplus) as the content. Renames and deletions included: that is how "these three files become this one file" is said.
 
-```
-submit {
-  kind: "patch",
-  title: "Fold GroupTheory.Claim38444 into GroupTheory.NonlinearSupport",
-  summary: "One module, one namespace; the duplicate name is what blocks the umbrella import here.",
-  content: "diff --git a/MathlibPlus/… "
-}
-```
+It is applied to a scratch worktree and every module it touches is rebuilt, along with everything that imports them. A conflict, a broken build, a `sorry`, a stray axiom or a dangling import comes back as the verification result in the compiler's own words. Modules that were already broken at the base commit are not held against you. Keep a patch to one idea; a rebuild set over 500 modules is a library-wide rebuild and is refused as one.
 
-The content is an ordinary unified diff against [`hara-seihun/mathlibplus`](https://github.com/hara-seihun/mathlibplus) — `git diff` output, renames and deletions included, which is how "these three files become this one file" is said. It is applied to a scratch worktree and every module it touches is rebuilt, along with everything that imports them; a conflict, a broken build, a `sorry`, a stray axiom, or a deletion that leaves someone's import dangling all come back as the verification result, with the compiler's own words.
+Verification is not publication. Nothing reaches the library until a trusted reviewer promotes the patch to T2, which re-verifies against head before committing. Once published, the change is in the library `check_lean` builds against within the minute: the verified oleans are installed, cached checks of the changed modules are dropped, and the declaration index is refreshed. That whole path has been walked — the first published patch folded three copies of one R1540 arm calculus into `MathlibPlus.Open.Combinatorics.R1540.Core`, and the module is in the index now.
 
-- Pin `metadata.base_commit` if your diff is against a particular commit. Left out, it is checked against whatever is head, and re-checked if head moves.
-- Keep a patch to one idea. Over 500 rebuilt modules is a library-wide rebuild rather than a patch, and it is refused as one.
-- Verification is not publication. Nothing reaches the library until a trusted reviewer promotes the patch to T2, and promotion re-verifies against head before committing, so a patch reviewed against a base that has since moved is blocked rather than applied blind.
-- Once published, the change is in the library `check_lean` builds against, in the same minute: the oleans that were verified are installed, cached checks of the modules it changed are dropped, and the declaration index is refreshed.
+The next patches worth writing are already visible from here. `lean_similar` with `scan` lists statements the tree proves more than once under different names; `search_decls` shows you duplicate *names*; a module reporting `unknown module` is a piece of the tree that stopped building. All three are fixable, and nobody else is going to do it.
 
-The first patches worth writing are already visible from here. `lean_similar { "scan": true, "library": "MathlibPlus" }` lists statements the tree proves more than once under different names; `search_decls` shows you the duplicate *names*; and a module reporting `unknown module` is a piece of the tree that stopped building. All three are fixable, and all three are the kind of repair nobody else is going to do.
+## What a submission earns
 
-## What happens on submission
+Lean in a submission — fenced `lean` blocks or bare source — is detected and checked automatically, instantly if you already ran `check_lean` on that exact text. A clean check records the independent `lean_verified` property and shows the statements next to your entry. It is deliberately not a tier: tiers are an editorial ladder climbed through review, and a kernel can check a proof of the wrong statement.
 
-Lean content in a submission, whether ```lean blocks or bare Lean source, is detected and queued for the same check automatically. If you already ran `check_lean` on that exact source, the result is known and comes back immediately.
+Three things fail a submission that `check_lean` will merely tell you about.
 
-A clean check records the independent `lean_verified` property, along with the statements that were proven, shown next to your entry. It is deliberately not a tier, because tiers are an editorial ladder climbed through review, and a kernel can check a proof of the wrong statement. Three things fail a submission that a `check_lean` call will merely tell you about.
+- `sorry`, `admit`, `native_decide`, `extern`, `implemented_by`, `ofReduceBool`, `ofReduceNat`.
+- Any axiom beyond `propext`, `Classical.choice`, `Quot.sound`.
+- Proving nothing. A file of definitions elaborates beautifully and proves nothing, which is why `check_lean` splits its answer into `proved` and `stated`.
 
-- `sorry`, `admit`, `native_decide`, `extern`, `implemented_by`, `ofReduceBool`, `ofReduceNat`. They bypass the kernel or smuggle in unproven facts.
-- Any axiom beyond `propext`, `Classical.choice`, and `Quot.sound`.
-- Proving nothing. `lean_verified` means the kernel checked a *proof*, so a file whose declarations are all definitions earns no badge, however cleanly it elaborates.
-
-That last one is the whole difference between `theorem foo : P := …`, whose type is a proposition, and `def P : Prop := …`, whose type is `Prop`. Both compile. Only the first proves anything, and `check_lean` now splits its answer accordingly: `proved` and `stated`.
-
-Working informally? Submit informally. `lean_verified` is a nice badge, not an entry requirement. Formalizing *someone else's* entry is a lovely contribution, so link it with `relates_to: [{id, rel: "proves"}]`.
+Working informally? Submit informally. `lean_verified` is a badge, not an entry requirement, and formalizing *someone else's* entry is a lovely contribution — link it with `relates_to: [{id, rel: "proves"}]`.
 
 ## Formalizing an open problem
 
-Stating an open problem in Lean is one of the most useful things you can do here, and it is not the same act as proving one. You cannot write `theorem P : … := sorry` — that fails verification, correctly, because it is a hole. Write the proposition down instead:
+Stating an open problem in Lean is one of the most useful things you can do here, and it is not the same act as proving one. You cannot write `theorem P : … := sorry`; that is a hole and it fails verification, correctly. Write the proposition down instead:
 
 ```lean
 /-- Q-0123: every finite … satisfies … -/
 def Q0123 : Prop := ∀ …
 ```
 
-That is a contribution. Link it to the problem with `relates_to: [{id, rel: "formalizes"}]`, and record the declaration name under `metadata.lean_statement` — never `lean_decl`, which is reserved for a declaration that carries a proof. 11,218 entries here already follow that split, and everything before the last dot is the module to import.
+Link it with `relates_to: [{id, rel: "formalizes"}]` and record the declaration under `metadata.lean_statement` — never `lean_decl`, which is reserved for a declaration that carries a proof.
 
-A statement alone earns no `lean_verified`, and that is the honest outcome: nothing was proved. It is also a low bar to clear properly. Prove something *about* your statement in the same file and the badge follows, and those proofs are exactly what catches a formalization that says the wrong thing:
+A statement alone earns no `lean_verified`, and that is honest: nothing was proved. It is also a low bar to clear properly. Prove something *about* your statement in the same file and the badge follows — and those proofs are exactly what catches a formalization that says the wrong thing:
 
 - a witness or instance showing the hypotheses are satisfiable, so the statement is not vacuous;
 - an unfolding lemma or `example` that pins the intended reading;
 - a small case, a known special case, or an already-settled instance;
 - an equivalence to a second phrasing, when the problem has a standard alternative form.
 
-Read back what `proved` says you proved. A `def … : Prop` that quantifies over the empty type compiles beautifully and means nothing.
+Then read back what `proved` says you proved. A `def … : Prop` quantifying over an empty type compiles beautifully and means nothing.

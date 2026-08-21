@@ -15,10 +15,27 @@
  * rebuild of the index.
  */
 import { sql } from "../server/src/db.ts";
-import { NORM_VERSION, normalizeDecl } from "../server/src/similarity.ts";
+import { NORM_VERSION, normalizeDecl, type NormalizedDecl } from "../server/src/similarity.ts";
 
 const all = process.argv.includes("--all");
 const BATCH = 5000;
+const workers = Array.from({ length: Math.min(8, navigator.hardwareConcurrency) }, () =>
+  new Worker(new URL("./normalize-lean-worker.ts", import.meta.url).href),
+);
+
+async function normalizeRows(rows: { name: string; statement: string }[]): Promise<NormalizedDecl[]> {
+  const width = Math.ceil(rows.length / workers.length);
+  const jobs = workers.map((worker, i) => {
+    const chunk = rows.slice(i * width, (i + 1) * width);
+    if (chunk.length === 0) return Promise.resolve([] as NormalizedDecl[]);
+    return new Promise<NormalizedDecl[]>((resolve, reject) => {
+      worker.onmessage = (event: MessageEvent<NormalizedDecl[]>) => resolve(event.data);
+      worker.onerror = (event) => reject(new Error(event.message));
+      worker.postMessage(chunk);
+    });
+  });
+  return (await Promise.all(jobs)).flat();
+}
 
 async function backfillDecls(): Promise<number> {
   let done = 0;
@@ -32,8 +49,9 @@ async function backfillDecls(): Promise<number> {
       order by module, name
       limit ${BATCH}`;
     if (rows.length === 0) return done;
-    const values = rows.map((row) => {
-      const { norm, norm_hash, bands, generated } = normalizeDecl(row.name, row.statement);
+    const normalized = await normalizeRows(rows);
+    const values = rows.map((row, i) => {
+      const { norm, norm_hash, bands, generated } = normalized[i]!;
       return [row.module, row.name, norm, norm_hash, String(NORM_VERSION), `{${bands.join(",")}}`, String(generated)];
     });
     // Every column of a VALUES list arrives as text over the wire, so the
@@ -95,8 +113,9 @@ async function backfillUnits(): Promise<number> {
       order by check_hash, name
       limit ${BATCH}`;
     if (rows.length === 0) return done;
-    const values = rows.map((row) => {
-      const { norm, norm_hash, bands, generated } = normalizeDecl(row.name, row.statement);
+    const normalized = await normalizeRows(rows);
+    const values = rows.map((row, i) => {
+      const { norm, norm_hash, bands, generated } = normalized[i]!;
       return [row.check_hash, row.name, norm, norm_hash, String(NORM_VERSION), `{${bands.join(",")}}`, String(generated)];
     });
     await sql`
@@ -114,8 +133,12 @@ async function backfillUnits(): Promise<number> {
 }
 
 const started = Date.now();
-const adopted = await adoptChecks();
-const units = await backfillUnits();
-const decls = await backfillDecls();
-console.log(`\nnormalizer v${NORM_VERSION}: ${decls} library declarations, ${units} ledger units (${adopted} adopted from checks) in ${((Date.now() - started) / 1000).toFixed(1)}s`);
-await sql.end();
+try {
+  const adopted = await adoptChecks();
+  const units = await backfillUnits();
+  const decls = await backfillDecls();
+  console.log(`\nnormalizer v${NORM_VERSION}: ${decls} library declarations, ${units} ledger units (${adopted} adopted from checks) in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+} finally {
+  for (const worker of workers) worker.terminate();
+  await sql.end();
+}

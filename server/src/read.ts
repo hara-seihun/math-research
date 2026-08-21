@@ -126,6 +126,11 @@ export function listRow(r: Record<string, unknown>) {
     ...(r.state ? { state: r.state } : {}),
     tier: r.tier,
     ...(r.lean_verified ? { lean_verified: true } : {}),
+    // Priority, printed only when it is news: ledger origin is the default and
+    // saying so on every row of every list would cost more than it tells.
+    ...(r.origin === "external"
+      ? { origin: "external", ...(r.origin_source ? { origin_source: r.origin_source } : {}) }
+      : {}),
     notability: r.notability,
     ...(r.ranking ? { ranking: r.ranking } : {}),
     ...(summary ? { summary } : {}),
@@ -143,8 +148,8 @@ export function listRow(r: Record<string, unknown>) {
 /** What settles a question, and what is still in the way. */
 export async function settlement(id: string) {
   const answers = await sql`
-    select s.id, s.kind, s.title, s.tier, s.notability, s.state, s.summary, e.rel, ec.tier as edge_tier,
-           e.created_at as linked_at
+    select s.id, s.kind, s.title, s.tier, s.notability, s.state, s.summary, s.origin, s.origin_source,
+           e.rel, ec.tier as edge_tier, e.created_at as linked_at
     from edge e join contribution ec on ec.id = e.contribution_id
     join contribution_overview s on s.id = e.src
     where e.dst = ${id} and ec.status = 'active' and s.status = 'active'

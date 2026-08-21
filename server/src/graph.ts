@@ -47,6 +47,7 @@ export type SearchArgs = {
   front?: string;
   lean_verified?: boolean;
   min_tier?: number;
+  origin?: "ledger" | "external";
   since?: Date;
   include_inactive?: boolean;
   limit: number;
@@ -81,6 +82,7 @@ export async function searchContributions(args: SearchArgs) {
     and (${args.topic ?? null}::text is null or c.tags @> array[${args.topic ?? null}]::text[])
     and (${args.lean_verified ?? null}::bool is null or c.lean_verified = ${args.lean_verified ?? false})
     and (${args.min_tier ?? null}::int is null or c.tier >= ${args.min_tier ?? 0})
+    and (${args.origin ?? null}::text is null or c.origin = ${args.origin ?? null})
     and (${args.since ?? null}::timestamptz is null or c.created_at >= ${args.since ?? null})
     and (${args.include_inactive ?? false} or c.status = 'active')
     and (${args.front ?? null}::uuid is null or exists (
@@ -89,7 +91,7 @@ export async function searchContributions(args: SearchArgs) {
             and e.rel = 'in-front' and ec.status = 'active'))`;
 
   const columns = sql`c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.tags, c.names,
-                      c.created_at, c.lean_verified, c.notability`;
+                      c.created_at, c.lean_verified, c.notability, c.origin, c.origin_source`;
 
   // Pass one: the text index. A query whose terms appear anywhere in the
   // corpus is answered entirely here, off contribution_search_idx.
@@ -101,7 +103,7 @@ export async function searchContributions(args: SearchArgs) {
       from contribution c
       where c.search @@ to_tsquery('english', ${any}) and ${filters})
     select id, kind, title, summary, tier, status, state, tags, names, created_at,
-           lean_verified, notability,
+           lean_verified, notability, origin, origin_source,
            case when complete then 'every term' else 'some terms' end as matched,
            round(text_rank::numeric, 4)::float8 as score
     from hit

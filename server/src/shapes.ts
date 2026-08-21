@@ -68,6 +68,8 @@ export const ListRow = z
     state: z.string().optional().describe("Derived work state (open/settled/retired); only work items carry one."),
     tier: z.number().int().describe("Review tier: 0 recorded, 1 confirmed, 2 canon, 3 published."),
     lean_verified: z.literal(true).optional(),
+    origin: z.literal("external").optional().describe("Present only when the headline claim was established outside this ledger; ledger origin is the default and is not printed."),
+    origin_source: z.string().optional().describe("What established an external-origin entry."),
     notability: z.number(),
     ranking: z
       .strictObject({
@@ -100,7 +102,11 @@ export const ListRow = z
     similarity: z.number().optional(),
     answers: z.number().int().optional().describe("How many active entries answer/prove/refute this."),
     settled_by: z
-      .array(z.strictObject({ id: z.string(), kind: z.string(), title: z.string(), tier: z.number().int() }))
+      .array(z.strictObject({
+        id: z.string(), kind: z.string(), title: z.string(), tier: z.number().int(),
+        origin: z.literal("external").optional(),
+        origin_source: z.string().optional(),
+      }))
       .optional()
       .describe("For a settled question on a browse page: the active entries that answer/prove/disprove/refute/resolve it, most notable first (up to 3)."),
     existing_links: z
@@ -317,6 +323,8 @@ export const GetOut = z.strictObject({
   created_at: iso,
   updated_at: iso,
   lean_verified: z.boolean(),
+  origin: z.enum(["ledger", "external"]).describe("Priority: 'ledger' if the headline claim was first established here, 'external' if it was already established elsewhere."),
+  origin_source: z.string().optional().describe("What established it, when origin is 'external'."),
   content: z.string(),
   media_type: z.string(),
   author: z.string().nullable(),
@@ -624,7 +632,7 @@ export const ReviewQueueOut = z.strictObject({
   tip: z.string().optional(),
   backlog: z.strictObject({
     unreviewed: z.number().int(),
-    awaiting_decision: z.number().int().describe("Read at least once and still undecided: the limbo this queue is meant to drain."),
+    awaiting_decision: z.number().int().describe("Still at T0 and already read by someone: nobody ever decided these. The limbo this queue is meant to drain."),
     claimed_by_others: z.number().int().describe("Matching entries another reviewer holds right now, excluded from your page."),
     flagged: z.number().int().describe("Active entries something in the graph refutes or disputes. Read the objection, then promote or reject."),
     refactor_proposals: z.number().int(),
@@ -718,6 +726,18 @@ export const ReviewQueueOut = z.strictObject({
       updated_at: iso,
     }),
   ),
+});
+
+export const SetOriginOut = z.strictObject({
+  ok: z.literal(true),
+  id: z.string(),
+  title: z.string(),
+  origin: z.enum(["ledger", "external"]),
+  origin_source: z.string().nullable(),
+  note: z.string(),
+  left_the_board: z
+    .array(z.strictObject({ id: z.string(), title: z.string() }))
+    .describe("Questions this entry settles that no longer count as first established here, because nothing of ledger origin settles them."),
 });
 
 export const SetTierOut = z.strictObject({

@@ -14,6 +14,7 @@ export type SubmitInput = {
   media_type?: string;
   state?: string;
   metadata?: Record<string, unknown>;
+  external_source?: string;
   names?: string[];
   relates_to?: { id: string; rel: string; note?: string }[];
   supersedes?: string[];
@@ -41,6 +42,8 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
 
   const hash = sha256hex(content);
   const mediaType = input.media_type ?? (input.kind === "patch" ? "text/x-diff" : "text/markdown");
+  // Priority, declared by the author and correctable by review (set_origin).
+  const externalSource = input.external_source?.trim() || undefined;
 
   if (isPatchSubmission(input.kind, mediaType, content) && Buffer.byteLength(extractDiff(content)) > MAX_DIFF_BYTES) {
     return {
@@ -74,10 +77,12 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
     const [contribution] = await tx<
       { id: string; created_at: Date; artifact_hash: string; identity_id: string | null }[]
     >`
-      insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id, tags, names, state)
+      insert into contribution (kind, title, summary, artifact_hash, metadata, identity_id, tags, names, state,
+                                origin, origin_source)
       values (${input.kind}, ${input.title}, ${input.summary}, ${hash},
               ${sql.json((input.metadata ?? {}) as never)}, ${identityId}, classify_topics(${classifyText}), ${names}::text[],
-              ${input.state ?? null})
+              ${input.state ?? null},
+              ${externalSource ? "external" : "ledger"}, ${externalSource ?? null})
       returning id, created_at, artifact_hash, identity_id`;
 
     await tx`insert into event (kind, contribution_id, identity_id, payload)
@@ -98,6 +103,11 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
 
   if (existing) {
     notes.push(`identical content already exists as ${existing.id}, so I linked it for you.`);
+  }
+  if (externalSource) {
+    notes.push(
+      `recorded as external in origin, established by ${externalSource}. It counts as evidence and can settle a question here, but it stays off the all-time board of what this ledger established first.`,
+    );
   }
   const touched = [result.id, ...(input.relates_to ?? []).map((l) => l.id), ...(input.supersedes ?? [])];
   await refreshAround(touched);

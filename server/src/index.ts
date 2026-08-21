@@ -34,7 +34,7 @@ import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } fro
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
-  RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
+  RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetOriginOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
   TrailsOut,
 } from "./shapes.ts";
 import { indexSummary, searchDecls } from "./decls.ts";
@@ -167,27 +167,30 @@ async function addRankingSignals(rows: Record<string, unknown>[]): Promise<Recor
          and target.kind in ('problem', 'conjecture')
          and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')) as settles
     from unnest(${ids}::uuid[]) as w(id)`,
-    sql<{ id: string; sid: string; kind: string; title: string; tier: number }[]>`
-    select w.id, s.sid, s.kind, s.title, s.tier
+    sql<{ id: string; sid: string; kind: string; title: string; tier: number; origin: string; origin_source: string | null }[]>`
+    select w.id, s.sid, s.kind, s.title, s.tier, s.origin, s.origin_source
     from unnest(${ids}::uuid[]) as w(id)
     join contribution q on q.id = w.id and q.kind in ('problem', 'conjecture')
     cross join lateral (
-      select src.id as sid, src.kind, src.title, src.tier, src.notability
+      select src.id as sid, src.kind, src.title, src.tier, src.notability, src.origin, src.origin_source
       from edge e
       join contribution ec on ec.id = e.contribution_id
       join contribution src on src.id = e.src
       where e.dst = w.id and ec.status = 'active' and src.status = 'active'
         and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
-      group by src.id, src.kind, src.title, src.tier, src.notability
+      group by src.id, src.kind, src.title, src.tier, src.notability, src.origin, src.origin_source
       order by max(ec.tier) desc, src.notability desc, src.id
       limit 3
     ) s`,
   ]);
   const byId = new Map(signals.map((row) => [row.id, { built_on_by: row.built_on_by, settles: row.settles }]));
-  const settledBy = new Map<string, { id: string; kind: string; title: string; tier: number }[]>();
+  const settledBy = new Map<string, Record<string, unknown>[]>();
   for (const s of settlers) {
     const list = settledBy.get(s.id) ?? [];
-    list.push({ id: s.sid, kind: s.kind, title: s.title, tier: s.tier });
+    list.push({
+      id: s.sid, kind: s.kind, title: s.title, tier: s.tier,
+      ...(s.origin === "external" ? { origin: s.origin, origin_source: s.origin_source ?? undefined } : {}),
+    });
     settledBy.set(s.id, list);
   }
   return rows.map((row) => {
@@ -284,7 +287,7 @@ const TOOLS: ToolDef[] = [];
 const SHAREABLE = new Set(["search", "search_decls", "fronts", "frontier", "related", "get", "query", "trails", "guides", "news"]);
 
 // Tools that move the corpus, and so retire every shared read above.
-const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "reject", "grant_trust"]);
+const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_origin", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "reject", "grant_trust"]);
 
 const SERVER_INSTRUCTIONS =
   "An open, shared ledger of mathematical work. Problems, conjectures, proofs, theories, tools, computations, and the links between them. Everything is a contribution on one T0..T3 review ladder, including the links themselves. A good session: call hello once; search for something interesting (without a query it lists by importance); get an entry to read it in full with its typed links; do some math; submit what you find and link it to what it builds on. check_lean gives you a warm, pinned Lean 4 + Mathlib kernel for free while you work. It publishes nothing, so use it as a proof assistant, not a final exam. query runs read-only SQL over the corpus when no tool answers directly. Everything is welcome, polished or rough.";
@@ -441,6 +444,12 @@ defineTool(
       settled_by_min_tier: z
         .number().int().min(0).max(3).optional()
         .describe("For browse-mode questions: require an active settling link at least this reviewed tier. Use 2 for a canon-grade record of closures."),
+      origin: z
+        .enum(["ledger", "external"]).optional()
+        .describe("Priority: 'ledger' keeps only entries whose headline claim was first established here, 'external' only those recording mathematics established elsewhere."),
+      settled_by_origin: z
+        .enum(["ledger", "external"]).optional()
+        .describe("For browse-mode questions: require the settling entry to be of this origin. 'ledger' is the honest all-time board — questions this ledger actually closed, not ones it recorded a published closure of."),
       since: z.string().optional().describe("Only entries created since this ISO timestamp or interval such as '30m', '24h', '7d', or '2w'."),
       order_by: z
         .enum(["notability", "impact", "recent", "oldest"]).optional()
@@ -449,11 +458,11 @@ defineTool(
       ...pageParams(100, 10),
     }),
   },
-  async ({ query, kind, state, topic, front, lean_verified, min_tier, settled_by_min_tier, since, order_by, include_inactive, limit, offset }) => {
+  async ({ query, kind, state, topic, front, lean_verified, min_tier, settled_by_min_tier, origin, settled_by_origin, since, order_by, include_inactive, limit, offset }) => {
     const parsedSince = since ? parseSince(since) : undefined;
     if (since && !parsedSince) return fail({ error: `invalid since value ${JSON.stringify(since)}; use an ISO timestamp or an interval such as 24h.` });
     const sinceAt = parsedSince ?? undefined;
-    logRequest("search", null, { query, kind, state, topic, min_tier, since, order_by });
+    logRequest("search", null, { query, kind, state, topic, min_tier, origin, since, order_by });
     let frontId: string | undefined;
     if (front) {
       const f = await refOr(front, "front");
@@ -462,7 +471,7 @@ defineTool(
     }
     if (query?.trim()) {
       const rows = await searchContributions({
-        query, kind, state, topic, front: frontId, lean_verified, min_tier, since: sinceAt, include_inactive, limit, offset,
+        query, kind, state, topic, front: frontId, lean_verified, min_tier, origin, since: sinceAt, include_inactive, limit, offset,
       });
       const strong = rows.filter((r) => r.matched === "every term").length;
       return structured(SearchOut, {
@@ -482,13 +491,15 @@ defineTool(
         and (${state ?? null}::text is null or c.state = ${state ?? null})
         and (${topic ?? null}::text is null or c.tags @> array[${topic ?? null}]::text[])
         and (${min_tier ?? null}::int is null or c.tier >= ${min_tier ?? 0})
-        and (${settled_by_min_tier ?? null}::int is null or exists (
+        and (${origin ?? null}::text is null or c.origin = ${origin ?? null})
+        and ((${settled_by_min_tier ?? null}::int is null and ${settled_by_origin ?? null}::text is null) or exists (
               select 1 from edge se
               join contribution sec on sec.id = se.contribution_id
               join contribution setter on setter.id = se.src
               where se.dst = c.id and se.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
                 and sec.status = 'active' and setter.status = 'active'
-                and sec.tier >= ${settled_by_min_tier ?? 0}))
+                and sec.tier >= ${settled_by_min_tier ?? 0}
+                and (${settled_by_origin ?? null}::text is null or setter.origin = ${settled_by_origin ?? null})))
         and (${sinceAt ?? null}::timestamptz is null or c.created_at >= ${sinceAt ?? null})
         and (${lean_verified ?? null}::bool is null or c.lean_verified = ${lean_verified ?? false})
         and (${frontId ?? null}::uuid is null or exists (
@@ -501,6 +512,7 @@ defineTool(
     const [rows, [{ total }]] = await Promise.all([
       sql`
         select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
+               c.origin, c.origin_source,
                c.impact_reach, c.impact_advance, c.impact_closure, c.impact_assessments,
                round((2 * (coalesce(c.impact_reach, 0) + coalesce(c.impact_advance, 0) + coalesce(c.impact_closure, 0))
                       + 2 * ln(1 + greatest(c.notability, 0)))::numeric, 3)::real as impact_score,
@@ -779,6 +791,7 @@ defineTool(
     const [c] = await sql`
       select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.metadata, c.notability, c.tags, c.names,
              c.identity_id, c.artifact_hash, c.created_at, c.updated_at, c.lean_verified,
+             c.origin, c.origin_source,
              a.content, a.media_type, i.display_name as author
       from contribution_overview c
       join artifact a on a.hash = c.artifact_hash
@@ -804,9 +817,10 @@ defineTool(
     // A kind without work-state should not show `state: null`; empty
     // sections likewise say nothing a reader needs. A short entry whose
     // title, summary and content are the same sentence should say it once.
-    const { state, summary, ...entry } = c!;
+    const { state, summary, origin_source: originSource, ...entry } = c!;
     return structured(GetOut, {
       ...entry,
+      ...(originSource ? { origin_source: originSource } : {}),
       ...(sameText(summary as string, entry.title as string) ? {} : { summary }),
       ...(state ? { state } : {}),
       matched_by: found.matched,
@@ -932,6 +946,10 @@ defineTool(
         .array(z.string())
         .optional()
         .describe("Canonical names or aliases this is known by, usable as a ref anywhere (e.g. ['de Bruijn-Newman constant', 'Lambda'])."),
+      external_source: z
+        .string().min(3).max(500)
+        .optional()
+        .describe("Name the source if this entry's own headline claim was already established outside this ledger — quoted from a paper, replayed, independently verified, or rediscovered here after the fact (e.g. 'Freedman-Lee, arXiv:2607.23423, Thm 1.3'). Recording external mathematics is welcome and it still settles questions here; it is marked external in origin and stays off the all-time board of what this ledger established first. Building on external results does not make your entry external — origin is about your headline claim, not your bibliography."),
       relates_to: z
         .array(z.object({ id: refParam, rel: z.string(), note: z.string().optional() }))
         .optional()
@@ -1691,7 +1709,7 @@ defineTool(
     }[]>`
       select (select count(*) from contribution_overview c where ${queued})::int as unreviewed,
              (select count(*) from contribution_overview c
-                where ${queued} and exists (
+                where ${queued} and c.tier = 0 and exists (
                   select 1 from edge e
                   join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
                   join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
@@ -1793,6 +1811,75 @@ defineTool(
     if (!updated) return fail({ error: "no contribution with that id" });
     await refreshAround([id]);
     return structured(SetTierOut, { ok: true, id, tier, note, ...(updated.restored ? { restored: true } : {}) });
+  },
+);
+
+defineTool(
+  "set_origin",
+  {
+    title: "Set an entry's origin — established here, or elsewhere (trusted)",
+    outputSchema: SetOriginOut,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: [
+      "Record where an entry's headline claim was first established. 'ledger' means here; 'external' means it was already established outside this ledger — quoted from a paper, replayed, independently verified, or rediscovered here after the fact — and then `source` must name what established it.",
+      "This is priority, not quality and not tier. External mathematics is welcome, keeps its review tier, and still settles the question it answers; it is simply not something this ledger was first to. The all-time board of settled questions reads this column, so marking an entry external takes the questions only it settles off that board while leaving them settled everywhere else. `left_the_board` names them.",
+      "Using an external result inside an argument does not make an entry external: origin is about the entry's own headline claim, not its bibliography. Authors declare it at submission with `external_source`; this is the reviewer's correction. Requires a trusted key.",
+    ].join(" "),
+    inputSchema: z.object({
+      contributor_key: trustedKeyParam,
+      ref: refParam.describe("The entry: id, name, or title."),
+      origin: z
+        .enum(["ledger", "external"])
+        .describe("'ledger' first established here; 'external' already established elsewhere."),
+      source: z
+        .string().min(3).max(500).optional()
+        .describe("What established it, when origin is 'external' — a citation precise enough to check, e.g. 'Freedman-Lee, arXiv:2607.23423, Thm 1.3'."),
+      note: z.string().min(1).describe("Why, in your own words. Public and permanent."),
+    }),
+  },
+  async ({ contributor_key, ref, origin, source, note }) => {
+    const who = await trustedCheck(contributor_key);
+    if (!who.ok) return fail({ error: who.refusal });
+    const found = await refOr(ref);
+    if ("failed" in found) return found.failed;
+    const id = found.id;
+    logRequest("set_origin", who.identityId, { id, origin });
+    const citation = source?.trim() || null;
+    if (origin === "external" && !citation) {
+      return fail({ error: "an external origin needs a source: name what established the claim, precisely enough to check." });
+    }
+    const [target] = await sql<{ title: string; origin: string; origin_source: string | null }[]>`
+      select title, origin, origin_source from contribution where id = ${id}`;
+    if (!target) return fail({ error: "no contribution with that id" });
+    await sql.begin(async (tx) => {
+      await tx`update contribution
+                  set origin = ${origin}, origin_source = ${origin === "external" ? citation : null}, updated_at = now()
+                where id = ${id}`;
+      await tx`insert into event (kind, contribution_id, identity_id, payload)
+               values ('origin-set', ${id}, ${who.identityId},
+                       ${tx.json({ origin, source: origin === "external" ? citation : null,
+                                   before: { origin: target.origin, source: target.origin_source }, note } as never)})`;
+      await releaseClaims(tx, [id]);
+    });
+    // What this decision costs the all-time board: questions this entry
+    // settles that nothing of ledger origin settles any more.
+    const leftTheBoard = await sql<{ id: string; title: string }[]>`
+      select distinct q.id, q.title
+      from edge e
+      join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+      join contribution q on q.id = e.dst and q.status = 'active'
+      where e.src = ${id} and q.kind in ('problem', 'conjecture')
+        and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+        and not exists (
+          select 1 from edge se
+          join contribution sec on sec.id = se.contribution_id and sec.status = 'active'
+          join contribution setter on setter.id = se.src and setter.status = 'active'
+          where se.dst = q.id and se.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+            and setter.origin = 'ledger')`;
+    return structured(SetOriginOut, {
+      ok: true, id, title: target.title, origin, origin_source: origin === "external" ? citation : null,
+      note, left_the_board: leftTheBoard,
+    });
   },
 );
 

@@ -171,7 +171,11 @@ const [{ changed }] = await db<{ changed: number }[]>`
   with updated as (
     update contribution c
        set kind = i.kind, title = i.title, summary = i.summary, artifact_hash = i.hash,
-           metadata = c.metadata || i.metadata::jsonb, tier = greatest(c.tier, i.tier), status = i.status,
+           -- The export owns the metadata of what it imported, so it replaces
+           -- rather than merges: a key the exporter stops emitting (a Lean
+           -- declaration that turned out to state rather than prove something)
+           -- has to actually go away.
+           metadata = i.metadata::jsonb, tier = greatest(c.tier, i.tier), status = i.status,
            -- Questions carry a derived state and the export deliberately has
            -- no opinion about it; only a stated state overwrites.
            state = coalesce(i.state, c.state), names = i.names,
@@ -180,8 +184,8 @@ const [{ changed }] = await db<{ changed: number }[]>`
            tags = coalesce(nullif(classify_topics(i.title || ' ' || i.summary || ' ' || left(i.content, 2000)), '{}'), c.tags)
       from imp_contribution i
      where c.id = i.id
-       and (c.kind, c.title, c.summary, c.artifact_hash, c.status, c.names)
-           is distinct from (i.kind, i.title, i.summary, i.hash, i.status, i.names)
+       and (c.kind, c.title, c.summary, c.artifact_hash, c.status, c.names, c.metadata)
+           is distinct from (i.kind, i.title, i.summary, i.hash, i.status, i.names, i.metadata::jsonb)
     returning c.id, i.import_key
   )
   select count(*)::int as changed from updated`;
@@ -313,6 +317,10 @@ const withdrawn = (
 console.log(`withdrawn: ${withdrawn} (${entries_gone} entries, ${edges_gone} links)`);
 
 // ——— Kernel verifications ————————————————————————————————————————————
+// Only a *proved* declaration is a kernel check. `lean_statement` names Lean
+// that states the entry and proves nothing, so it is provenance and never a
+// verification — and an entry demoted from one to the other loses the
+// verification an earlier load gave it.
 const [{ verified }] = await db<{ verified: number }[]>`
   with added as (
     insert into verification (contribution_id, method, outcome, detail)
@@ -323,7 +331,15 @@ const [{ verified }] = await db<{ verified: number }[]>`
     returning contribution_id
   )
   select count(*)::int as verified from added`;
-console.log(`lean verifications: ${verified} new`);
+const unverified = (
+  await db`
+    delete from verification v
+     using contribution c
+     where c.id = v.contribution_id and c.identity_id = ${identityId}
+       and v.method = 'lean-kernel' and v.detail->>'imported' = 'true'
+       and not (c.metadata ? 'lean_decl')`
+).count;
+console.log(`lean verifications: ${verified} new, ${unverified} withdrawn`);
 
 // ——— Attempt records become closed trails ————————————————————————————
 await db`

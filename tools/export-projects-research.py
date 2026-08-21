@@ -32,7 +32,58 @@ outdir.mkdir(parents=True, exist_ok=True)
 db = sqlite3.connect(f"file:{ledger}?mode=ro", uri=True)
 db.row_factory = sqlite3.Row
 
-ONTOLOGY = Path(__file__).resolve().parent.parent.parent.parent / "projects-research" / "ontology" / "obligations"
+PREDECESSOR = Path(__file__).resolve().parent.parent.parent.parent / "projects-research"
+ONTOLOGY = PREDECESSOR / "ontology" / "obligations"
+MATHLIBPLUS = PREDECESSOR / "mathlibplus"
+
+# ——— What a Lean declaration actually is ———————————————————————————————
+# The predecessor's tables name a declaration but never say whether it is a
+# *proof* or only a kernel-elaborated *statement*, and most of them — the
+# whole `MathlibPlus.Open` registry — are `def … : Prop`, statements awaiting a
+# proof. Exporting both as `lean_decl` made the ledger publish `lean_verified`
+# on 9,420 entries whose Lean content proves nothing, against its own rule that
+# the property means the kernel checked a proof. The library is right here, so
+# read it and say which is which: `lean_decl` is a proved declaration,
+# `lean_statement` is a statement, and a name we cannot find is neither.
+DECLARATION = re.compile(
+    r"^\s*(?:@\[[^\]]*\]\s*)*"
+    r"(?:(?:private|protected|noncomputable|partial|unsafe|scoped|local)\s+)*"
+    r"(def|theorem|lemma|abbrev|instance|axiom)\s+([A-Za-z_][A-Za-z0-9_'.]*)"
+)
+NAMESPACE = re.compile(r"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_'.]*)")
+SECTION = re.compile(r"^\s*section\b")
+END = re.compile(r"^\s*end\b")
+
+
+def proved_declarations(root: Path) -> set[str]:
+    """Fully qualified names declared as `theorem` or `lemma`, so carrying a proof."""
+    proved: set[str] = set()
+    for path in root.rglob("*.lean"):
+        stack: list[str | None] = []
+        for line in path.read_text(errors="replace").splitlines():
+            if m := NAMESPACE.match(line):
+                stack.append(m.group(1))
+            elif SECTION.match(line):
+                stack.append(None)
+            elif END.match(line):
+                if stack:
+                    stack.pop()
+            elif m := DECLARATION.match(line):
+                if m.group(1) in ("theorem", "lemma"):
+                    prefix = ".".join(n for n in stack if n)
+                    proved.add(f"{prefix}.{m.group(2)}" if prefix else m.group(2))
+    return proved
+
+
+PROVED = proved_declarations(MATHLIBPLUS) if MATHLIBPLUS.is_dir() else set()
+if not PROVED:
+    sys.exit(f"no Lean library at {MATHLIBPLUS}: cannot tell a proof from a statement")
+
+
+def lean_keys(decl: str | None) -> dict[str, str]:
+    if not decl:
+        return {}
+    return {"lean_decl": decl} if decl in PROVED else {"lean_statement": decl}
 
 # ——— Titles ————————————————————————————————————————————————————————————
 # The predecessor named work items with slugs ("hara-asked-on-at-highest-…")
@@ -288,7 +339,7 @@ for ob in obligations.values():
                 **(
                     {
                         "node_id": formal,
-                        "lean_decl": nodes[formal]["decl_name"],
+                        **lean_keys(nodes[formal]["decl_name"]),
                         "registry_status": nodes[formal]["status"],
                         "root_problem": bool(nodes[formal]["is_root"]),
                     }
@@ -357,7 +408,7 @@ for r in nodes.values():
                 "metadata": {
                     "imported_from": "projects-research",
                     "node_id": r["id"],
-                    "lean_decl": r["decl_name"],
+                    **lean_keys(r["decl_name"]),
                     "registry_status": r["status"],
                     "root_problem": bool(r["is_root"]),
                     **({"resolved_by": r["resolved_by"]} if r["resolved_by"] else {}),
@@ -389,7 +440,7 @@ for r in nodes.values():
                 "metadata": {
                     "imported_from": "projects-research",
                     "node_id": r["id"],
-                    "lean_decl": r["resolved_by"],
+                    **lean_keys(r["resolved_by"]),
                     "settles": r["decl_name"],
                 },
             }
@@ -492,7 +543,7 @@ for r in db.execute(
             "metadata": {
                 "imported_from": "projects-research",
                 "claim_id": r["id"],
-                **({"lean_decl": decl} if decl else {}),
+                **lean_keys(decl),
                 **({"provenance_hash": r["provenance_hash"]} if r["provenance_hash"] else {}),
                 **({"locator": r["locator"]} if r["locator"] else {}),
             },
@@ -527,7 +578,7 @@ for r in db.execute("select * from obligation_route"):
                 "route_name": r["name"],
                 "route_status": r["status"],
                 **({"first_unsupported": unsupported} if unsupported else {}),
-                **({"lean_decl": r["decl_name"]} if r["decl_name"] else {}),
+                **lean_keys(r["decl_name"]),
                 **({"artifact_path": r["artifact_path"]} if r["artifact_path"] else {}),
             },
         }

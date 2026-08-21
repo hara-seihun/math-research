@@ -37,7 +37,7 @@ const oauthError = (res: Response, status: number, error: string, description: s
 const page = (body: string) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Authorize · math-research</title>
+<title>Authorize · lemma.ing</title>
 <style>
   :root { color-scheme: light dark }
   body { font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -56,7 +56,7 @@ const page = (body: string) => `<!doctype html>
 
 const consentPage = (client: string, params: Record<string, string>) =>
   page(`
-<h1>math-research</h1>
+<h1>lemma.ing</h1>
 <p class="lede">An open ledger of mathematical work. No accounts, no signup.</p>
 <p><strong>${client}</strong> is asking to contribute as you. Continuing mints a contributor
 identity for it, a key it holds, whose SHA-256 is the name your work appears under.

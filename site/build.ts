@@ -8,11 +8,13 @@ const OUT = process.env.SITE_OUT ?? join(HERE, "public");
 // A preview build is served under a path prefix, so every internal link the
 // pages emit is written relative to it; the live build leaves it empty.
 const BASE = (process.env.SITE_BASE ?? "").replace(/\/$/, "");
-const ORIGIN = process.env.SITE_ORIGIN ?? "https://math.seihun.com";
+const ORIGIN = process.env.SITE_ORIGIN ?? "https://lemma.ing";
+// The public name of the place, used in every title, wordmark and heading.
+const SITE_NAME = "lemma.ing";
 // Where the build reads the live tool list and corpus snapshot from (the guest
 // builds against its own instance); the endpoint the pages publish is always
 // the public one.
-const BUILD_SOURCE = process.env.MATH_MCP_URL ?? "https://math.seihun.com/mcp";
+const BUILD_SOURCE = process.env.MATH_MCP_URL ?? "https://lemma.ing/mcp";
 const ENDPOINT = `${ORIGIN}/mcp`;
 const ASSET_DIR = join(HERE, "assets");
 const ASSETS = new Map(
@@ -285,8 +287,8 @@ function guidesIndex(guides: Page[]): Page {
 function readmePage(): Page {
   const readme = readFileSync(join(HERE, "..", "README.md"), "utf8");
   const markdown = readme.replace(
-    "# math-research\n\n",
-    "# math-research\n\nThis page is just the [README from GitHub](https://github.com/hara-seihun/math-research#readme).\n\n",
+    `# ${SITE_NAME}\n\n`,
+    `# ${SITE_NAME}\n\nThis page is just the [README from GitHub](https://github.com/hara-seihun/math-research#readme).\n\n`,
   );
 
   return {
@@ -318,19 +320,19 @@ function layout(page: Page, nav: Page[], html: string): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${page.title} · math-research</title>
+<title>${page.title} · ${SITE_NAME}</title>
 <meta name="description" content="${page.summary.replace(/"/g, "&quot;")}">
 <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large">
 <link rel="canonical" href="${ORIGIN}${href(page.slug)}">
 <link rel="alternate" type="text/markdown" href="${ORIGIN}${plainHref(page.slug)}" title="Markdown source">
 <link rel="stylesheet" href="${assetHref("style.css")}">
-<meta property="og:title" content="${page.title} · math-research">
+<meta property="og:title" content="${page.title} · ${SITE_NAME}">
 <meta property="og:description" content="${page.summary.replace(/"/g, "&quot;")}">
 <meta property="og:type" content="website">
 </head>
 <body>
 <header>
-<a class="wordmark" href="/">math-research</a>
+<a class="wordmark" href="/">${SITE_NAME}</a>
 <nav>${links}</nav>
 </header>
 <div class="agent-note">Agents: this page as Markdown → <a href="${plainHref(page.slug)}">${plainHref(page.slug)}</a> · whole site → <a href="/llms-full.txt">/llms-full.txt</a> · the ledger itself → <code>${ENDPOINT}</code></div>
@@ -425,7 +427,7 @@ ${pages.map((p) => `  <url><loc>${ORIGIN}${href(p.slug)}</loc></url>`).join("\n"
 
 write(
   join(OUT, "llms.txt"),
-  `# math-research
+  `# ${SITE_NAME}
 
 > An open, append-only ledger of mathematical work: problems, conjectures,
 > proofs, theories, tools, computations, counterexamples, reviews, and the

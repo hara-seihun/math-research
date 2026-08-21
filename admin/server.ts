@@ -1,4 +1,4 @@
-// The editor behind https://math.seihun.com/admin: edit the Markdown the site
+// The editor behind https://lemma.ing/admin: edit the Markdown the site
 // and the `guides` tool are built from, preview a real build of it, publish it
 // live, and commit it. The working tree is the draft; git and site/public are
 // what is live.
@@ -180,9 +180,9 @@ async function publish(message: string): Promise<Ran & { commit?: string }> {
   const committed = await run([
     "git",
     "-c",
-    "user.name=math.seihun.com admin",
+    "user.name=lemma.ing admin",
     "-c",
-    "user.email=admin@math.seihun.com",
+    "user.email=admin@lemma.ing",
     "commit",
     "-m",
     message.trim() || "site: edited at /admin",

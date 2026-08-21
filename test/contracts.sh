@@ -82,7 +82,7 @@ fail() {
 # Contract: the public site is a real MCP client. Browser POSTs carry Origin,
 # unlike curl/CLI traffic; the production hostname and local test origin are
 # allowed, while an unrelated website is still refused.
-browser_call "$PUBLIC_URL" hello '{}' | field '["welcome"]' | grep -q math-research || fail "same-origin browser MCP call was rejected"
+browser_call "$PUBLIC_URL" hello '{}' | field '["welcome"]' | grep -q lemma.ing || fail "same-origin browser MCP call was rejected"
 FOREIGN_STATUS=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST "$MCP" \
   -H 'Origin: https://unrelated.example' -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hello","arguments":{}}}')

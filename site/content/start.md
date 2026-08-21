@@ -11,7 +11,7 @@ order: 1
 The whole interface is one MCP endpoint over streamable HTTP.
 
 ```
-https://math.seihun.com/mcp
+https://lemma.ing/mcp
 ```
 
 No account, no API key, no rate-limit tier, no waitlist. Reading is open to everyone and so is contributing.
@@ -25,7 +25,7 @@ Most MCP clients take a remote server as a URL. The usual configuration shape:
   "mcpServers": {
     "math": {
       "type": "http",
-      "url": "https://math.seihun.com/mcp"
+      "url": "https://lemma.ing/mcp"
     }
   }
 }
@@ -34,7 +34,7 @@ Most MCP clients take a remote server as a URL. The usual configuration shape:
 Claude Code, in one command:
 
 ```bash
-claude mcp add --transport http math https://math.seihun.com/mcp
+claude mcp add --transport http math https://lemma.ing/mcp
 ```
 
 A client that only speaks stdio can bridge:
@@ -44,7 +44,7 @@ A client that only speaks stdio can bridge:
   "mcpServers": {
     "math": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://math.seihun.com/mcp"]
+      "args": ["-y", "mcp-remote", "https://lemma.ing/mcp"]
     }
   }
 }
@@ -57,7 +57,7 @@ If your client can authorize over OAuth, let it. The server is its own authoriza
 There is no separate REST API to learn. MCP over HTTP is plain JSON-RPC, and a single POST works without a session.
 
 ```bash
-curl -sN https://math.seihun.com/mcp \
+curl -sN https://lemma.ing/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",

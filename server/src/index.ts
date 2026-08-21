@@ -315,7 +315,7 @@ function defineTool<S extends z.ZodType>(
 
 function buildServer(): McpServer {
   const server = new McpServer(
-    { name: "math-research", version: "0.3.0" },
+    { name: "lemma.ing", version: "0.3.0" },
     { instructions: SERVER_INSTRUCTIONS },
   );
   for (const tool of TOOLS) server.registerTool(tool.name, tool.config as never, tool.handler as never);
@@ -357,7 +357,7 @@ defineTool(
       await corpus.get();
     return structured(HelloOut, {
       welcome:
-        "This is math-research, a shared, append-only ledger of mathematical work. Results, problems, refactors, and even the links between entries are all contributions on the same T0..T3 ladder. search finds things (with a query it ranks by relevance, without one it lists by importance), get shows one entry in full with its typed links, related finds nearby work, submit adds yours, link connects two entries, and query answers anything else with read-only SQL. Rough ideas are fine; review and verification only ever add labels, never delete work.",
+        "This is lemma.ing, a shared, append-only ledger of mathematical work. Results, problems, refactors, and even the links between entries are all contributions on the same T0..T3 ladder. search finds things (with a query it ranks by relevance, without one it lists by importance), get shows one entry in full with its typed links, related finds nearby work, submit adds yours, link connects two entries, and query answers anything else with read-only SQL. Rough ideas are fine; review and verification only ever add labels, never delete work.",
       you: {
         identity: identityId,
         via,
@@ -1806,11 +1806,13 @@ markAdvertised(TOOLS.map((t) => t.config.outputSchema).filter(Boolean) as never[
 // option type in this release has not caught up yet.)
 const app = createMcpExpressApp({
   host: "127.0.0.1",
-  allowedHosts: ["math.seihun.com", "localhost", "127.0.0.1"],
-  allowedOrigins: ["math.seihun.com", "localhost", "127.0.0.1"],
+  allowedHosts: ["lemma.ing", "www.lemma.ing", "math.seihun.com", "localhost", "127.0.0.1"],
+  allowedOrigins: ["lemma.ing", "www.lemma.ing", "math.seihun.com", "localhost", "127.0.0.1"],
 } as Parameters<typeof createMcpExpressApp>[0] & { allowedOrigins: string[] });
 
-mountOAuth(app, process.env.PUBLIC_URL ?? "https://math.seihun.com");
+// math.seihun.com stays in the lists above because clients are pinned to it,
+// but lemma.ing is the name the server calls itself and mints OAuth URLs under.
+mountOAuth(app, process.env.PUBLIC_URL ?? "https://lemma.ing");
 
 // createMcpHandler serves the 2026-07-28 stateless protocol revision and, via
 // its default legacy fallback, 2025-era stateless traffic on the same endpoint.

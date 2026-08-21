@@ -15,7 +15,30 @@ import { expandPins } from "./pinned.ts";
 
 const GUIDES_DIR = process.env.GUIDES_DIR ?? join(import.meta.dir, "../../guides");
 
-export type Guide = { name: string; about: string; markdown: string };
+export type Guide = {
+  name: string;
+  /** The guide's own H1: what it is. */
+  about: string;
+  /**
+   * Its `when:` front matter: the words that should make a reader reach for
+   * it. This is a retrieval trigger, not a summary — the same convention a
+   * skill description follows, and the one nearly everybody gets wrong by
+   * writing a description of the content instead of the conditions for
+   * wanting it. It is what the MCP prompt for this guide advertises, so a
+   * client scanning prompt descriptions can tell which guide answers the
+   * question in front of it without fetching all five.
+   */
+  when: string;
+  markdown: string;
+};
+
+/** Front matter is `when:` and nothing else, so it is read, not parsed. */
+function split(raw: string): { when: string; body: string } {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(raw);
+  if (!match) return { when: "", body: raw };
+  const when = /^when:\s*(.+)$/m.exec(match[1]);
+  return { when: when?.[1].trim() ?? "", body: raw.slice(match[0].length) };
+}
 
 function fingerprint(): string {
   const parts: string[] = [];
@@ -31,9 +54,9 @@ function load(): Map<string, Guide> {
   const shelf = new Map<string, Guide>();
   for (const file of readdirSync(GUIDES_DIR).sort()) {
     if (!file.endsWith(".md")) continue;
-    const markdown = expandPins(readFileSync(join(GUIDES_DIR, file), "utf8"));
+    const { when, body } = split(expandPins(readFileSync(join(GUIDES_DIR, file), "utf8")));
     const name = file.replace(/\.md$/, "");
-    shelf.set(name, { name, about: markdown.split("\n")[0]?.replace(/^#\s*/, "") ?? "", markdown });
+    shelf.set(name, { name, about: body.split("\n")[0]?.replace(/^#\s*/, "") ?? "", when, markdown: body });
   }
   return shelf;
 }
@@ -53,5 +76,6 @@ function current(): Map<string, Guide> {
 export const guideNames = (): string[] => [...current().keys()];
 export const guideList = (): { name: string; about: string }[] =>
   [...current().values()].map(({ name, about }) => ({ name, about }));
+export const guides = (): Guide[] => [...current().values()];
 export const guide = (name: string): Guide | undefined =>
   current().get(name.replace(/\.md$/, ""));

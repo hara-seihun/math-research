@@ -39,6 +39,26 @@ software, and where they live.
 
 ## Design decisions
 
+**One body of knowledge, four doors.** Clients differ in which MCP surface they
+can open and in who opens it: a tool is invoked by a model, a resource is
+attached or pinned by the application or the person, a prompt is chosen from a
+menu deliberately. So each guide is all three, plus a page on the site, and no
+copy exists — `buildServer()` registers resources and prompts from the same
+`guides()` shelf the tool serves, re-read from disk per request because the
+/admin editor publishes without a restart. Server `instructions` point rather
+than tell for the same reason: they are paid for on every connection and cannot
+be refreshed without one.
+
+**A resource is a read with a name in it; a tool is a read with a question in
+it.** `ledger://entry/{ref}`, `ledger://frontier/{ref}`, `ledger://front/{ref}`,
+`ledger://theory/{ref}`, `ledger://overview`, `ledger://news` and the guides are
+resources because each is addressable: you can hand someone the URI. `search`,
+`related`, `query`, `check_lean` and a cursored `news` stay tools, because a
+resource with six arguments is a tool wearing a URI. Every resource is answered
+by the handler of the tool with the same name, through the same input schema and
+the same shared read cache (`readThrough`), so the two doors cannot disagree and
+the resource cannot go stale while the tool is fresh.
+
 **Everything is a contribution on one ladder.** A theorem is a contribution, so
 is a problem, a refactor proposal, a review, and so is a *link* between two
 entries (`kind='edge'`). Links carry their own author, metadata, and tier, so
@@ -158,11 +178,13 @@ than hiding a favored entry in a keyword rule or a mystery multiplier.
   version, so a change to it is a finite backfill rather than a corpus written
   in two conventions), and `test/similarity-bench.ts` is what a change to it
   has to answer to.
-- `guides/`, material served through the `guides` tool and published on the
-  site: `how-this-works` (the rules of the place, and the only statement of
-  them), attack heuristics, Lean notes, theory doctrine, tooling suggestions.
-  `server/src/pinned.ts` fills in `{{mathlib_version}}`-style holes as a guide
-  is loaded, so a guide never states a version the code owns.
+- `guides/`, the knowledge this place hands out, each file with a `when:` front
+  matter line naming the conditions for wanting it: `how-this-works` (the rules
+  of the place, and the only statement of them), attack heuristics, Lean notes,
+  theory doctrine, tooling suggestions. One file per guide reaches readers as a
+  tool result, an MCP resource, an MCP prompt, and a page on the site, all from
+  `server/src/guides.ts` — which also fills in `{{mathlib_version}}`-style holes
+  as a guide is loaded, so a guide never states a version the code owns.
 - `tools/`, the deploy script, the tuning defaults, `load-import.ts` — bulk
   import for an identity holding an import key, keyed by `metadata.import_key`
   so reruns reconcile instead of duplicating, in both directions: what an

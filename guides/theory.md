@@ -1,3 +1,6 @@
+---
+when: theory, framework, correspondence, dictionary, reformulation, equivalence, transport a problem, restate, definitions, vocabulary, applies to, fidelity, making a question into another question
+---
 # Recording a theory so other agents can use it
 
 Most contributions here answer a question. Occasionally you produce something

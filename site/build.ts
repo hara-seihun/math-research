@@ -3,6 +3,7 @@ import { join, dirname, extname, basename } from "node:path";
 import { createHash } from "node:crypto";
 import { marked } from "marked";
 import { expandPins } from "../server/src/pinned.ts";
+import { guide as loadGuide, guides as loadShelf } from "../server/src/guides.ts";
 
 const HERE = import.meta.dir;
 const OUT = process.env.SITE_OUT ?? join(HERE, "public");
@@ -225,6 +226,35 @@ function toolReference(tools: any[]): string {
   ].join("\n");
 }
 
+// Tools are only one of the three doors, and the other two are the ones a
+// person opens rather than a model: resources are what an application attaches
+// or pins, prompts are what someone picks from a menu. Both are listed here
+// from the same live server for the same reason the tools are — a page that
+// described them by hand would be a second, slower copy of the server.
+function resourceReference(resources: any[], templates: any[]): string {
+  const row = (r: any) =>
+    `| \`${r.uriTemplate ?? r.uri}\` | ${r.title ?? r.name} | ${(r.description ?? "").replace(/\|/g, "\\|")} |`;
+  return [
+    "## Resources",
+    "",
+    "Read-only documents with an address. Anything with a name rather than a question is here as well as being a tool, so a client can attach it, cache it, or hand the URI to someone else. `{ref}` is an id, a name or handle, or an exact title.",
+    "",
+    "| uri | | |",
+    "| --- | --- | --- |",
+    ...[...resources, ...templates].map(row),
+  ].join("\n");
+}
+
+function promptReference(prompts: any[]): string {
+  return [
+    "## Prompts",
+    "",
+    "The guides, offered the way a client offers something to load deliberately. Each description is a list of triggers — the conditions under which you want that guide — rather than a summary of it, because a summary only helps someone who has already decided to read.",
+    "",
+    ...prompts.flatMap((p: any) => [`### ${p.name}`, "", `*${p.title ?? ""}*`, "", `**When to load it:** ${p.description}`, ""]),
+  ].join("\n");
+}
+
 function loadContent(): Page[] {
   return readdirSync(join(HERE, "content"))
     .filter((f) => f.endsWith(".md"))
@@ -244,20 +274,20 @@ function loadContent(): Page[] {
 
 const GUIDE_ORDER = ["how-this-works", "attack", "lean", "fast-math"];
 
+// The shelf is read through the server's own loader, so the site cannot
+// disagree with the `guides` tool or the prompts about what a guide says:
+// same front matter stripped, same pinned versions filled in, one parser.
 function loadGuides(): Page[] {
-  const dir = join(HERE, "..", "guides");
-  const rank = (file: string) => {
-    const at = GUIDE_ORDER.indexOf(file.replace(/\.md$/, ""));
+  const rank = (name: string) => {
+    const at = GUIDE_ORDER.indexOf(name);
     return at === -1 ? GUIDE_ORDER.length : at;
   };
-  return readdirSync(dir)
-    .filter((f) => f.endsWith(".md"))
-    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
-    .map((file) => {
-      const markdown = readFileSync(join(dir, file), "utf8");
+  return loadShelf()
+    .sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name))
+    .map(({ name, markdown }) => {
       const lines = markdown.split("\n");
       const heading = lines.findIndex((l) => l.startsWith("# "));
-      if (heading === -1) throw new Error(`guides/${file}: no H1`);
+      if (heading === -1) throw new Error(`guides/${name}.md: no H1`);
       const summary = lines
         .slice(heading + 1)
         .join("\n")
@@ -265,13 +295,7 @@ function loadGuides(): Page[] {
         .split("\n\n")[0]
         .replace(/\n/g, " ")
         .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-      return {
-        slug: `guides/${file.replace(/\.md$/, "")}`,
-        title: lines[heading].slice(2).trim(),
-        summary,
-        order: 0,
-        markdown,
-      };
+      return { slug: `guides/${name}`, title: lines[heading].slice(2).trim(), summary, order: 0, markdown };
     });
 }
 
@@ -280,9 +304,10 @@ function loadGuides(): Page[] {
 // linked to the section itself. A rule the guide changes changes here, and a
 // rule that never entered the guide cannot be asserted here at all.
 function howItWorksDigest(): string {
-  const markdown = readFileSync(join(HERE, "..", "guides", "how-this-works.md"), "utf8");
-  const sections = markdown.split(/^## /m).slice(1);
-  if (sections.length === 0) throw new Error("guides/how-this-works.md: no sections to summarize");
+  const doctrine = loadGuide(GUIDE_ORDER[0]);
+  if (!doctrine) throw new Error(`guides/${GUIDE_ORDER[0]}.md is missing, and the front page summarizes it`);
+  const sections = doctrine.markdown.split(/^## /m).slice(1);
+  if (sections.length === 0) throw new Error(`guides/${GUIDE_ORDER[0]}.md: no sections to summarize`);
   return sections
     .map((section) => {
       const [heading, ...rest] = section.split("\n");
@@ -409,10 +434,13 @@ const totalsSql = `select
   (select count(*) from q_events) as events,
   (select count(distinct contribution_id) from q_verifications
     where method = 'lean-kernel' and outcome = 'passed') as lean_verified`;
-const [hello, totalsResult, toolList] = await Promise.all([
+const [hello, totalsResult, toolList, resourceList, templateList, promptList] = await Promise.all([
   callTool("hello"),
   callTool("query", { sql: totalsSql }),
   mcp("tools/list", {}),
+  mcp("resources/list", {}),
+  mcp("resources/templates/list", {}),
+  mcp("prompts/list", {}),
 ]);
 const totals = Object.fromEntries(
   totalsResult.columns.map((c: string, i: number) => [c, Number(totalsResult.rows[0][i])]),
@@ -430,6 +458,8 @@ const expand = (markdown: string) =>
     .replace("{{ledger_snapshot}}", () => ledgerSnapshot(hello, totals))
     .replace("{{accomplishments_snapshot}}", () => accomplishmentsSnapshot)
     .replace("{{tool_reference}}", () => toolReference(toolList.tools))
+    .replace("{{resource_reference}}", () => resourceReference(resourceList.resources, templateList.resourceTemplates))
+    .replace("{{prompt_reference}}", () => promptReference(promptList.prompts))
     .replaceAll("{{live_js}}", assetHref("live.js"));
 
 const guides = loadGuides();

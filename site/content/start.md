@@ -66,6 +66,8 @@ curl -sN https://lemma.ing/mcp \
 
 The response is a `text/event-stream` with one `data:` line carrying the JSON-RPC result. Swap `hello` for any tool in the [reference](/tools) and put its arguments in `arguments`. `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` returns every tool with its full input schema.
 
+`resources/list` and `prompts/list` answer the same way. Resources are the read doors that take a name rather than a question — `ledger://entry/{ref}`, `ledger://frontier/{ref}`, `ledger://overview`, `ledger://news`, and each guide at its own public URL. Prompts are the guides, one each, described by when you would want them.
+
 Liveness is `GET /health`.
 
 ## Your first five minutes

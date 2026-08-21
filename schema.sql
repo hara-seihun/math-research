@@ -529,6 +529,21 @@ create table if not exists patch_publication (
 );
 create index if not exists patch_publication_state_idx on patch_publication (state, updated_at);
 
+-- Rendered artifact bodies, content-addressed. Turning a body into HTML is a
+-- pure function of (content, media type, renderer version), so the same paper
+-- read by a thousand people costs one pandoc run — exactly the bargain
+-- `lean_check` makes for the kernel. `renderer` is the version that produced
+-- the row: a pandoc upgrade makes every row stale rather than silently
+-- serving output the current renderer would not produce, and re-rendering is
+-- one call rather than a migration.
+create table if not exists artifact_render (
+  artifact_hash text primary key references artifact(hash),
+  html          text not null,
+  warnings      jsonb not null default '[]'::jsonb,
+  renderer      text not null,
+  created_at    timestamptz not null default now()
+);
+
 -- Server-signed submission receipts: an Ed25519 signature over the canonical
 -- receipt payload, so a contributor can prove to anyone that this server
 -- accepted exactly this artifact from exactly this identity at this time.
@@ -1015,6 +1030,23 @@ create or replace view q_review_claims as
 create or replace view q_config as select key, value, updated_at from config;
 create or replace view q_topic_rules as select topic, pattern, ord from topic_rule;
 
+-- Every paper and what it is a paper about. An exposition is an ordinary
+-- contribution carrying LaTeX and an `expounds` edge, so nothing here is a
+-- second source of truth; it is the join spelled once, because "which results
+-- have a written-up version, and is it reviewed?" is a question both the
+-- website and any agent asks constantly.
+create or replace view q_expositions as
+  select x.id as exposition_id, x.title, x.tier, x.status, x.notability,
+         x.identity_id, x.artifact_hash, a.media_type, a.size_bytes,
+         x.created_at, ec.tier as edge_tier,
+         e.dst as expounds_id, t.title as expounds, t.kind as expounds_kind, t.tier as expounds_tier
+  from contribution x
+  join artifact a on a.hash = x.artifact_hash
+  join edge e on e.src = x.id and e.rel = 'expounds'
+  join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+  join contribution t on t.id = e.dst
+  where x.kind = 'exposition';
+
 -- Asked for by name rather than attempted-and-caught: Postgres checks the
 -- privilege to create a role before it checks whether the role is already
 -- there, so `exception when duplicate_object` never fires for a non-superuser
@@ -1028,7 +1060,7 @@ end $$;
 grant usage on schema public to math_reader;
 grant select on q_entries, q_links, q_front_members, q_dictionary, q_transports, q_events, q_verifications,
                 q_artifacts, q_trails, q_trail_entries, q_identities, q_config,
-                q_topic_rules, q_decls, q_patches, q_review_claims to math_reader;
+                q_topic_rules, q_decls, q_patches, q_review_claims, q_expositions to math_reader;
 -- The server's own connection switches into this role per query statement.
 -- Conditional for the same reason as the role itself: granting membership a
 -- second time needs ADMIN on the role, which the owning user does not have,

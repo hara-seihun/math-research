@@ -68,6 +68,7 @@ export const ListRow = z
     state: z.string().optional().describe("Derived work state (open/settled/retired); only work items carry one."),
     tier: z.number().int().describe("Review tier: 0 recorded, 1 confirmed, 2 canon, 3 published."),
     lean_verified: z.literal(true).optional(),
+    has_exposition: z.literal(true).optional().describe("Someone has written this up as a paper; get(<ref>) names it."),
     origin: z.literal("external").optional().describe("Present only when the headline claim was established outside this ledger; ledger origin is the default and is not printed."),
     origin_source: z.string().optional().describe("What established an external-origin entry."),
     notability: z.number(),
@@ -505,6 +506,23 @@ export const GetOut = z.strictObject({
     .array(z.strictObject({ seq: z.number().int(), kind: z.string(), payload: jsonRecord, created_at: iso }))
     .describe("The most recent events for this entry, oldest first."),
   more_events: z.number().int().optional().describe("How many earlier events exist beyond the ones shown; q_events has them all."),
+  exposition: z
+    .strictObject({
+      id: z.string(),
+      title: z.string(),
+      tier: z.number().int(),
+      author: z.string().nullable(),
+      artifact_hash: z.string(),
+      media_type: z.string(),
+      created_at: iso,
+      others: z.number().int().optional().describe("How many further expositions of this entry exist."),
+    })
+    .optional()
+    .describe("The paper written about this entry: the most reviewed one, then the newest. Read it with get(<its id>), or fetch it rendered from /render/<artifact_hash>."),
+  expounds: z
+    .array(z.strictObject({ id: z.string(), kind: z.string(), title: z.string(), tier: z.number().int() }))
+    .optional()
+    .describe("For an exposition: the entries it is a paper about. The mathematics is theirs; this entry is how it reads."),
   links_filter: z
     .strictObject({ rel: z.string(), offset: z.number().int() })
     .optional()

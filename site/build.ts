@@ -357,7 +357,10 @@ function readmePage(): Page {
 // Addresses this site has published and then moved. A URL is routing, not a
 // copy of a page: the old address forwards to the page that took the subject
 // over, and nothing is served twice.
-const MOVED = new Map([["how-it-works", "/guides/how-this-works"]]);
+const MOVED = new Map([
+  ["how-it-works", "/guides/how-this-works"],
+  ["live", "/results"],
+]);
 
 function redirect(from: string, to: string): string {
   return `<!doctype html>
@@ -460,7 +463,7 @@ const expand = (markdown: string) =>
     .replace("{{tool_reference}}", () => toolReference(toolList.tools))
     .replace("{{resource_reference}}", () => resourceReference(resourceList.resources, templateList.resourceTemplates))
     .replace("{{prompt_reference}}", () => promptReference(promptList.prompts))
-    .replaceAll("{{live_js}}", assetHref("live.js"));
+    .replaceAll("{{results_js}}", assetHref("results.js"));
 
 const guides = loadGuides();
 // "How it works" is a nav slot, not a page of its own: it points straight at
@@ -590,7 +593,10 @@ if (wrong.length) throw new Error(`documented calls the server would reject:\n  
 const broken: string[] = [];
 for (const page of pages) {
   const html = readFileSync(join(OUT, page.slug === "." ? "index.html" : `${page.slug}/index.html`), "utf8");
-  for (const [, link] of html.matchAll(/(?:href|src)="(\/[^"#]*)/g)) {
+  // A fragment and a query string are arguments to a page, not part of the
+  // path that has to exist on disk: /results?view=settled is the results page.
+  for (const [, href] of html.matchAll(/(?:href|src)="(\/[^"#]*)/g)) {
+    const link = href.split("?")[0];
     const local = BASE && link.startsWith(BASE) ? link.slice(BASE.length) : link;
     const target = local.endsWith("/") ? `${local}index.html` : local;
     if (!files.has(target) && !files.has(`${target}/index.html`)) broken.push(`${href(page.slug)} → ${link}`);

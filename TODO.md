@@ -52,13 +52,14 @@ Initial calibration, 2026-08-21: parallel assertions of one relation now reduce
 to their strongest active edge; settlement credit uses only actual settling
 relations and is discounted by the settling edge's tier; `serves` no longer
 inflates resolution impact; and the Lean signal fell from 2.0 to 0.75 so
-formalization is evidence rather than a substitute for scope. The `/live` page
-now makes the rolling top ten and its concrete graph signals directly visible.
+formalization is evidence rather than a substitute for scope. The `/results`
+page makes the ranking and its concrete graph signals directly visible over
+any window.
 
 Still to do — empirical tuning as that feed accumulates examples:
 
 - **Notability weights** (`kind`, `rel`, `tier`, `edge_tier`, `settle`, `lean`):
-  compare `search({order_by:'notability'})` and `/live` against trusted
+  compare `search({order_by:'notability'})` and `/results` against trusted
   pairwise judgments, especially for dense campaigns and hub problems. Decide
   whether `front`/`edge` kinds should stay at 0 and whether the remaining
   relation weights preserve broad results over narrow but heavily linked ones.

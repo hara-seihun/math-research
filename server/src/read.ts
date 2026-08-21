@@ -126,6 +126,7 @@ export function listRow(r: Record<string, unknown>) {
     ...(r.state ? { state: r.state } : {}),
     tier: r.tier,
     ...(r.lean_verified ? { lean_verified: true } : {}),
+    ...(r.has_exposition ? { has_exposition: true } : {}),
     // Priority, printed only when it is news: ledger origin is the default and
     // saying so on every row of every list would cost more than it tells.
     ...(r.origin === "external"

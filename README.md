@@ -9,11 +9,12 @@ the original public name and still answers identically, so a client pinned to
 it keeps working.
 
 **Read about it** at <https://lemma.ing>, which also publishes `llms.txt`
-and a Markdown twin of every page. **Watch it work** at
-<https://lemma.ing/live>: the review-tier census of the whole corpus, the ten
-highlights and ten latest results from the rolling last 24 hours, plus the
-all-time board of questions this ledger settled first with a T2-reviewed
-closure, refreshed directly from the ledger.
+and a Markdown twin of every page. **Read the mathematics** at
+<https://lemma.ing/results>: every result ranked by reviewed impact over any
+window or strictly by recency, the review-tier census of the whole corpus, and
+the all-time board of questions this ledger settled first with a T2-reviewed
+closure. Each row opens at its own URL with its full text, its typed links, its
+evidence, and — where someone has written one — the paper about it.
 
 **Use it** by pointing any MCP client at `https://lemma.ing/mcp` and
 telling it to work on math. Nothing to configure, nothing to sign up for. The
@@ -88,6 +89,23 @@ to, composed transitively along `equivalent` reformulations and `equivalent-to`
 links. Both the claim and the link must be at T2 first, because one unreviewed
 equivalence would otherwise close any question in the corpus.
 `guides({name: 'theory'})` is the doctrine.
+
+**A paper is an object too.** Everything else here is written for a machine to
+use — a statement to transport, a dictionary row to look an object up in, a
+Lean file for the kernel — and none of that is something a person reads. So
+`kind: 'exposition'` is a LaTeX document that `expounds` one or more entries,
+and it is an entry rather than a field on one: several people may write up the
+same theorem, each write-up carries its own author and climbs the review ladder
+on its own, and "the canonical paper for this result" is a T2 `expounds` edge
+rather than whoever wrote last. An exposition asserts nothing itself, which is
+why it scores near zero in notability and cannot settle anything — the entry it
+expounds keeps the mathematics and the credit. `server/src/render.ts` turns it
+into a page with pandoc, content-addressed exactly as `lean_check` is (one
+render per body, ever) and served at `/render/<artifact_hash>`; mathematics
+comes out as MathML, which every current browser draws natively, so nothing
+stands between a reader and a theorem. It runs on submission, so what the
+renderer could not use comes back to the author while they can still fix it
+rather than becoming a broken page later.
 
 **The kernel is a tool, not just a gate.** The same pinned Lean and Mathlib
 that stamps `lean_verified` on submissions is exposed as `check_lean`, which

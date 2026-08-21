@@ -812,6 +812,103 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$EQ_EDGE\",\"tier\":2,\
 [[ $(call frontier "{\"ref\":\"$EQ1\"}" | field '.state') == settled ]] \
   || fail "a reviewed equivalence link did not identify the two questions"
 
+# ——— A paper is an object, and it renders —————————————————————————————
+# An exposition earns its kind by being *about* something already here and by
+# being readable: both are checked, along with the promise that the author
+# hears about a macro nothing understands while they can still fix it.
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"exposition\",\"title\":\"a paper about nothing\",\"summary\":\"s\",\"content\":\"Words.\"}" \
+  | field '.error' | grep -qi "expounds" || fail "an exposition was accepted without naming what it writes up"
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"not a paper\",\"summary\":\"s\",\"content\":\"c.\",\"expounds\":\"$PILLAR\"}" \
+  | field '.error' | grep -qi "belongs on" || fail "an exposition-only field was accepted on another kind"
+
+# A whole small paper: title block, abstract, a numbered theorem, display
+# mathematics, a citation, a bibliography, and one macro nothing has ever heard
+# of. Everything but the last must survive to the page.
+PAPER=$(python3 -c '
+import json
+print(json.dumps(r"""\documentclass{article}
+\usepackage{amsmath,amsthm}
+\newtheorem{theorem}{Theorem}
+\title{On the Widget Correspondence}
+\author{A Contract}
+\begin{document}
+\maketitle
+\begin{abstract}
+We restate the widget correspondence and derive $\Lambda \le \frac{1}{5}$.
+\end{abstract}
+\section{The statement}
+\begin{theorem}\label{thm:main}
+Every widget group is solvable, and $\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}$.
+\end{theorem}
+See \cite{widget76}. \thisMacroDoesNotExist{anywhere}
+\begin{thebibliography}{9}
+\bibitem{widget76} A. Widget, \emph{Correspondences}, 1976.
+\end{thebibliography}
+\end{document}
+"""))')
+EXPO=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"exposition\",\"title\":\"On the widget correspondence\",\"summary\":\"The write-up.\",\"content\":$PAPER,\"expounds\":\"the widget correspondence theorem\"}")
+echo "$EXPO" | field '.notes[]' | grep -qi "thisMacroDoesNotExist" \
+  || fail "the author was not told which macro the renderer could not use: $(echo "$EXPO" | head -c 400)"
+EXPO=$(echo "$EXPO" | field '.id')
+# LaTeX is never mistaken for Lean, whatever the word 'theorem' is doing in it.
+psql -h "$WORK" -d math -tAc "select count(*) from verification where contribution_id = '$EXPO' and method = 'lean-kernel'" \
+  | grep -q '^0$' || fail "a LaTeX paper was queued for the Lean kernel"
+
+# The result it expounds now carries it, and a list row says so without anyone
+# having to open the entry.
+call get "{\"ref\":\"$PILLAR\"}" | EXPO="$EXPO" python3 -c '
+import os, sys, json
+d = json.load(sys.stdin)
+assert d["exposition"]["id"] == os.environ["EXPO"], d.get("exposition")
+assert d["exposition"]["media_type"] == "text/x-latex", d["exposition"]
+' || fail "the entry did not name the paper written about it"
+call get "{\"ref\":\"$EXPO\"}" | PILLAR="$PILLAR" python3 -c '
+import os, sys, json
+d = json.load(sys.stdin)
+assert any(t["id"] == os.environ["PILLAR"] for t in d["expounds"]), d.get("expounds")
+' || fail "the paper did not name what it is a paper about"
+call search '{"query":"widget correspondence theorem"}' | python3 -c '
+import sys, json
+rows = json.load(sys.stdin)["results"]
+assert any(r.get("has_exposition") for r in rows), rows[:2]
+' || fail "a list row did not mark the result that has a paper"
+
+# And the paper is a page: the mathematics is MathML, the citation reaches the
+# bibliography entry it names, and the render is content-addressed, so the
+# second reader pays nothing.
+HASH=$(psql -h "$WORK" -d math -tAc "select artifact_hash from contribution where id = '$EXPO'")
+RENDER=$(curl -sf --max-time 30 "http://127.0.0.1:$PORT/render/$HASH")
+echo "$RENDER" | python3 -c '
+import re, sys, json
+d = json.load(sys.stdin)
+html = d["html"]
+assert "<math" in html, "mathematics did not survive to the page"
+assert "paper-abstract" in html, "the abstract did not survive"
+assert "Theorem 1" in html, "the theorem environment did not survive"
+# A citation is only a citation if it reaches the entry it names, whatever the
+# renderer decided to call the anchor.
+cited = re.search(r"class=\"citation\">\[<a href=\"#([^\"]+)\">widget76</a>", html)
+assert cited, "the citation did not become a link"
+assert f"id=\"{cited.group(1)}\"" in html, "the citation points at an anchor that is not on the page"
+assert any("thisMacroDoesNotExist" in w for w in d["warnings"]), d["warnings"]
+' || fail "the paper did not render: $(echo "$RENDER" | head -c 400)"
+psql -h "$WORK" -d math -tAc "select count(*) from artifact_render where artifact_hash = '$HASH'" \
+  | grep -q '^1$' || fail "the render was not cached against the body that produced it"
+# Anyone may submit, and this HTML goes into a public page.
+HOSTILE=$(python3 -c '
+import json
+print(json.dumps(r"""\documentclass{article}
+\usepackage{hyperref}
+\begin{document}
+\href{javascript:alert(1)}{click me}
+\end{document}
+"""))')
+XSS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"exposition\",\"title\":\"a paper with a hostile link\",\"summary\":\"s\",\"content\":$HOSTILE,\"expounds\":\"$PILLAR\"}" | field '.id')
+XSS_HTML=$(curl -sf --max-time 30 "http://127.0.0.1:$PORT/render/$(psql -h "$WORK" -d math -tAc "select artifact_hash from contribution where id = '$XSS'")" | field '.html')
+grep -qE '[ "]href="javascript:' <<< "$XSS_HTML" && fail "a javascript: URL reached the rendered page"
+grep -q 'data-blocked-href' <<< "$XSS_HTML" || fail "a blocked URL vanished instead of staying visible as blocked"
+grep -q 'click me' <<< "$XSS_HTML" || fail "blocking a URL swallowed the text it was on"
+
 # Contract: news is a cursor, not a clock. A reader hands back the sequence
 # number it was given and gets exactly the events it has not seen -- no
 # interval to guess, no double-read, no gap -- and the packet carries the

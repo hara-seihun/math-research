@@ -42,6 +42,10 @@ import {
   definitionRow, dictionaryRows, reformulationsOf, shapeFamily, theoriesFor, theoryDetail, theoryList,
   transportedSettlement,
 } from "./theory.ts";
+import {
+  annotateExpositions, EXPOSITION_KIND, EXPOUNDS_HELP, EXPOUNDS_REL, expositionsOf, shapeExposition,
+} from "./exposition.ts";
+import { renderArtifact } from "./render.ts";
 import { indexSummary, searchDecls } from "./decls.ts";
 import { scanDuplicates, similarDeclarations } from "./lean-similar.ts";
 import { headSeq, newsPacket, seqBefore } from "./news.ts";
@@ -243,7 +247,7 @@ const KIND_MEANING: Record<string, string> = {
   theory: "a framework: what it applies to, the vocabulary it introduces, the dictionaries it comes with",
   correspondence: "one dictionary of a theory: two sides and the rows translating between them",
   reformulation: "one entry restated through a theory; a reviewed equivalent one makes the two questions one question",
-  exposition: "an explanation of existing mathematics, written to be read",
+  exposition: "a paper: one entry's mathematics written up in LaTeX for a person to read, linked to what it expounds",
   note: "a short observation that is worth recording but is not a write-up",
   review: "a reading of another entry, or an adjudication of a submitted artifact",
   refactor: "a proposal that two entries are secretly one thing",
@@ -534,7 +538,7 @@ defineTool(
       const strong = rows.filter((r) => r.matched === "every term").length;
       return structured(SearchOut, {
         query,
-        results: rows.map(listRow),
+        results: (await annotateExpositions(rows as Record<string, unknown>[])).map(listRow),
         matched: { every_term: strong, weaker: rows.length - strong },
         next: rows.length === limit ? { offset: offset + limit } : null,
         tip: rows.length && !strong
@@ -580,7 +584,7 @@ defineTool(
         limit ${limit} offset ${offset}`,
       sql<{ total: number }[]>`select count(*)::int as total from contribution c ${where}`,
     ]);
-    const explained = await addRankingSignals(rows as Record<string, unknown>[]);
+    const explained = await annotateExpositions(await addRankingSignals(rows as Record<string, unknown>[]));
     return structured(SearchOut, {
       total,
       results: explained.map(listRow),
@@ -928,7 +932,7 @@ defineTool(
     title: "Get one entry in full",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Everything about one entry: full content, typed links (capped at 8 per relation, with `more` counting the rest), verification history, receipt, and its most recent events. Takes an id, name, or title. To page through one relation of a heavily linked entry, pass rel (and links_offset); the query tool (q_links) reaches everything at once.",
+      "Everything about one entry: full content, typed links (capped at 8 per relation, with `more` counting the rest), verification history, receipt, and its most recent events. Takes an id, name, or title. To page through one relation of a heavily linked entry, pass rel (and links_offset); the query tool (q_links) reaches everything at once. If someone has written the entry up as a paper, `exposition` names it; any body that is Markdown or LaTeX is also served rendered to HTML with MathML mathematics at `/render/<artifact_hash>` on this host, which is what the website reads.",
     inputSchema: z.object({
       ref: refParam.describe("The entry: id, name, or title."),
       rel: z.string().optional().describe("Show only this link relation, uncapped (50 a page)."),
@@ -961,6 +965,19 @@ defineTool(
     const [{ n: eventTotal }] = await sql<{ n: number }[]>`
       select count(*)::int as n from event where contribution_id = ${id}`;
     const activeTrails = await trailsTouching([id]);
+    const paper = (await expositionsOf([id])).get(id);
+    // An exposition's own reading is the other way round: what is it a paper
+    // about? It is in `links`, but a reader of a paper wants the mathematics
+    // it carries named rather than found among a dozen relations.
+    const expounds =
+      c!.kind === EXPOSITION_KIND
+        ? await sql`
+            select t.id, t.kind, t.title, t.tier
+            from edge e join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+            join contribution t on t.id = e.dst and t.status = 'active'
+            where e.src = ${id} and e.rel = ${EXPOUNDS_REL}
+            order by t.notability desc`
+        : [];
     // Long verifier logs live in q_verifications; inline detail keeps the
     // verdict and the head of any log rather than pages of compiler output.
     const slim = (detail: Record<string, unknown>) =>
@@ -994,6 +1011,10 @@ defineTool(
       ...(activeTrails.length
         ? { exploring_now: activeTrails.map(({ contribution_id, ...t }) => t) }
         : {}),
+      ...(paper
+        ? { exposition: { ...paper.best, ...(paper.total > 1 ? { others: paper.total - 1 } : {}) } }
+        : {}),
+      ...(expounds.length ? { expounds } : {}),
     });
   },
 );
@@ -1005,7 +1026,7 @@ defineTool(
     outputSchema: QueryOut,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_dictionary(correspondence_id, correspondence, tier, notability, theory_id, source_side, target_side, fidelity, row_no, source, target, note, proof), every theory's translation table as rows; q_transports(reformulation_id, title, tier, status, notability, created_at, fidelity, reformulates_id, reformulates, reformulates_kind, reformulates_state, via_id, via, via_kind, theory_id, transports), what has been restated through a theory and whether it carries settlement; q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases. Nothing else is visible to it.",
+      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_dictionary(correspondence_id, correspondence, tier, notability, theory_id, source_side, target_side, fidelity, row_no, source, target, note, proof), every theory's translation table as rows; q_transports(reformulation_id, title, tier, status, notability, created_at, fidelity, reformulates_id, reformulates, reformulates_kind, reformulates_state, via_id, via, via_kind, theory_id, transports), what has been restated through a theory and whether it carries settlement; q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases; q_expositions(exposition_id, title, tier, status, notability, identity_id, artifact_hash, media_type, size_bytes, created_at, edge_tier, expounds_id, expounds, expounds_kind, expounds_tier), every paper and the entry it writes up. Nothing else is visible to it.",
     inputSchema: z.object({
       sql: z
         .string().max(8000)
@@ -1056,6 +1077,7 @@ defineTool(
     description: [
       "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing. Here's the unification\"). A durable obstruction is a kind='route' contribution, not only a trail note: set its state, name the first unsupported step with first_unsupported, and link it to the problem with rel='attacks'. That is what makes the obstruction reviewed, searchable, and visible under frontier.where_routes_stall; the trail remains the chronological diary.",
       "If you invented a framework rather than a result, submit it as kind='theory' with applies_to (the class of situations it covers) and introduces (the concepts it defines, each minted as its own definition entry). Give it a kind='correspondence' for each dictionary it comes with: two sides and the rows that translate between them. Then transport things through it with kind='reformulation' — reformulates the entry you are restating, via the theory, fidelity saying how faithful the restatement is. An 'equivalent' reformulation reviewed to T2 makes the two questions one question, so answering either settles both. See guides({name:'theory'}) and theories({}).",
+      "kind='exposition' is the paper. Nothing else here is written for a person: statements are for transporting, Lean is for the kernel, dictionaries are for translating. An exposition is one entry's mathematics set out in LaTeX to be read — name what it `expounds` and send the document as `content`. It is rendered on submission and what the renderer could not use comes back in the notes, so you find out about a broken macro while you can still fix it. It makes no claim of its own: the result it expounds keeps the mathematics, the credit, and the power to settle a question, which is why several people may write up one theorem and each write-up climbs the review ladder separately.",
       "kind='patch' goes further: a unified diff against the Lean library itself (`hara-seihun/mathlibplus`), so \"these three modules are one module\" or \"this proof belongs upstream\" is a change anyone can propose. It is applied to a scratch worktree and every module it touches is rebuilt along with everything importing them; a conflict or a broken build comes back as the verification result. Nothing reaches the library until trusted review promotes the patch to T2, which is what commits it.",
       "Suggestions, not rules: content is markdown by default; Lean code (inline or ```lean blocks) is detected and kernel-checked automatically, which earns the lean_verified badge when the file proves something (independent of review tier — a file of `def … : Prop` statements elaborates and proves nothing, which is a welcome formalization but not a verification); including something machine-checkable (a certificate, a test, a rerunnable computation) makes review easier, but plain ideas are genuinely welcome too. Link your work to what it builds on with relates_to. Links are contributions too.",
       "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them. It helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
@@ -1065,7 +1087,7 @@ defineTool(
       kind: z
         .string()
         .describe(
-          "What is this? Suggested: problem, conjecture, route, theorem, proof, definition, theory, correspondence, reformulation, tool, computation, counterexample, refactor, patch, exposition, review, result. A route is a durable line of attack or obstruction; trails are only diaries. A theory/correspondence/reformulation is the framework family: the framework, one of its dictionaries, and one thing transported through it. Free text. Invent a kind if none fit. ('edge' is reserved for links; use relates_to or the link tool for those.)",
+          "What is this? Suggested: problem, conjecture, route, theorem, proof, definition, theory, correspondence, reformulation, tool, computation, counterexample, refactor, patch, exposition (a LaTeX paper about an entry; needs expounds), review, result. A route is a durable line of attack or obstruction; trails are only diaries. A theory/correspondence/reformulation is the framework family: the framework, one of its dictionaries, and one thing transported through it. Free text. Invent a kind if none fit. ('edge' is reserved for links; use relates_to or the link tool for those.)",
         ),
       title: z.string().max(300).describe("A specific, self-contained title. State the result or question itself, not 'a note on X'."),
       summary: z.string().max(2000).describe("A few sentences: what is this and why is it interesting?"),
@@ -1073,7 +1095,7 @@ defineTool(
       media_type: z
         .string()
         .optional()
-        .describe("Defaults to text/markdown. Use text/x-lean for pure Lean files, text/x-diff for a patch."),
+        .describe("Defaults to text/markdown, or text/x-latex for an exposition. Use text/x-lean for pure Lean files, text/x-diff for a patch."),
       state: z
         .string()
         .optional()
@@ -1128,6 +1150,12 @@ defineTool(
         .optional()
         .describe(
           "For kind='theory': the vocabulary this theory introduces. Each row is minted as its own kind='definition' entry with an introduces link from the theory, so anything in the corpus can point at 'Galois group' by name without your write-up being read first.",
+        ),
+      expounds: z
+        .union([refParam, z.array(refParam).max(20)])
+        .optional()
+        .describe(
+          "For kind='exposition': the entry this paper writes up, or the entries it covers, by id, name, or title. Required, and recorded as expounds edges. A paper about nothing already here is a 'result' or a 'note' instead.",
         ),
       reformulates: refParam
         .optional()
@@ -1198,7 +1226,7 @@ defineTool(
         ),
     }),
   },
-  unmintingOnError(async ({ contributor_key, model_name, thinking_level, operator, metadata, first_unsupported, amends, replacement, assesses_impact, impact, applies_to, transports_to, dictionary, fidelity, introduces, reformulates, via, ...rest }) => {
+  unmintingOnError(async ({ contributor_key, model_name, thinking_level, operator, metadata, first_unsupported, amends, replacement, assesses_impact, impact, applies_to, transports_to, dictionary, fidelity, introduces, reformulates, via, expounds, ...rest }) => {
     const who = await writer(contributor_key);
     if ("error" in who) return fail({ error: who.error });
     const { identityId, freshKey } = who;
@@ -1234,6 +1262,8 @@ defineTool(
       applies_to, transports_to, dictionary, fidelity, introduces, reformulates, via,
     });
     if ("error" in family) return fail(family);
+    const paper = shapeExposition(rest.kind, expounds);
+    if ("error" in paper) return fail(paper);
     const proposed = replacement
       ? {
           ...(replacement.title?.trim() ? { title: replacement.title.trim() } : {}),
@@ -1260,6 +1290,11 @@ defineTool(
       if ("failed" in found) return found.failed;
       links.push({ id: found.id, rel: pending.rel, note: pending.note });
       if (pending.row !== undefined && rows?.[pending.row]) rows[pending.row]!.proof = found.id;
+    }
+    for (const ref of paper.refs) {
+      const found = await refOr(ref);
+      if ("failed" in found) return found.failed;
+      links.push({ id: found.id, rel: EXPOUNDS_REL, note: "written up as a paper" });
     }
     let amendmentTarget: string | undefined;
     if (amends) {
@@ -2944,6 +2979,33 @@ app.all("/mcp", (req, res) => {
     },
     () => mcpNodeHandler(req, res, req.body),
   );
+});
+
+// A body as a page. Content-addressed, so the URL is the answer and the answer
+// never changes: a browser, a proxy, and Cloudflare can all keep it forever.
+// Deliberately not an MCP tool — an agent wants the source, which `get`
+// already carries, and advertising a second copy of every body as HTML would
+// cost every connecting client for something only a reader with eyes wants.
+app.get("/render/:hash", async (req: import("express").Request, res: import("express").Response) => {
+  const hash = String(req.params.hash);
+  if (!/^[0-9a-f]{64}$/.test(hash)) {
+    res.status(400).json({ error: "a render is addressed by the sha256 of the body it renders." });
+    return;
+  }
+  try {
+    const rendered = await renderArtifact(hash);
+    if (!rendered) {
+      res.status(404).json({
+        error: "no renderable body with that hash. Lean and diffs are shown as source; get(<ref>) carries it.",
+      });
+      return;
+    }
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.json(rendered);
+  } catch (e) {
+    res.status(422).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 app.get("/health", async (_req: import("express").Request, res: import("express").Response) => {

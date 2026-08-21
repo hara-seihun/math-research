@@ -4,6 +4,8 @@ import { issueReceipt } from "./receipts.ts";
 import { createEdge, refreshAround } from "./graph.ts";
 import { isPatchSubmission, MAX_DIFF_BYTES, extractDiff, PATCH_REPO } from "./patch.ts";
 import { wakeVerifier } from "./lean.ts";
+import { EXPOSITION_KIND } from "./exposition.ts";
+import { renderArtifact } from "./render.ts";
 
 const MAX_CONTENT_BYTES = 1 << 20; // 1 MiB
 
@@ -57,7 +59,9 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
   }
 
   const hash = sha256hex(content);
-  const mediaType = input.media_type ?? (input.kind === "patch" ? "text/x-diff" : "text/markdown");
+  const mediaType =
+    input.media_type ??
+    (input.kind === "patch" ? "text/x-diff" : input.kind === EXPOSITION_KIND ? "text/x-latex" : "text/markdown");
   // Priority, declared by the author and correctable by review (set_origin).
   const externalSource = input.external_source?.trim() || undefined;
 
@@ -188,6 +192,26 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
     notes.push(
       `recorded as a patch against ${PATCH_REPO}${base ? ` at ${base.slice(0, 8)}` : " at its current head"}. It is being applied and every module it touches rebuilt, along with everything that imports them; watch my_submissions. Nothing reaches the library until review promotes this to T2.`,
     );
+  } else if (mediaType === "text/x-latex" || mediaType === "text/x-tex") {
+    // A paper is rendered on the way in, not on the way out, because the
+    // author is the only person who can fix it and the only moment they are
+    // still here is now. What pandoc could not make sense of comes back as
+    // notes; it is never a rejection, since a paper with one unknown macro is
+    // still a paper.
+    try {
+      const rendered = await renderArtifact(hash);
+      if (rendered?.warnings.length) {
+        notes.push(
+          `your LaTeX renders, with ${rendered.warnings.length} thing${rendered.warnings.length === 1 ? "" : "s"} the renderer could not use: ${rendered.warnings.join("; ")}. Everything else is on the page. Submit a corrected version that supersedes this one if that matters.`,
+        );
+      } else if (rendered) {
+        notes.push("your LaTeX renders cleanly, mathematics and all. It is readable on the site as soon as it is linked.");
+      }
+    } catch (e) {
+      notes.push(
+        `recorded, but the renderer could not turn this LaTeX into a page: ${e instanceof Error ? e.message : String(e)}. The source is stored exactly as you sent it.`,
+      );
+    }
   } else if (LEAN_HINT.test(content) || mediaType === "text/x-lean") {
     await sql`insert into verification (contribution_id, method) values (${result.id}, 'lean-kernel')`;
     await wakeVerifier(result.id);

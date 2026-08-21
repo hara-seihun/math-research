@@ -22,10 +22,14 @@ const BATCH = 5000;
 
 async function backfillDecls(): Promise<number> {
   let done = 0;
+  let afterModule: string | null = null;
+  let afterName: string | null = null;
   for (;;) {
     const rows = await sql<{ module: string; name: string; statement: string }[]>`
       select module, name, statement from lean_decl
-      where ${all} or norm_v is distinct from ${NORM_VERSION}
+      where (${all} or norm_v is distinct from ${NORM_VERSION})
+        and (${afterModule}::text is null or (module, name) > (${afterModule}, ${afterName}))
+      order by module, name
       limit ${BATCH}`;
     if (rows.length === 0) return done;
     const values = rows.map((row) => {
@@ -42,6 +46,8 @@ async function backfillDecls(): Promise<number> {
         as v(module, name, norm, norm_hash, norm_v, bands, generated)
       where d.module = v.module and d.name = v.name`;
     done += rows.length;
+    afterModule = rows.at(-1)!.module;
+    afterName = rows.at(-1)!.name;
     process.stdout.write(`\rlean_decl: ${done}`);
     if (rows.length < BATCH) return done;
   }
@@ -78,16 +84,33 @@ async function adoptChecks(): Promise<number> {
 }
 
 async function backfillUnits(): Promise<number> {
-  const rows = await sql<{ check_hash: string; name: string; statement: string }[]>`
-    select check_hash, name, statement from lean_unit
-    where ${all} or norm_v is distinct from ${NORM_VERSION}`;
-  for (const row of rows) {
-    const { norm, norm_hash, bands, generated } = normalizeDecl(row.name, row.statement);
-    await sql`update lean_unit set norm = ${norm}, norm_hash = ${norm_hash}, norm_v = ${NORM_VERSION},
-              bands = ${bands}, generated = ${generated}
-              where check_hash = ${row.check_hash} and name = ${row.name}`;
+  let done = 0;
+  let afterHash: string | null = null;
+  let afterName: string | null = null;
+  for (;;) {
+    const rows = await sql<{ check_hash: string; name: string; statement: string }[]>`
+      select check_hash, name, statement from lean_unit
+      where (${all} or norm_v is distinct from ${NORM_VERSION})
+        and (${afterHash}::text is null or (check_hash, name) > (${afterHash}, ${afterName}))
+      order by check_hash, name
+      limit ${BATCH}`;
+    if (rows.length === 0) return done;
+    const values = rows.map((row) => {
+      const { norm, norm_hash, bands, generated } = normalizeDecl(row.name, row.statement);
+      return [row.check_hash, row.name, norm, norm_hash, String(NORM_VERSION), `{${bands.join(",")}}`, String(generated)];
+    });
+    await sql`
+      update lean_unit u
+      set norm = v.norm, norm_hash = v.norm_hash, norm_v = v.norm_v::int,
+          bands = v.bands::int[], generated = v.generated::boolean
+      from (values ${sql(values as never)})
+        as v(check_hash, name, norm, norm_hash, norm_v, bands, generated)
+      where u.check_hash = v.check_hash and u.name = v.name`;
+    done += rows.length;
+    afterHash = rows.at(-1)!.check_hash;
+    afterName = rows.at(-1)!.name;
+    if (rows.length < BATCH) return done;
   }
-  return rows.length;
 }
 
 const started = Date.now();

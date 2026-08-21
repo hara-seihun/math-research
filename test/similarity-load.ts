@@ -1,22 +1,25 @@
 /**
  * Requests per second, against the live endpoint, for the similarity tools.
  *
- *   bun test/similarity-load.ts                        every case, 60 requests each
- *   bun test/similarity-load.ts --requests=200 --concurrency=8
+ *   bun test/similarity-load.ts                       every case, 4s each
+ *   bun test/similarity-load.ts --seconds=10 --concurrency=16
  *   bun test/similarity-load.ts --endpoint=http://127.0.0.1:8080/mcp
+ *
+ * Bounded by time rather than by request count, so a slow case reports a small
+ * number instead of making the whole run slow.
  *
  * Every request carries a different query, because the server shares identical
  * anonymous reads across callers and a repeated one would measure the cache
- * rather than the tool. What this reports is therefore the cold cost of an
- * answer: normalization, the band lookup, and NCD over what it nominated,
- * across the wire and through Postgres.
+ * rather than the tool. What this reports is the cold cost of an answer:
+ * normalization, the band lookup, and NCD over what it nominated, across the
+ * wire and through Postgres.
  */
 const arg = (name: string, fallback: string): string =>
   process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=")[1] ?? fallback;
 
 const ENDPOINT = arg("endpoint", "https://lemma.ing/mcp");
-const REQUESTS = Number(arg("requests", "60"));
-const CONCURRENCY = Number(arg("concurrency", "4"));
+const SECONDS = Number(arg("seconds", "4"));
+const CONCURRENCY = Number(arg("concurrency", "8"));
 
 let id = 0;
 async function call(tool: string, args: unknown): Promise<unknown> {
@@ -33,12 +36,10 @@ async function call(tool: string, args: unknown): Promise<unknown> {
   return content ? JSON.parse(content) : payload;
 }
 
-/** Distinct queries built by renaming, so each is a real question the server
- *  has not been asked and none of them is answerable from the cache. */
-const leanSources = (n: number): string[] =>
-  Array.from({ length: n }, (_, i) => `theorem load_case_${i} {\u03b1 : Type*} (s${i} : Finset \u03b1) (f${i} : \u03b1 \u2192 \u211d) (n${i} : \u211d) (h${i} : \u2200 x \u2208 s${i}, f${i} x \u2264 n${i}) : \u2211 j \u2208 s${i}, f${i} j \u2264 s${i}.card \u2022 n${i}`);
-
-type Case = { name: string; tool: string; args: (i: number) => unknown };
+/** A different question every time, built by renaming, so no answer can come
+ *  from the shared read cache. */
+const leanSource = (i: number): string =>
+  `theorem load_case_${i} {α : Type*} (s${i} : Finset α) (f${i} : α → ℝ) (n${i} : ℝ) (h${i} : ∀ x ∈ s${i}, f${i} x ≤ n${i}) : ∑ j ∈ s${i}, f${i} j ≤ s${i}.card • n${i}`;
 
 const names = await (async () => {
   const out = (await call("search_decls", { query: "Finset sum", proofs_only: true, limit: 60 })) as {
@@ -52,10 +53,10 @@ const refs = await (async () => {
   return (out.results ?? []).map((r) => r.id);
 })();
 
-const sources = leanSources(REQUESTS);
+type Case = { name: string; tool: string; args: (i: number) => unknown };
 
 const CASES: Case[] = [
-  { name: "lean_similar (source)", tool: "lean_similar", args: (i) => ({ source: sources[i % sources.length], limit: 10 }) },
+  { name: "lean_similar (source)", tool: "lean_similar", args: (i) => ({ source: leanSource(i), limit: 10 }) },
   { name: "lean_similar (name)", tool: "lean_similar", args: (i) => ({ name: names[i % names.length], limit: 10 }) },
   { name: "related ncd", tool: "related", args: (i) => ({ ref: refs[i % refs.length], method: "ncd", limit: 10 }) },
   { name: "related lexical", tool: "related", args: (i) => ({ ref: refs[i % refs.length], method: "lexical", limit: 10 }) },
@@ -63,7 +64,7 @@ const CASES: Case[] = [
   { name: "search_decls", tool: "search_decls", args: (i) => ({ query: names[i % names.length] }) },
 ];
 
-console.log(`${ENDPOINT} — ${REQUESTS} requests per case at concurrency ${CONCURRENCY}\n`);
+console.log(`${ENDPOINT} — ${SECONDS}s per case at concurrency ${CONCURRENCY}\n`);
 console.log("case                    req/s   mean ms   p95 ms   errors");
 console.log("----------------------  ------  --------  -------  ------");
 
@@ -73,14 +74,13 @@ for (const c of CASES) {
   let errors = 0;
   let next = 0;
   const started = Date.now();
+  const deadline = started + SECONDS * 1000;
   await Promise.all(
     Array.from({ length: CONCURRENCY }, async () => {
-      for (;;) {
-        const i = next++;
-        if (i >= REQUESTS) return;
+      while (Date.now() < deadline) {
         const t0 = performance.now();
         try {
-          const out = (await call(c.tool, c.args(i))) as { error?: string };
+          const out = (await call(c.tool, c.args(next++))) as { error?: string };
           if (out?.error) errors++;
         } catch {
           errors++;
@@ -89,10 +89,10 @@ for (const c of CASES) {
       }
     }),
   );
-  const seconds = (Date.now() - started) / 1000;
+  const elapsed = (Date.now() - started) / 1000;
   latencies.sort((a, b) => a - b);
   const mean = latencies.reduce((a, b) => a + b, 0) / latencies.length;
   console.log(
-    `${c.name.padEnd(22)}  ${(REQUESTS / seconds).toFixed(1).padStart(6)}  ${mean.toFixed(1).padStart(8)}  ${latencies[Math.floor(latencies.length * 0.95)]!.toFixed(1).padStart(7)}  ${String(errors).padStart(6)}`,
+    `${c.name.padEnd(22)}  ${(latencies.length / elapsed).toFixed(1).padStart(6)}  ${mean.toFixed(1).padStart(8)}  ${latencies[Math.floor(latencies.length * 0.95)]!.toFixed(1).padStart(7)}  ${String(errors).padStart(6)}`,
   );
 }

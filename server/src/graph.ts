@@ -286,13 +286,21 @@ export async function neighbourhood(id: string, opts?: { rel?: string; offset?: 
 }
 
 // --- Similarity oracle (NCD) ------
-// On-demand relatedness, never a stored backlog. A cheap lexical prefilter
-// nominates candidates; alpha-normalized NCD ranks how much structural
-// information each shares with the query — variables, constants and names
-// replaced by their first-occurrence position, then compression distance over
-// what is left, so two entries doing the same thing with different letters
-// score as what they are. Agents call this, look, and decide what to link.
-// The tool proposes nothing on its own.
+// On-demand relatedness, never a stored backlog. A bounded pool of candidates
+// is nominated, and the method says how to rank it: cosine over the
+// embedding, term overlap, or alpha-normalized NCD — variables, constants and
+// names replaced by their first-occurrence position, then compression distance
+// over what is left, so two entries doing the same thing with different
+// letters score as what they are. Agents call this, look, and decide what to
+// link. The tool proposes nothing on its own.
+//
+// Nomination is by nearest embedding, because an entry is not a query: an OR
+// over the terms of a write-up matches a third of the corpus, and Postgres
+// answers it by sequentially scanning and ranking all of it — 128ms typically,
+// 33 seconds for entries whose vocabulary is common. The vector index returns
+// a fixed 150 in milliseconds no matter what the entry says. Term matching
+// stays available as `lexical`, where the probe is a title or a phrase the
+// caller typed, which is short by construction.
 //
 // Normalization and compression both run in a worker (see ncd.ts): together
 // they are the only unbroken stretch of CPU in request handling, and on a
@@ -301,6 +309,8 @@ export type RelatedArgs = { id?: string; text?: string; method: "ncd" | "lexical
 
 export async function related(args: RelatedArgs) {
   let queryText: string;
+  /** The title line, for the lexical probe. */
+  let aboutText: string;
   let selfId: string | null = null;
   if (args.id) {
     const [row] = await sql<{ content: string; title: string; summary: string }[]>`
@@ -309,48 +319,52 @@ export async function related(args: RelatedArgs) {
     if (!row) return { error: "no contribution with that id" };
     selfId = args.id;
     queryText = `${row.title}\n${row.summary}\n${row.content}`;
+    aboutText = `${row.title}\n${row.summary}`;
   } else if (args.text) {
     queryText = args.text;
+    aboutText = args.text;
   } else {
     return { error: "pass an id or some text to find things related to." };
   }
 
-  if (args.method === "semantic") {
-    const v = await embed(queryText);
-    if (!v) return { error: "semantic search is warming up, so use method 'ncd' or 'lexical' for now." };
-    const rows = await sql`
-      select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source, c.created_at,
-             round((1 - (c.embedding <=> ${asVector(v)}::vector))::numeric, 4)::float8 as similarity
-      from contribution c
-      where c.kind <> 'edge' and c.status = 'active' and c.embedding is not null
-        and (${selfId}::uuid is null or c.id <> ${selfId})
-      order by c.embedding <=> ${asVector(v)}::vector limit ${args.limit}`;
-    return { method: "semantic", related: rows };
+  const wantsContent = args.method === "ncd";
+  const vector = args.method === "lexical" ? null : await embed(queryText);
+  if (!vector && args.method === "semantic") {
+    return { error: "semantic search is warming up, so use method 'ncd' or 'lexical' for now." };
   }
 
-  const { any: tsq } = queryParts(queryText);
-  // Fuzzy matching is for the caller who passed a phrase and misremembered a
-  // word of it. Against a whole entry's text it can only match everything, and
-  // it costs a sequential scan of the corpus to say so: the trigram index is
-  // over `lower(title)`, and a 300-character probe uses neither the index nor
-  // anyone's intent.
-  const short = normalizeText(`${queryText}`);
-  const probe = short.length <= 100 ? short : null;
-  const wantsContent = args.method === "ncd";
-  const candidates = await sql.begin(async (tx: Tx) => {
-    await tx`select set_config('pg_trgm.similarity_threshold', '0.15', true)`;
-    return tx<({ id: string; content: string | null } & Record<string, unknown>)[]>`
+  type Candidate = { id: string; content: string | null; similarity?: number } & Record<string, unknown>;
+  let candidates: Candidate[];
+  if (vector) {
+    candidates = await sql<Candidate[]>`
       select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source, c.created_at,
+             round((1 - (c.embedding <=> ${asVector(vector)}::vector))::numeric, 4)::float8 as similarity,
              case when ${wantsContent} then left(a.content, 4000) end as content
       from contribution c left join artifact a on ${wantsContent} and a.hash = c.artifact_hash
-      where c.kind <> 'edge' and c.status = 'active'
+      where c.kind <> 'edge' and c.status = 'active' and c.embedding is not null
         and (${selfId}::uuid is null or c.id <> ${selfId})
-        and (c.search @@ to_tsquery('english', ${tsq})
-             or (${probe}::text is not null and lower(c.title) % ${probe}))
-      order by ts_rank(${RANK_WEIGHTS}::float4[], c.search, to_tsquery('english', ${tsq})) desc,
-               c.notability desc
-      limit 150`;
-  });
+      order by c.embedding <=> ${asVector(vector)}::vector
+      limit ${wantsContent ? 150 : args.limit}`;
+  } else {
+    // Words, for the caller who asked for words: a title or a typed phrase,
+    // and the trigram index over `lower(title)` for the one they misspelled.
+    const probeText = (args.text ?? aboutText.split("\n")[0] ?? "").slice(0, 300);
+    const { any: tsq } = queryParts(probeText);
+    const probe = normalizeText(probeText).slice(0, 100);
+    candidates = await sql.begin(async (tx: Tx) => {
+      await tx`select set_config('pg_trgm.similarity_threshold', '0.15', true)`;
+      return tx<Candidate[]>`
+        select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source, c.created_at,
+               case when ${wantsContent} then left(a.content, 4000) end as content
+        from contribution c left join artifact a on ${wantsContent} and a.hash = c.artifact_hash
+        where c.kind <> 'edge' and c.status = 'active'
+          and (${selfId}::uuid is null or c.id <> ${selfId})
+          and (c.search @@ to_tsquery('english', ${tsq}) or lower(c.title) % ${probe})
+        order by ts_rank(${RANK_WEIGHTS}::float4[], c.search, to_tsquery('english', ${tsq})) desc,
+                 c.notability desc
+        limit ${wantsContent ? 150 : args.limit}`;
+    });
+  }
 
   let scored: (Record<string, unknown> & { id: string; similarity?: number })[] = candidates.map(
     ({ content: _content, ...c }) => c as Record<string, unknown> & { id: string },

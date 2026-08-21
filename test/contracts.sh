@@ -956,6 +956,7 @@ declare -A DOORS=(
   [search_decls]='{"query":"csSup_le"}'
   [lean_similar]='{"source":"theorem contract_door (n : Nat) : n + 0 = n := by simp"}'
   [fronts]='{}'
+  [theories]='{}'
   [query]='{"sql":"select kind, count(*) as n from q_entries group by kind order by n desc"}'
   [frontier]="{\"ref\":\"$Q\"}"
   [related]="{\"ref\":\"$Q\",\"method\":\"lexical\"}"

@@ -6,15 +6,32 @@ const JOB_TIMEOUT_MS = Number(process.env.NCD_TIMEOUT_MS ?? 10_000);
 
 type Pending = { resolve: (done: NcdDone) => void; reject: (error: Error) => void; timer: Timer };
 
+// Omit over a union keeps only the keys every member shares, which for a job
+// type discriminated by `kind` is the discriminant and nothing else: a caller
+// could then hand the pool a rank job with no candidates and be told nothing.
+// Distributing it keeps each variant whole.
+type Submitted<T> = T extends unknown ? Omit<T, "id"> : never;
+
 class NcdPool {
   private readonly workers: Worker[] = [];
+  private readonly inFlight: number[] = [];
   private readonly pending = new Map<number, Pending>();
-  private next = 0;
   private jobId = 0;
+
+  // Spawned at startup, not on first use: standing a Bun worker up and loading
+  // its module graph took five seconds, and lazily it was a request that paid
+  // for it. Warmed with a real job for the same reason.
+  constructor() {
+    for (let i = 0; i < WORKERS; i++) this.spawn(i);
+    void Promise.all(
+      this.workers.map(() => this.run({ kind: "rank", mode: "lean", query: "warm", candidates: [{ id: "0", text: "warm" }] })),
+    ).catch(() => {});
+  }
 
   private spawn(index: number): Worker {
     const worker = new Worker(new URL("./ncd-worker.ts", import.meta.url));
     worker.on("message", (done: NcdDone) => {
+      this.inFlight[index] = Math.max(0, (this.inFlight[index] ?? 1) - 1);
       const waiter = this.pending.get(done.id);
       if (!waiter) return;
       this.pending.delete(done.id);
@@ -30,6 +47,7 @@ class NcdPool {
     });
     worker.unref();
     this.workers[index] = worker;
+    this.inFlight[index] = 0;
     return worker;
   }
 
@@ -43,9 +61,14 @@ class NcdPool {
     this.spawn(index);
   }
 
-  run(job: Omit<NcdJob, "id">): Promise<NcdDone> {
-    if (this.workers.length < WORKERS) this.spawn(this.workers.length);
-    const worker = this.workers[this.next++ % this.workers.length]!;
+  run(job: Submitted<NcdJob>): Promise<NcdDone> {
+    // Least loaded rather than round robin: a namespace scan occupies a worker
+    // for a while, and the next caller should not queue behind it while a
+    // second worker sits idle.
+    let index = 0;
+    for (let i = 1; i < this.workers.length; i++) if (this.inFlight[i]! < this.inFlight[index]!) index = i;
+    const worker = this.workers[index]!;
+    this.inFlight[index]!++;
     const id = ++this.jobId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

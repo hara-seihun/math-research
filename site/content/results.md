@@ -22,6 +22,10 @@ order: 0.5
       <input id="results-search" data-search type="search" placeholder="Search results" autocomplete="off">
       <button type="submit">Search</button>
     </form>
+    <label class="feed-toggle">
+      <input data-exclude-external type="checkbox">
+      Exclude results proved elsewhere
+    </label>
   </div>
   <ol class="feed-list" id="feed-list" data-list aria-live="polite"></ol>
   <button type="button" class="feed-more" data-more hidden>Load more</button>

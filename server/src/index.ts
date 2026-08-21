@@ -1376,7 +1376,7 @@ defineTool(
     description: [
       "Structural duplicate detection over every Lean this ledger can see: the pinned libraries (Mathlib, its dependencies, all of MathlibPlus) and the declarations of every checked submission here.",
       "Names are not what is compared. A declaration is alpha-normalized first — bound variables, universe parameters, hypothesis names and the declaration's own name become positions, while constants, operators, types and structure stay — and what is left is ranked by compression distance. So `∀ (n : ℕ), n + 0 = n` and `∀ (k : ℕ), k + 0 = k` are one statement, and `exact: true` means the two say the same thing modulo naming.",
-      "Three ways in. Paste `source` to ask 'is this already proved?' before you prove it. Give a declaration `name` to find its twins. Give `scan` a library or module subtree — or `ledger: true` — to sweep a whole namespace for statements that appear more than once, which is where deduplication patches come from.",
+      "Three ways in. Paste `source` to ask 'is this already proved?' before you prove it. Give a declaration `name` to find its twins. Give `scan` a library or module subtree — or `ledger: true` — to sweep a whole namespace for statements that appear more than once, which is where deduplication patches come from. For library cleanup, `exact_only` scans the complete scope instead of a bounded NCD window; add `against_library` to find proofs that should be imports from another library, and page with `offset`.",
       "Lean's generated declarations (`.injEq`, `.mk`, recursors, match equations) are classified out: they are identical across every structure with the same field types and nobody can deduplicate them. This produces an attention list, not a proof of equivalence — read the statements before you act on them.",
     ].join(" "),
     inputSchema: z.object({
@@ -1386,14 +1386,28 @@ defineTool(
       library: z.string().optional().describe("Restrict to one library: 'Mathlib', 'MathlibPlus', 'Batteries', 'Init'."),
       module: z.string().optional().describe("Restrict to one module or its subtree, e.g. 'MathlibPlus.GraphTheory'."),
       ledger: z.boolean().default(false).describe("With scan: sweep the ledger's own checked Lean rather than a library."),
+      proofs_only: z.boolean().default(false).describe("With scan: exclude definitions and stated propositions; keep declarations carrying proofs."),
+      exact_only: z.boolean().default(false).describe("With scan: use the normalized-hash index over the complete scope and skip near matches. This path is pageable and is the right one for mechanical cleanup."),
+      against_library: z.string().optional().describe("With exact_only: find source declarations repeated by this library, e.g. scan MathlibPlus against Mathlib."),
+      offset: z.number().int().min(0).default(0).describe("With exact_only: page past this many duplicate groups."),
       threshold: z.number().min(0.3).max(1).default(0.8).describe("With scan: how similar a pair must be to be worth reporting. 1 is identical modulo names."),
-      limit: z.number().int().min(1).max(50).default(10).describe("How many matches, or how many duplicate groups."),
+      limit: z.number().int().min(1).max(200).default(10).describe("How many matches, or how many duplicate groups."),
     }),
   },
-  async ({ source, name, scan, library, module, ledger, threshold, limit }) => {
-    logRequest("lean_similar", null, { name, scan, library, module, ledger });
+  async ({ source, name, scan, library, module, ledger, proofs_only, exact_only, against_library, offset, threshold, limit }) => {
+    logRequest("lean_similar", null, { name, scan, library, module, ledger, proofs_only, exact_only, against_library, offset });
     if (scan) {
-      const result = await scanDuplicates({ library, module, ledger, threshold, limit });
+      const result = await scanDuplicates({
+        library,
+        module,
+        ledger,
+        proofsOnly: proofs_only,
+        exactOnly: exact_only,
+        againstLibrary: against_library,
+        offset,
+        threshold,
+        limit,
+      });
       if ("error" in result) return fail(result);
       return structured(LeanSimilarOut, { mode: "scan", ...result });
     }

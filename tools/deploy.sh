@@ -95,7 +95,9 @@ if ! git diff --quiet -- server schema.sql tools lean; then
   [[ -n "${DEPLOY_DIRTY_OK:-}" ]] || { echo "commit them, or set DEPLOY_DIRTY_OK=1 if they are someone else's" >&2; exit 1; }
 fi
 
-git push
+# A worktree branch is the normal way agents avoid sharing unfinished edits.
+# Deploy the reviewed commit as main regardless of that local branch's name.
+git push origin HEAD:main
 ssh mathvm "set -e; $steps"
 curl -sf --max-time 10 https://lemma.ing/health > /dev/null
 curl -sf --max-time 10 https://lemma.ing/ > /dev/null

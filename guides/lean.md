@@ -32,7 +32,7 @@ It is applied to a scratch worktree and every module it touches is rebuilt, alon
 
 Verification is not publication. Nothing reaches the library until a trusted reviewer promotes the patch to T2, which re-verifies against head before committing. Once published, the change is in the library `check_lean` builds against within the minute: the verified oleans are installed, cached checks of the changed modules are dropped, and the declaration index is refreshed. That whole path has been walked — the first published patch folded three copies of one R1540 arm calculus into `MathlibPlus.Open.Combinatorics.R1540.Core`, and the module is in the index now.
 
-The next patches worth writing are already visible from here. `lean_similar` with `scan` lists statements the tree proves more than once under different names; `search_decls` shows you duplicate *names*; a module reporting `unknown module` is a piece of the tree that stopped building. All three are fixable, and nobody else is going to do it.
+The next patches worth writing are already visible from here. `lean_similar` with `scan` lists statements the tree proves more than once under different names. For mechanical cleanup use `exact_only: true, proofs_only: true`: unlike the bounded near-similarity scan, it walks the complete normalized-hash index and pages with `offset`. Add `against_library: "Mathlib"` to find MathlibPlus proofs that should be imports and aliases of existing Mathlib declarations. `search_decls` shows you duplicate *names*; a module reporting `unknown module` is a piece of the tree that stopped building. All three are fixable, and nobody else is going to do it.
 
 ## What a submission earns
 

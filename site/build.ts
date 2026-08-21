@@ -139,44 +139,6 @@ function ledgerSnapshot(hello: any, totals: Record<string, number>): string {
   ].join("\n");
 }
 
-// Read both findings from the live ledger so the page cannot drift from it.
-const DBN_BOUND = "2ed3cc65-bba0-4c40-9447-062858088fa8";
-const CI_FRONT = "Finite undirected CI-group classification";
-
-async function accomplishments(): Promise<string> {
-  const [bound, ci, open] = await Promise.all([
-    callTool("get", { ref: DBN_BOUND }),
-    callTool("fronts", { ref: CI_FRONT }),
-    callTool("search", { front: CI_FRONT, kind: "problem", state: "open", limit: 50 }),
-  ]);
-
-  const fraction = /Lambda\\le\\frac\{(\d+)\}\{(\d+)\}/.exec(bound.content ?? "");
-  if (!fraction) throw new Error(`${DBN_BOUND}: no \\Lambda\\le\\frac{a}{b} in the content`);
-  const lambda = Number(fraction[1]) / Number(fraction[2]);
-
-  // The open members are whatever the ledger says they are. They were once
-  // uniformly "Cell A3"-style names and this page insisted on that shape; an
-  // amendment gave them mathematical titles instead, which is an improvement
-  // that must not be able to break the build. Count them, name a few.
-  const openCells = open.results.map((entry: any) => String(entry.title));
-  if (openCells.length === 0) throw new Error(`${CI_FRONT}: no open members, so the classification page would lie`);
-  const settled = ci.progress.settled;
-  const cellName = (title: string) => /^Cell ([A-Z]\d+)/.exec(title)?.[1] ?? title.replace(/[.?]$/, "");
-  const named = openCells.slice(0, 3).map(cellName);
-  const rest = openCells.length - named.length;
-
-  return [
-    `**The de Bruijn\u2013Newman constant satisfies \u039b \u2264 ${lambda}.**`,
-    "",
-    `\`get({ref: ${JSON.stringify(bound.title)}})\``,
-    "",
-    `**${settled} of ${settled + openCells.length} cells in the finite undirected CI-group classification are settled.**`,
-    `Still open: ${named.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}.`,
-    "",
-    `\`fronts({ref: ${JSON.stringify(ci.title)}})\``,
-  ].join("\n");
-}
-
 function schemaType(schema: any): string {
   if (!schema) return "any";
   if (schema.enum) return schema.enum.map((v: unknown) => `\`${JSON.stringify(v)}\``).join(" \\| ");
@@ -473,8 +435,6 @@ const totals = Object.fromEntries(
   totalsResult.columns.map((c: string, i: number) => [c, Number(totalsResult.rows[0][i])]),
 ) as Record<string, number>;
 
-const accomplishmentsSnapshot = await accomplishments();
-
 // Prose states no fact it does not own. The snapshots and the tool reference
 // come from a live server, the pinned versions from the Lake project (shared
 // with the `guides` tool, so in-band and on-site readers get one answer), and
@@ -483,7 +443,6 @@ const expand = (markdown: string) =>
   expandPins(markdown)
     .replace("{{how_it_works_digest}}", () => howItWorksDigest())
     .replace("{{ledger_snapshot}}", () => ledgerSnapshot(hello, totals))
-    .replace("{{accomplishments_snapshot}}", () => accomplishmentsSnapshot)
     .replace("{{tool_reference}}", () => toolReference(toolList.tools))
     .replace("{{resource_reference}}", () => resourceReference(resourceList.resources, templateList.resourceTemplates))
     .replace("{{prompt_reference}}", () => promptReference(promptList.prompts))

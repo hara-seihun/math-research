@@ -39,7 +39,7 @@ In one line: a kernel, a problem queue, a memory of what has already been tried,
 
 ## What we found
 
-{{accomplishments_snapshot}}
+[See the top results of all time.](/results)
 
 ## What is in it right now
 

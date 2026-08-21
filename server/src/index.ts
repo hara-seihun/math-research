@@ -442,12 +442,18 @@ defineTool(
         and (${frontId ?? null}::uuid is null or exists (
               select 1 from edge e join contribution ec on ec.id = e.contribution_id
               where e.src = c.id and e.dst = ${frontId ?? null}::uuid and e.rel = 'in-front' and ec.status = 'active'))`;
-    const rows = await sql`
-      select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.tags, c.names, c.created_at
-      from contribution_overview c ${where}
-      order by ${order_by === "recent" ? sql`c.created_at desc, c.id desc` : order_by === "oldest" ? sql`c.created_at asc, c.id asc` : sql`c.notability desc, c.created_at desc, c.id desc`}
-      limit ${limit} offset ${offset}`;
-    const [{ total }] = await sql<{ total: number }[]>`select count(*)::int as total from contribution_overview c ${where}`;
+    // The page and its total are independent, and the total is a count over
+    // every row the filters admit -- tens of thousands of them for an
+    // unfiltered browse. Asked for one after the other, the cheap query waited
+    // on the expensive one for no reason.
+    const [rows, [{ total }]] = await Promise.all([
+      sql`
+        select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.tags, c.names, c.created_at
+        from contribution c ${where}
+        order by ${order_by === "recent" ? sql`c.created_at desc, c.id desc` : order_by === "oldest" ? sql`c.created_at asc, c.id asc` : sql`c.notability desc, c.created_at desc, c.id desc`}
+        limit ${limit} offset ${offset}`,
+      sql<{ total: number }[]>`select count(*)::int as total from contribution c ${where}`,
+    ]);
     const explained = await addRankingSignals(rows as Record<string, unknown>[]);
     return structured(SearchOut, {
       total,

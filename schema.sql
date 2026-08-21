@@ -476,6 +476,11 @@ begin
   if ids is null then
     perform pg_advisory_xact_lock(hashtext('refresh_notability'));
   else
+    -- Shared scoped refreshes may proceed together; a whole-table refresh
+    -- takes the exclusive form above and waits for all of them. Row ordering
+    -- alone cannot prevent a deadlock between a live scoped write and a full
+    -- tuning refresh (observed on the first live calibration).
+    perform pg_advisory_xact_lock_shared(hashtext('refresh_notability'));
     perform 1 from contribution where id = any (ids) order by id for no key update;
   end if;
   select value into w from config where key = 'notability_weights';
@@ -543,6 +548,7 @@ begin
   if ids is null then
     perform pg_advisory_xact_lock(hashtext('refresh_state'));
   else
+    perform pg_advisory_xact_lock_shared(hashtext('refresh_state'));
     perform 1 from contribution where id = any (ids) order by id for no key update;
   end if;
   update contribution c

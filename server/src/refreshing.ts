@@ -36,7 +36,11 @@ export class Refreshing<T> {
   }
 
   async get(): Promise<T> {
-    if (!this.value) return this.run();
+    // A non-positive ttl means "do not cache this at all", which is what the
+    // contract suite asks for. Serving the previous value and refreshing
+    // behind it would make a zero ttl the *stalest* setting rather than the
+    // freshest one.
+    if (this.ttlMs <= 0 || !this.value) return this.run();
     if (Date.now() - this.value.at > this.ttlMs) void this.run().catch(() => {});
     return this.value.of;
   }

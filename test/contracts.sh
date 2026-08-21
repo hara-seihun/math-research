@@ -305,6 +305,20 @@ for f in "$WORK"/tier.*.out "$WORK"/link.*.out; do
   [[ $(field '["ok"]' < "$f") == True ]] || fail "a concurrent write failed: $(cat "$f")"
 done
 
+# A whole-table tuning refresh and a live scoped refresh used to deadlock: the
+# former held arbitrary row locks while the latter held its target rows. Full
+# refreshes take an exclusive advisory lock; scoped refreshes take its shared
+# form before touching rows. Holding the exclusive lock must therefore pause a
+# link write rather than letting the two enter the row-lock phase together.
+psql -q -h "$WORK" -d math -c "begin; select pg_advisory_xact_lock(hashtext('refresh_notability')); select pg_sleep(0.6); commit" > /dev/null &
+LOCK_JOB=$!
+sleep 0.1
+START_MS=$(date +%s%3N)
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$CID\",\"dst\":\"$CID2\",\"rel\":\"repairs\",\"note\":\"full refresh exclusion\"}" | field '["ok"]' > /dev/null
+END_MS=$(date +%s%3N)
+wait "$LOCK_JOB"
+(( END_MS - START_MS >= 350 )) || fail "a scoped refresh ignored the full-refresh exclusion lock"
+
 echo "$GOT" | python3 -c 'import sys,json; evs=[e["kind"] for e in json.loads(sys.stdin.read())["events"]]; assert "tier-changed" in evs' || fail "no tier-changed event"
 
 # Contract: trails are visible where the work happens and never block anyone.

@@ -19,19 +19,43 @@ const SITE_NAME = "lemma.ing";
 const BUILD_SOURCE = process.env.MATH_MCP_URL ?? "https://lemma.ing/mcp";
 const ENDPOINT = `${ORIGIN}/mcp`;
 const ASSET_DIR = join(HERE, "assets");
-const ASSETS = new Map(
-  readdirSync(ASSET_DIR).map((name) => {
-    const content = readFileSync(join(ASSET_DIR, name));
-    const extension = extname(name);
-    const stem = basename(name, extension);
-    const digest = createHash("sha256").update(content).digest("hex").slice(0, 12);
-    return [name, `${stem}.${digest}${extension}`] as const;
-  }),
-);
+
+// Assets are content-addressed so they can be cached forever, which means an
+// asset that names another one cannot simply write its path: style.css needs
+// the fingerprinted name of the math font. So a text asset may write
+// {{asset:name}} and it is expanded before the fingerprint is taken, leaving
+// the digest a true digest of what is served. An asset that is referred to may
+// not itself refer to anything, which keeps this one pass rather than a
+// dependency graph, and is checked rather than assumed.
+const REFERENCE = /\{\{asset:([\w.-]+)\}\}/g;
+const assetBodies = new Map(readdirSync(ASSET_DIR).map((name) => [name, readFileSync(join(ASSET_DIR, name))] as const));
+const fingerprint = (name: string, content: Buffer | string) => {
+  const extension = extname(name);
+  const digest = createHash("sha256").update(content).digest("hex").slice(0, 12);
+  return `${basename(name, extension)}.${digest}${extension}`;
+};
+
+const ASSETS = new Map<string, { name: string; content: Buffer | string }>();
+for (const [name, body] of assetBodies) {
+  const text = /\.(css|js|svg|txt)$/.test(name) ? body.toString("utf8") : undefined;
+  if (text === undefined || !REFERENCE.test(text)) {
+    ASSETS.set(name, { name: fingerprint(name, body), content: body });
+  }
+}
+for (const [name, body] of assetBodies) {
+  if (ASSETS.has(name)) continue;
+  const expanded = body.toString("utf8").replace(REFERENCE, (_whole, target: string) => {
+    const referenced = ASSETS.get(target);
+    if (!referenced) throw new Error(`${name} references asset ${target}, which does not exist or itself references another asset`);
+    return `/${referenced.name}`;
+  });
+  ASSETS.set(name, { name: fingerprint(name, expanded), content: expanded });
+}
+
 const assetHref = (name: string) => {
   const fingerprinted = ASSETS.get(name);
   if (!fingerprinted) throw new Error(`no site asset named ${name}`);
-  return `/${fingerprinted}`;
+  return `/${fingerprinted.name}`;
 };
 
 type Page = {
@@ -484,8 +508,8 @@ const nav = pages.filter((p) => p.nav).sort((a, b) => a.order - b.order);
 
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
-for (const [source, target] of ASSETS) {
-  write(join(OUT, target), readFileSync(join(ASSET_DIR, source)));
+for (const [, asset] of ASSETS) {
+  write(join(OUT, asset.name), asset.content);
 }
 
 for (const page of pages) {

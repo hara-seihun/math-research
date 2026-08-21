@@ -470,9 +470,27 @@ footer p { margin: 0 0 0.4rem; }
 .body { margin-bottom: 2rem; }
 .body-loading { color: var(--muted); }
 
+/* Browsers draw an italic variable in MathML by mapping it into the
+   Mathematical Alphanumeric Symbols block, which almost no system font stack
+   covers: without a math font, every variable in a paper is a tofu box. STIX
+   Two Math is the reference face for MathML and carries the OpenType MATH
+   table that positions fractions, radicals and stretchy delimiters.
+   tools/build-math-font.sh regenerates the subset. It is asked for only inside
+   <math>, so a reader who never opens anything with mathematics in it never
+   downloads it. */
+@font-face {
+  font-family: "STIX Two Math";
+  src: url("{{asset:stix-two-math-subset.woff2}}") format("woff2");
+  font-display: swap;
+}
+
 .body-rendered h2 { font-size: 1.25rem; }
 .body-rendered h3 { font-family: inherit; font-size: 1.05rem; color: var(--text); }
-.body-rendered math { font-size: 1.05em; }
+
+.body-rendered math {
+  font-family: "STIX Two Math", "Latin Modern Math", "Cambria Math", math, serif;
+  font-size: 1.05em;
+}
 .body-rendered math[display="block"] {
   display: block;
   margin: 1.1rem 0;

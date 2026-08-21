@@ -1446,6 +1446,13 @@ call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,js
 p=[x for x in d["patches"] if x["id"]=="'"$MERGE_ID"'"]; assert p and p[0]["build"]=="passed" and p[0]["deleted_modules"]==["MathlibPlus.Gamma"], d["patches"]' \
   || fail "the review queue did not show the patch with its build result"
 
+# A prose-only commit between verification and publication cannot invalidate a
+# Lean build. Publication must reuse this check rather than scheduling the same
+# transitive rebuild under a new commit hash.
+printf 'documentation moved after this patch was checked\n' > "$PATCH_REPO_DIR/README.md"
+git -C "$PATCH_REPO_DIR" add README.md
+git -C "$PATCH_REPO_DIR" -c user.name=contracts -c user.email=c@example.invalid commit -qm "prose moved"
+
 # A stale kernel check of the module the patch changes: publication must drop
 # it, because its answer was about a library that no longer exists.
 psql -q -h "$WORK" -d math -c "insert into lean_check (source_hash, source, outcome) values ('deadbeef', 'import MathlibPlus.Alpha' || chr(10) || 'example : True := trivial', 'failed')"

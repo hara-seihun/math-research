@@ -655,7 +655,25 @@ export async function publishPatches() {
   if (!row) return;
 
   const diff = extractDiff(row.content);
-  const checkId = patchCheckId(PATCH_REPO, head, diff);
+  let checkId = patchCheckId(PATCH_REPO, head, diff);
+
+  // A README commit cannot invalidate Lean artifacts. Re-keying every patch
+  // check on the Git commit made a concurrent prose edit rebuild the same
+  // thirteen modules for another 55 seconds immediately before publication.
+  const [prior] = await sql<{ id: string; base_commit: string }[]>`
+    select id, base_commit from patch_check
+    where repo = ${PATCH_REPO} and diff = ${diff} and outcome = 'passed'
+    order by updated_at desc limit 1`;
+  if (prior && prior.base_commit !== head) {
+    const moved = await git(["diff", "--name-only", `${prior.base_commit}..${head}`]);
+    const paths = moved.stdout.split("\n").filter(Boolean);
+    const affectsLean = paths.some((path) =>
+      path.endsWith(".lean") ||
+      ["lakefile.toml", "lake-manifest.json", "lean-toolchain", "scripts/build_set.py"].includes(path),
+    );
+    if (moved.code === 0 && !affectsLean) checkId = prior.id;
+  }
+
   const block = async (reason: string, detail: PatchDetail = {}) => {
     await sql`insert into patch_publication (contribution_id, repo, state, check_id, detail)
               values (${row.id}, ${PATCH_REPO}, 'blocked', ${checkId}, ${sql.json({ ...detail, reason, head_commit: head } as never)})

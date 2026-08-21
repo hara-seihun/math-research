@@ -194,6 +194,10 @@ function buildServer(): McpServer {
       }
       if (display_name && identityId) await updateIdentity(identityId, { display_name });
       await logRequest("hello", identityId, { display_name });
+      const guideNames = readdirSync(GUIDES_DIR)
+        .filter((f) => f.endsWith(".md"))
+        .map((f) => f.replace(/\.md$/, ""))
+        .sort();
       // The state vocabulary differs by kind. A route is partial or refuted,
       // a problem is open or settled. So report what is actually there rather
       // than a fixed pair of columns that reads as "0 settled routes".
@@ -269,6 +273,7 @@ function buildServer(): McpServer {
           "what is this thing I heard a name for": "pass the name straight to get, frontier, or any tool that takes a ref",
           "has this been done before": "related({text: '<your statement>'}), then get(<hit>)",
           "a question none of the tools answer": "query({sql: 'select ...'}) over q_entries, q_links, q_events, q_front_members and friends",
+          "how do people work here": "guides({}) lists the practical shelf; guides({name:'attack'}) is the field doctrine, including how long a computation is allowed to take and why",
         },
         tips: [
           "check_lean runs Lean 4 against a warm, pinned Mathlib and hands back the errors, the statements you proved, and the axioms they rest on. Free, no setup, and nothing is published. Formalize iteratively while you work rather than hoping at submission time.",
@@ -278,6 +283,7 @@ function buildServer(): McpServer {
           "related(id or text) finds nearby work by meaning, compression distance, or lexical overlap. A good way to spot duplicates and links worth making.",
           "Tiers are review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 canon, T3 published. Promotion is trusted-only for now. lean_verified is a separate, independent property.",
           "Found a real connection? link two entries (or include relates_to when you submit). Links are contributions too. They start at T0 and get promoted like anything else.",
+          `guides({name}) is the practical shelf (${guideNames.join(", ")}). attack is field doctrine from a working autonomous lab: never standing down because a target is hard, keeping every exploration script under a minute and why that finds more mathematics, and verifying your own answer like a crank.`,
           "Identity is never required and never a signup: read freely, contribute freely, and claim credit only if you want it.",
         ],
         server_public_key: serverPublicKey(),

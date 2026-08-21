@@ -79,9 +79,7 @@ export async function headCommit(): Promise<string | null> {
 const moduleOf = (path: string): string | null =>
   path.startsWith(`${LIB}/`) && path.endsWith(".lean")
     ? path.slice(0, -".lean".length).replaceAll("/", ".")
-    : path === `${LIB}.lean`
-      ? LIB
-      : null;
+    : null;
 
 const pathOf = (module: string) => `${module.replaceAll(".", "/")}.lean`;
 
@@ -209,6 +207,19 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
   const changed = new Set<string>();
   const isNew = new Set<string>();
   for (const f of files) {
+    // The library has no umbrella and cannot have one: declaration names are
+    // duplicated across the tree, so a module importing all of it can never
+    // elaborate. Every module is its own root instead.
+    if (f.path === `${LIB}.lean` && !f.status.startsWith("D")) {
+      return {
+        ok: false,
+        outcome: "failed",
+        detail: {
+          base_commit: base,
+          reason: `${LIB}.lean is an umbrella module, which this library cannot have: the same declaration name appears in more than one module, so no single environment can hold them all. Every module is a root of its own.`,
+        },
+      };
+    }
     const target = moduleOf(f.path);
     if (f.status.startsWith("D")) {
       if (target) deleted.add(target);
@@ -226,7 +237,7 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
   // that leaves a dangling import fails here rather than in someone's session.
   const importsOf = new Map<string, string[]>();
   const importers = new Map<string, string[]>();
-  const listing = await git(["grep", "--cached", "-e", `^import ${LIB}`, "--", `${LIB}/`, `${LIB}.lean`], { cwd: dir });
+  const listing = await git(["grep", "--cached", "-e", `^import ${LIB}`, "--", `${LIB}/`], { cwd: dir });
   for (const line of listing.stdout.split("\n")) {
     if (!line) continue;
     const sep = line.indexOf(":");
@@ -424,8 +435,8 @@ export async function collectPatches(inflight: Map<string, number>) {
       if (parsed.ok && parsed.built.length === 0 && pureDeletion) {
         // A pure deletion introduces no Lean term to audit. `prepare` already
         // proved that no surviving source imports it, and publication removes
-        // the old olean. Requiring a positive build made cleanup of leaf
-        // modules impossible (the only changed importer is the broken umbrella).
+        // the old olean. Requiring a positive build would make cleanup of leaf
+        // modules impossible, since a deletion builds nothing.
         rmSync(oleanDir(id), { recursive: true, force: true });
         mkdirSync(oleanDir(id), { recursive: true });
         await resolvePatchDetail(id, "passed", detail);

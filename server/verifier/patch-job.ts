@@ -18,10 +18,9 @@ export type PatchModule = {
   /**
    * The module does not build at the base commit either — it has no olean in
    * the library's build tree — so a failure here is the state of the library,
-   * not something the patch broke. A patch that repairs one of these is the
-   * whole point; a patch that merely touches one (the umbrella module, which
-   * cannot build at all, is edited by every patch that adds a file) must not
-   * be blamed for it.
+   * not something the patch broke. These are the quarantined modules of
+   * `unverified.txt`. A patch that repairs one of them is the whole point; a
+   * patch that merely touches one, or imports one, must not be blamed for it.
    */
   optional: boolean;
   /** Its imports that are also in this job, so a module whose dependency

@@ -97,7 +97,7 @@ already checked. The version is pinned in one place, `lean/lakefile.toml` and
 naming it. `tools/index-decls.sh` builds the `search_decls` index from the
 built oleans, which is what makes "is there already a lemma for this?" a
 millisecond of Postgres instead of a twenty-second kernel round trip, and what
-makes MathlibPlus visible despite having no umbrella import.
+makes MathlibPlus visible despite nothing importing it as a whole.
 
 **Names are not what a statement is.** `search_decls` matches text, so it finds
 only what you can already spell. `lean_similar` matches structure: every

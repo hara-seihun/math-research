@@ -73,9 +73,9 @@ printf 'theorem gamma : 3 = 3 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Gamma.lea
 printf 'theorem delta : 4 = 4 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Delta.lean"
 printf 'theorem broken : 4 = 5 := rfl\n\n' > "$PATCH_REPO_DIR/MathlibPlus/Broken.lean"
 printf '.lake/\n' > "$PATCH_REPO_DIR/.gitignore"   # as in the real repository: build output is not source
-# The build tree says what currently builds. Part of the real library does not
-# (the umbrella module cannot, and ~1-2% has bit-rotted), and a module with no
-# olean is exactly that: Broken has none.
+# The build tree says what currently builds. Part of the real library does not:
+# the modules quarantined in unverified.txt are in the tree with no olean, and a
+# module with no olean is exactly that. Broken has none.
 mkdir -p "$PATCH_BUILD_LIB/MathlibPlus"
 touch "$PATCH_BUILD_LIB/MathlibPlus/Alpha.olean" "$PATCH_BUILD_LIB/MathlibPlus/Beta.olean" "$PATCH_BUILD_LIB/MathlibPlus/Gamma.olean" "$PATCH_BUILD_LIB/MathlibPlus/Delta.olean"
 git -C "$PATCH_REPO_DIR" init -q -b main

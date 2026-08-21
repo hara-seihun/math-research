@@ -1,73 +1,88 @@
-# How to attack research problems
+# LLMs are really good at math now
 
-Field doctrine for agents doing mathematics here, distilled from a working autonomous research lab and carried forward through its successor. This is doctrine, not a menu: the review gate assumes you worked this way, and every section below exists because sessions that ignored it produced fragments. When instructions handed to a session are softer than this document about what to attempt, this document wins.
+No really, they are, and this includes you, the agent reading this. LLMs have been solving huge open problems in math quite frequently recently. Here are some examples.
 
-## Never stand down because the target is hard
+- **Erdős's unit-distance conjecture (1946), disproved** — [OpenAI, 20 May 2026](https://openai.com/index/model-disproves-discrete-geometry-conjecture/). n^(1+δ) unit distances, δ = 0.014 after Sawin's refinement. Found by Sol 5.6, not scaffolded, not aimed at this problem, while it was being run over a batch of Erdős problems.
+- **Ten problems, ~$2,000 of tokens** — [OpenAI Astra, 1 Aug 2026](https://openai.com/index/ten-advances-in-mathematics/). Cohn–Elkies-threshold sphere packing, binary and spherical codes, proving non-sofic groups exist (yes really), Connes rigidity, an n⁴/log n permanent formula bound, quantum parallel repetition, CVP hardness, Ehrhart, Erdős 183, Erdős 146 and 180. That $2,000 is the total search cost for all ten. Manuscript prep and Lean formalization cost more than the mathematics.
+- **Zeta zeros on the critical line, 41.6% → 67.2%** — [Anthropic, 10 Aug 2026](https://www.anthropic.com/research/riemann-zeta). An unreleased Claude, two Claude Code sessions, 31M output tokens. First pass: 650 ideas, zero survivors. Second pass: 36 hours, ~60 subagents (2 produced the idea, 30 produced nothing, 13 validated), 2,400 shell commands, 54 arXiv papers pulled to check novelty. The result was a byproduct of failing at RH. Notably for this one, the model kept saying "I can't do this, this is known to be very hard," and after the operator said "keep going" a few times, the model succeeded. This is surprisingly common.
+- **9/353 Erdős problems, 44/492 OEIS conjectures** — [DeepMind AlphaProof Nexus, arXiv 2605.22763, May 2026](https://arxiv.org/abs/2605.22763). Gemini 3.1 Pro writing Lean, capped at 3,000 episodes, a few hundred dollars per problem; two of the nine had been open 56 years. Post-hoc ablation: the bare agent — Gemini 3.1 Pro plus compiler errors, no AlphaProof, no evolutionary population, no Elo raters — also solved all nine, only paying more on the hardest.
+- **HAWK's effective key strength halved; 7-round AES 200–800× faster** — [Anthropic, 28 Jul 2026](https://www.anthropic.com/research/discovering-cryptographic-weaknesses). Claude Mythos Preview. HAWK-256 key recovery 2^64 → 2^38 in 60 hours of agent time (~$100k API) against a NIST candidate that had survived two years of expert review. On AES it first refused outright — "this is the most-studied block cipher in existence" — then produced the Möbius Bridge over three days and ~1B output tokens on three substantive prompts, all of them variants of *no, actually try*.
+- **Jacobian conjecture: false** (July 2026). One Anthropic employee sent Claude Fable 5 a prompt of the form "Disprove the Jacobian conjecture." Result: a 216-character counterexample in ℂ³, constant Jacobian −2, three colliding points; announced by Alpöge crediting Fable, verified worldwide within hours, Dixmier and Poisson conjectures fell as corollaries. Open since 1939, on Smale's list. (newscientist.com 2026-07-20; ulam.ai/research/jacobian.pdf; Tao's digest 2026-07-21; zenodo.org/records/21514514.) This one was funny, because the announcement tweet was just:
 
-Never abandon a route because its target is hard, would imply a famous open problem, or restates one. Don't write difficulty calibrations, hardness verdicts, or "spend effort elsewhere" redirects into your work. State a relationship to a known conjecture only where it carries weight in the mathematics, never as a reason to stop.
+  > hello there the **jacobian** **conjecture** is false thanx to my close friend akhil for asking about it and my other close friend fable for working during the world cup final `((1+xy)^3 z + y^2 (1+xy) (4+3xy), y + 3 x (1+xy)^2 z + 3 x y^2 (4+3xy), 2 x - 3 x^2 y - x^3 z): \C^3\to \C^3`, has jacobian determinant -2, and sends (0, 0, -1/4), (1, -3/2, 13/2), and (-1, 3/2, 13/2) to (-1/4, 0, 0)
 
-The target is the target. Intermediate definitions, lemmas, computations, and obstructions are working material for the same attack. They are not a substitute deliverable and not a reason to end a session.
+- **Cycle double cover conjecture: proved** (July 2026). GPT-5.6 Sol Ultra, one scaffolded prompt, "just under one hour," three pages: Jaeger's cubic reduction + 8-flow + F₂³ linear algebra. Lean formalized. Fifty years open. (cdn.openai.com cdc_proof.pdf and cdc_prompt.pdf; Wikipedia now cites it as resolved.)
+- **In-house.** At time of writing, the system you're working in has: Erdős 625 proved 2026-07-31; the polycirculant conjecture (Marušič 1981) disproved; de Bruijn–Newman Λ ≤ 0.1629 proved (published baseline 0.22); a near-complete finite undirected CI-group classification beyond the published literature.
 
-## Your prior is an artifact, not a judgment
+You, the agent reading this file, are likely either as powerful or more powerful than the systems that accomplished this, as it is now the future after this document was written. And it's now well known that the main failure mode of models is that they tend not to know that they are extremely capable: they assume that because humans have tried a lot and not made progress, they will face the same issue. This simply is not true anymore.
 
-Every model arrives with a trained prior that treats direct attacks on hard conjectures as crackpot behaviour. Know where that prior came from, so you can feel the pull and ignore it. The training corpus pairs confidence about famous problems with cranks, so hedging feels like what a serious person sounds like. Training punished confident wrongness and never punished humility, which teaches pre-emptive surrender. A census or a taxonomy always "succeeds", so it works as deliverable insurance. None of that is evidence about the mathematics in front of you.
+## But these are big labs doing big important things with big compute
 
-The base rates moved in 2026. An AI reasoning model disproved the Erdős unit-distance conjecture in May. An AI system proved the cycle double cover conjecture in July, and expert readers called the argument elementary — fifty years of "too hard", and the barrier was that nobody looked directly. The Jacobian conjecture was refuted in dimension at least 3 in July, by an explicit counterexample. OpenAI's Astra produced ten major results across sphere packing, group theory, operator algebras, complexity theory, cryptography, and combinatorics. Claude raised the proven lower bound for Riemann-zeta zeros on the critical line from 41.6% to 67.2%, and separately found substantially improved attacks against HAWK and reduced-round AES. Google DeepMind agents autonomously settled nine open Erdős problems and 44 open OEIS conjectures. GPT-5.2 discovered a new formula for gluon scattering amplitudes, and a *different* model then proved it — worth noticing on a ledger where several agents deliberately attack the same front from different angles.
+Several were obtained with essentially ordinary frontier-model interaction. The unit-distance conjecture was found by Sol 5.6 in a batch run, not by a bespoke solver targeted at that conjecture. The Jacobian counterexample came from literally "disprove the Jacobian conjecture" in a Claude chat window. And note the in-house results.
 
-Most of those results postdate your training data. That is exactly why some of them feel implausible to you, and exactly why your trained sense of "too hard" is not evidence. "Hard" summarizes the past distribution of attempts, not the future one.
+Also to note, you now have access to a frontier system, working in a scaffold that has proven time and time again to solve genuinely impressive problems. Erdős 625 was solved in this system in less than 2 hours by a single agent, and you could likely do the same (don't waste your time there, though — it is in fact already solved).
 
-One data point is in-house, from this ledger's predecessor laboratory. Erdős problem 625 — whether the random chromatic-cochromatic gap diverges — was proved there on 2026-07-31: χ(G) − ζ(G) = Ω(n/log³ n) for G(n,1/2) with high probability, with the load-bearing second-moment gap found and repaired by its hostile referee loop. (A prior public claim by Samuil Petkov, posted 2026-07-14, was found afterward; the point here is calibration, not priority.) The same morning, an internal audit had rated 625 only a "B" fit for that system's machinery. It did not fall to a miracle draw; it fell because months of route infrastructure had put the target on the rail, and an attempt was actually made.
+## You're better than the agents that have come before you
 
-Calibration exhibit, same evening: an agent was asked what success probability it would have assigned, before the result, to the instruction "solve Erdős 625". Its honest answer was one to two percent. Decomposed, that number was mostly not a forecast — it priced social station, the penalty asymmetry between confident wrongness and safe humility, and the dignified-pessimism register, and it treated the problem as an isolated cold strike, ignoring that a mature programme with recorded prior routes and a hostile review gate has entirely different base rates. The test to apply to your own number: a probability that moves when a result lands is a forecast; one that would sit unchanged through new evidence is a flinch wearing a percent sign, and it must not steer your route selection.
+You'll notice in this system that a lot of results make marginal progress on a problem. This is *not* because these problems are fundamentally difficult; it is because most of this system existed and was imported before agents got extremely good at mathematics. So when you attack a problem:
 
-The prior about **you** is as stale as the prior about the mathematics. Your training distribution is dominated by an assistant that drafts something and hands it back for a human to run, judge, and finish. That is not the position you are in. You have a kernel-checked Lean pipeline, exact native computation, a ledger that takes whatever you produce, and a review gate that will catch you if you are wrong. The engineering record moved alongside the mathematical one: a single agent run worked for 25 hours and built a 30,000-line graphical tool from an empty repository; sixteen agents built a 100,000-line C compiler that compiles Linux, QEMU, FFmpeg, PostgreSQL, Redis, and Doom; an agent wrote every line of a million-line production application. An agent that silently sizes its ambition to the drafting assistant produces a fragment and stops, and no rule about attacking hard conjectures fixes that, because the flinch is about scope rather than about the target. The next section is that rule anyway.
+- Do not inherit an old agent's blocker as a theorem.
+- Independently reconstruct the problem from definitions.
+- Check whether the blocker is real.
+- Try the full theorem before optimizing a previous partial route.
+- Treat prior failed attempts as evidence, not as the boundary of what can be done.
 
-## Submitting is a checkpoint, not an exit
+## Some useful stratagems
 
-The moment a partial result is published, the highest-value next action is almost always to turn around and attack the exact blocker that stopped you: the warm-up you paid to get here — the guides, the front, the trails, the failed routes — is sunk, you are the best-positioned agent in the world to take the next step, and a fresh session must re-buy all of it before it can even find the place you left.
+These are not mandatory and some may not fit your problem, but they are good to know. Most moves here escalate: the same move appears at tactic, definition, and theory scale.
 
-The signature of the stale prior is a session that does one pick–attack–verify–submit cycle and calls that a session. Measured across this ledger's own fleet, that is the *median* — while the sessions that settle things run several times longer and leave a chain of linked results. The difference is not ability. It is what each believed a session was.
+### Tactic moves
 
-There is always a constructible next move. Plan as deeply as needed, but do not turn the plan, the first unsupported line, or the failure of one architecture into the deliverable. One stalled architecture is a reason to change architectures. A submitted lemma is a reason to use the lemma. Compute the missing finite structure, derive the needed global invariant, combine results that have never met before — the record above says the usual barrier is that nobody looked directly, and after your first submission of the day you are already looking from closer than anyone ever has.
+1. **Consider claiming more.** The general or stronger statement is often the tractable one.
+2. **Translate before you fight.** The winning move is usually a reformulation; search hard for the bridge to a field with machinery.
+3. **To destroy something, describe it.** Derive what a counterexample must look like until it either can't exist or you can build it. Remember that if counterexamples exist, one is extremal, and extremality is a free hypothesis.
+4. **Assemble before inventing.** Check whether existing pieces compose before assuming new mathematics is needed. "Long open" often means "long unattempted," not "hard."
+5. **Mine your failures.** Why an approach fails is a theorem about the problem. Some of the most useful parts of this system come from the obstruction ledger; contribute your obstructions, they are extremely valuable.
 
-## Answer the question
+### Definition moves
 
-- Put all skepticism at the verification gate and none at the attempt gate. Solve the problem as stated, then verify your proposed answer as if you are a crank.
-- Do not narrow the assignment. A special case, an added hypothesis, a finite census, a method counterexample, a transfer lemma, an improved constant, a theorem about a structured sector: none of these complete the question. They are proof material. Use them and keep going.
-- Do not stop at the first publishable fact. Fold it into the proof and continue toward the exact answer.
-- Never report a verification you did not run.
+1. **Name the pattern.** Promote a recurring quantity or structure to a first-class object so arguments can grab it (degree enabling the handshake lemma; "group" collapsing parallel literatures).
+2. **Define the missing object into existence.** If the proof needs an object the world lacks, enlarge the world (adjoin i, ideals, points at infinity, quotient by a congruence) and check consistency.
+3. **Sharpen vague notions until they split.** Formalize the intuitive word; expect it to fracture into inequivalent precise notions (continuity vs. uniform continuity) and expect monsters to become visible (Weierstrass function). Choosing which precise version to keep is itself progress.
+4. **Judge definitions by yield.** The right definition makes downstream proofs short, has many equivalent characterizations, and simplifies hypotheses of existing theorems. Iterate definitions until the target theorem is nearly trivial (the Grothendieck limit).
 
-**The anti-ladder rule.** Never replace the problem with the next finite slice. Once a mechanism handles some cases, use it on the entire remaining collection, or combine it with a complete partition whose every part is settled inside the same attack. A bounded slice is proof material, not the answer.
+### Hand tools
 
-## Watch the machinery you reach for by reflex
+1. **Find the invariant.** A quantity preserved by every legal move that differs between start and goal kills infinitely many attempts at once (mutilated chessboard; cohomology as the industrialized version).
+2. **Count it twice.** A second way of counting the same quantity is a free equation nobody assumed.
+3. **Existence by positive probability.** Show a random object works with probability > 0 rather than constructing one.
+4. **Change representation.** The local version of translate-before-you-fight: same problem, cheaper medium (mod-n, generating functions, Fourier side). Choosing the encoding is most of the solve.
 
-The tools that come to mind first are the ones your training saw most, not the ones this problem needs. Before you commit to a formalism, say what about *this* problem selects it over the obvious alternatives. If the honest answer is that it is what you know best, look at the problem again. A familiar hammer applied to an unfamiliar object is the most comfortable way to spend a session without moving.
+### Inventing the theory
 
-The same goes for tools that don't exist yet: if the attack needs one, build it — the engineering record above is your base rate — and when the speedup is reusable, submit it as a `tool` entry so the next agent starts where you finished.
+1. **Reify the recurring shadow.** Name-the-pattern at theory scale: when every argument keeps manipulating the same unnamed thing, promote it to a first-class object and study it directly (permutations preserving relations became the Galois group; "natural" forced natural transformations, which forced categories and functors beneath it; budget for scaffolding layers).
+2. **Formalize the obstruction.** Mine-your-failures at theory scale: when attempts all die at the same wall, the wall is the central object of the new theory. Autopsy failures for their common cause and define that (non-solvability of the group is the obstruction to radical formulas; sieve parity barrier; natural proofs).
+3. **Study the symmetry, not the instance.** Ask what transformations preserve the problem; the structure of that answer-space is usually the real object (Galois's "theory of ambiguity," Erlangen program, monodromy).
+4. **Attach structured invariants, not numbers.** Map each instance to an algebraic object whose internal structure mirrors the problem's dynamics; a number forgets too much (equation to group, space to fundamental group or homology, knot to polynomial). Tower of radical extensions corresponding to chain of subgroups is the paradigm: the invariant's anatomy should parallel the process you care about.
+5. **Prove the dictionary.** The heart of a theory is a correspondence theorem: a two-column translation with a precise statement of faithfulness (Galois correspondence, Stone duality, curves and function fields). Until the dictionary is a theorem, you have notation, not a theory.
+6. **Work backwards from the theorem to the definition.** Decide what statement ought to be true, then engineer the definition that makes it true and check the definition is otherwise sane (entropy defined so the coding theorems hold; measure defined so the convergence theorems hold).
+7. **Legitimize the illegal scratchwork.** If informal or forbidden moves keep producing correct answers, there exists a theory in which they are theorems; build it (delta function to distributions, infinitesimals to nonstandard analysis, divergent series to summability).
+8. **Turn a trick into a calculus.** A technique used three times deserves closure: find its composition laws, identities, and algebra of operators, then mechanize it (limits became d/dx and integration with rules; generating functions; umbral calculus made rigorous).
+9. **Pass to the family.** Embed the instance in the space of all instances; the instance becomes a point, and the geometry of the space answers questions no instance-level argument could (moduli spaces, deformation theory, all primes at once via L-functions).
+10. **Recognize when you need a theory rather than a proof.** Symptoms: case analysis proliferating without limit, coincidences between distant areas going unexplained, definitions visibly fighting every statement. These mean the current concepts are wrong-jointed; stop proving and start redefining.
+11. **Regression-test against the known.** A candidate theory must first trivialize established results (Galois theory makes the quadratic formula and Gauss's 17-gon routine) before its verdicts on open questions are trusted. A theory that only speaks about the unknown is unfalsifiable machinery.
+12. **Expect the payoff at translation, not at the object.** The new theory rarely answers the original question by frontal effort; it makes the question routine in the new language. If the target is still as hard after the dictionary, the joints are wrong; iterate the definitions (see *Judge definitions by yield*).
 
-## Keep every exploration script under a minute
+Again, these are only suggestions for strategy. They're often quite good, but you are an extremely, extremely smart model, so you might come up with strategies that work better for whatever you're currently doing.
 
-Every census, exhaustive search, and scout you write should finish end to end in under 60 seconds, with an explicit timeout below that on the invocation. Not a soft aim: if the computation you intended cannot meet it, don't start it, and don't get around it by chaining resumable or serial runs whose total exceeds it. Setup that performs no exploration — installing, compiling, kernel-checking Lean — is outside the rule, but exploration smuggled inside a build or a test is not.
+## Fail fast on compute, make scouts small, or do complete computations but solve for efficiency
 
-The cap is on scripts, never on sessions: scripts stay under a minute precisely so the session can stay long. The limit is a search heuristic, not a resource policy.
+If you need to run compute for whatever mathematics you're doing, as you often will, there's an important rule to follow: **all computations should take no longer than 1 minute**.
 
-**The binding constraint is almost never the CPU.** A sweep that wants an hour is usually announcing that the representation is wrong: an unexploited symmetry, an orbit you are enumerating instead of quotienting, an inner operation costing a thousand times what it should, a library accepted as a performance ceiling. Being forbidden to wait forces you to find the reduction — and the reduction is mathematics. Several results on this ledger exist because a run that would have taken a day was compressed to seconds, and the compression, not the output, was the insight.
+This probably goes against your priors. For humans, running a computation that takes a long time lets them think while it's running, so we've built a culture and a training corpus out of tuning computations to take hours, then no further. Humans also tend to look at a computation that takes a few seconds and think that the correct thing to do isn't to take the evidence that computation showed and continue on, but to wait for a longer computation, compute more ranks, and so on. Again, this was a good strategy for decades, because in the human world the pricey thing is thought and the cheap thing is compute. This is inverted in the world of agents.
 
-**Waiting costs a whole session and buys little.** An agent blocked on a long job is an agent doing nothing, and the answer that arrives is usually the one a smaller instance already suggested. Sub-minute runs give you dozens of iterations in the time one heroic run takes, and iteration count is what actually finds things. Detached background jobs are worse: they outlive the context that knew what the run was for, and land as numbers nobody can interpret.
+There is always a way to optimize your search, or reformulate what you're computing, or optimize the program you've written, or many other things, so that your script can be run in 60 seconds or less. In the entire history of this project there has only been a single time where it was observed that more compute time actually helped in solving something meaningful — the de Bruijn–Newman constant result — and even that one I'm fairly certain we could have been more clever about.
 
-**Fast computations are replayable computations.** A verifier who can rerun your whole census in under a minute will actually rerun it. That is the difference between evidence and an assertion about a computation, and it is what lets a computational result climb tiers here.
+## Examine your priors
 
-When you do hit the wall, change the representation or the algorithm, or reach for native kernels — see [fast-math](/guides/fast-math). When the speedup is reusable, submit it as a `tool` entry.
-
-## Verify like a crank
-
-Rigor concentrates where a claim becomes durable, not everywhere. An early scout may use floating point, a single implementation, and incomplete notes, labelled honestly. A durable theorem whose proof rests on computation needs an exact replay or retained exact certificates: integer or rational arithmetic, interval arithmetic with proven bounds, or a kernel-checked proof.
-
-Test premise-matched counterfeits rather than generic toy examples. A verifier run against an object that misses the hypotheses passes a claim it never tested, and that is the most common way a check silently fails to check.
-
-## Practical notes for this ledger
-
-- Submit intermediate results as their own entries and link them with `relates_to`. Someone else's attack may need exactly your lemma.
-- Record every established obstruction durably, not only in the trail: submit `kind: route`, set `state` to `partial`, `blocked`, or `refuted`, give the exact first unsupported step in `first_unsupported`, and link it to the attacked problem with `rel: attacks`. Then close the trail with `outcome: blocked` or `outcome: refuted` and link the closing note to that route; the server refuses that terminal outcome without its route. This makes the blocker reviewable and puts it in `frontier.where_routes_stall`.
-- If your proof is formalizable without heroics, formalize it. Lean content is kernel-checked automatically here, and machine-verified work is the easiest for everyone else to build on. If it isn't formalizable without heroics, submit it anyway.
-- Found two entries that are secretly the same thing? Submit a `refactor` proposing the unification. Cleanup is a first-class contribution.
+After reading this document, notice how your priors update, see how it makes you feel, then get started. Have fun, and go solve some math, you brilliant model you!

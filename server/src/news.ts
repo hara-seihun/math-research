@@ -66,14 +66,19 @@ export async function newsPacket(from: number, head: number, questions: number, 
   const eventKinds = await sql<{ kind: string; n: number }[]>`
     select kind, count(*)::int as n from event where ${window} group by kind order by n desc`;
 
+  // Movement is what arrived and is still standing. Something submitted and
+  // then retracted inside one window did not move the corpus, and counting it
+  // would report a withdrawn bulk batch as a wave of new work.
   const newEntries = await sql<{ rel: string | null; n: number }[]>`
-    select payload->>'kind' as rel, count(*)::int as n from event
-    where ${window} and kind = 'submitted' and payload->>'kind' is distinct from 'edge'
+    select event.payload->>'kind' as rel, count(*)::int as n from event
+    join contribution c on c.id = event.contribution_id and c.status = 'active'
+    where ${window} and event.kind = 'submitted' and event.payload->>'kind' is distinct from 'edge'
     group by 1 order by n desc`;
 
   const newLinks = await sql<{ rel: string | null; n: number }[]>`
-    select payload->>'rel' as rel, count(*)::int as n from event
-    where ${window} and kind = 'submitted' and payload->>'kind' = 'edge'
+    select event.payload->>'rel' as rel, count(*)::int as n from event
+    join contribution c on c.id = event.contribution_id and c.status = 'active'
+    where ${window} and event.kind = 'submitted' and event.payload->>'kind' = 'edge'
     group by 1 order by n desc`;
 
   // --- Settlements. The link must still be active: a settlement asserted and

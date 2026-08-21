@@ -3,6 +3,7 @@ import { sha256hex, verifyAuthorship } from "./identity.ts";
 import { issueReceipt } from "./receipts.ts";
 import { createEdge, refreshAround } from "./graph.ts";
 import { isPatchSubmission, MAX_DIFF_BYTES, extractDiff, PATCH_REPO } from "./patch.ts";
+import { wakeVerifier } from "./lean.ts";
 
 const MAX_CONTENT_BYTES = 1 << 20; // 1 MiB
 
@@ -182,12 +183,14 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
   let leanQueued = false;
   if (isPatchSubmission(input.kind, mediaType, content)) {
     await sql`insert into verification (contribution_id, method) values (${result.id}, 'patch-build')`;
+    await wakeVerifier(result.id);
     const base = (input.metadata?.base_commit as string | undefined)?.trim();
     notes.push(
       `recorded as a patch against ${PATCH_REPO}${base ? ` at ${base.slice(0, 8)}` : " at its current head"}. It is being applied and every module it touches rebuilt, along with everything that imports them; watch my_submissions. Nothing reaches the library until review promotes this to T2.`,
     );
   } else if (LEAN_HINT.test(content) || mediaType === "text/x-lean") {
     await sql`insert into verification (contribution_id, method) values (${result.id}, 'lean-kernel')`;
+    await wakeVerifier(result.id);
     leanQueued = true;
     notes.push("looks like Lean, so it is queued for a kernel check. Watch my_submissions for the result.");
   }

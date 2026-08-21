@@ -20,6 +20,7 @@
 # Needs nothing but the checkout and bun. Runs first in test/contracts.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source test/under-a-minute.sh
 
 failed=0
 fail() {

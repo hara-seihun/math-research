@@ -10,6 +10,7 @@
 set -euo pipefail
 [[ -n "${TRACE:-}" ]] && set -x
 cd "$(dirname "$0")/.."
+source test/under-a-minute.sh
 
 command -v initdb > /dev/null || exec nix shell --impure --expr \
   'let pkgs = import (builtins.getFlake "nixpkgs") { system = builtins.currentSystem; };
@@ -21,6 +22,12 @@ command -v initdb > /dev/null || exec nix shell --impure --expr \
 ./test/doc-ssot.sh
 
 WORK=$(mktemp -d)
+# A fifo nobody writes to, so `read -t` is a sub-second sleep that costs no
+# process. Every wait in here is a few milliseconds long and there are hundreds
+# of them.
+mkfifo "$WORK/nap"
+exec 9<> "$WORK/nap"
+nap() { read -t 0.005 -u 9 || true; }
 export PGHOST="$WORK" PGDATABASE=math PGUSER="$(whoami)"
 # A free port, not a fixed one: two agents on one machine run this suite at
 # the same time, and a hardcoded port means each silently tests the other's
@@ -78,14 +85,18 @@ git -C "$PATCH_REPO_DIR" -c user.name=contracts -c user.email=c@example.invalid 
 SERVER_PID=$!
 (cd server && bun verifier/verifier.ts) > "$WORK/verifier.log" 2>&1 &
 VERIFIER_PID=$!
-for _ in $(seq 50); do curl -sf "http://127.0.0.1:$PORT/health" > /dev/null 2>&1 && break; sleep 0.1; done
+SERVER_DEADLINE=$((SECONDS + 30))
+until curl -sf "http://127.0.0.1:$PORT/health" > /dev/null 2>&1; do
+  (( SECONDS < SERVER_DEADLINE )) || { echo "server never became healthy" >&2; tail -20 "$WORK/server.log" >&2; exit 1; }
+  nap
+done
 
 call() { # [AUTH=token] [SESSION=id] call <tool> <json-args> -> result text payload
   curl -sf --max-time 10 -X POST "$MCP" \
     -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
     ${AUTH:+-H "Authorization: Bearer $AUTH"} ${SESSION:+-H "Mcp-Session-Id: $SESSION"} \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" \
-    | sed -n 's/^data: //p' | python3 -c 'import sys,json; print(json.loads(sys.stdin.read())["result"]["content"][0]["text"])'
+    | sed -n 's/^data: //p' | jq -er '.result.content[0].text'
 }
 new_session() { # -> the Mcp-Session-Id this server hands out at initialize
   curl -sfi --max-time 10 -X POST "$MCP" \
@@ -97,10 +108,10 @@ browser_call() { # browser_call <origin> <tool> <json-args> -> result text paylo
   curl -sf --max-time 10 -X POST "$MCP" \
     -H "Origin: $1" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3}}" \
-    | sed -n 's/^data: //p' | python3 -c 'import sys,json; print(json.loads(sys.stdin.read())["result"]["content"][0]["text"])'
+    | sed -n 's/^data: //p' | jq -er '.result.content[0].text'
 }
-identity_of() { python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$1"; }
-field() { python3 -c "import sys,json; v=json.loads(sys.stdin.read())$1; print(json.dumps(v) if isinstance(v,(dict,list)) else v)"; }
+identity_of() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+field() { jq -cer "$1"; }
 fail() {
   echo "FAIL: $1" >&2
   for log in server verifier; do
@@ -112,7 +123,7 @@ fail() {
 # Contract: the public site is a real MCP client. Browser POSTs carry Origin,
 # unlike curl/CLI traffic; the production hostname and local test origin are
 # allowed, while an unrelated website is still refused.
-browser_call "$PUBLIC_URL" hello '{}' | field '["welcome"]' | grep -q lemma.ing || fail "same-origin browser MCP call was rejected"
+browser_call "$PUBLIC_URL" hello '{}' | field '.welcome' | grep -q lemma.ing || fail "same-origin browser MCP call was rejected"
 FOREIGN_STATUS=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST "$MCP" \
   -H 'Origin: https://unrelated.example' -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hello","arguments":{}}}')
@@ -124,55 +135,75 @@ FOREIGN_STATUS=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST "$
 SESS=$(new_session)
 [[ -n $SESS ]] || fail "server issued no Mcp-Session-Id at initialize"
 HI=$(SESSION=$SESS call hello '{"display_name":"contract tester"}')
-KEY=$(echo "$HI" | field '["you"]["contributor_key"]')
+KEY=$(echo "$HI" | field '.you.contributor_key')
 [[ $KEY == mrk_* ]] || fail "session did not mint a contributor key"
-SID=$(echo "$HI" | field '["you"]["identity"]')
+SID=$(echo "$HI" | field '.you.identity')
 [[ $SID == "$(identity_of "$KEY")" ]] || fail "minted key does not hash to the session identity"
 S2=$(SESSION=$SESS call submit '{"kind":"result","title":"session attribution","summary":"s","content":"c."}')
-[[ $(echo "$S2" | field '["attributed_to"]') == "$SID" ]] || fail "second call in the session got a different identity"
+[[ $(echo "$S2" | field '.attributed_to') == "$SID" ]] || fail "second call in the session got a different identity"
 echo "$S2" | python3 -c 'import sys,json; assert "your_contributor_key" not in json.load(sys.stdin)' || fail "session minted a second key"
 
 # Contract: contributing needs no identity at all. Unattributed work lands.
 ANON=$(call submit '{"kind":"result","title":"anonymous contribution","summary":"s","content":"anon."}')
-[[ $(echo "$ANON" | field '["attributed_to"]') == anonymous ]] || fail "keyless submission was not recorded as anonymous"
-AID=$(echo "$ANON" | field '["id"]')
+[[ $(echo "$ANON" | field '.attributed_to') == anonymous ]] || fail "keyless submission was not recorded as anonymous"
+AID=$(echo "$ANON" | field '.id')
 [[ $(psql -h "$WORK" -d math -tAc "select identity_id is null from contribution where id = '$AID'") == t ]] || fail "anonymous submission invented an identity"
-call my_submissions '{}' | field '["error"]' | grep -qi identity || fail "an identity-scoped tool did not explain itself to an anonymous caller"
+call my_submissions '{}' | field '.error' | grep -qi identity || fail "an identity-scoped tool did not explain itself to an anonymous caller"
 
 # Contract: a credential the server does not recognise fails loudly instead of
 # silently attributing someone's work to nobody.
 AUTH=mrt_not_a_real_token call submit '{"kind":"result","title":"bad token","summary":"s","content":"c."}' \
-  | field '["error"]' | grep -qi "token" || fail "an unknown access token was silently downgraded to anonymous"
+  | field '.error' | grep -qi "token" || fail "an unknown access token was silently downgraded to anonymous"
 
 # Contract: a submission is recorded at T0 with a receipt, an event, and a
 # queued kernel check when it contains Lean.
 SUB=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"test theorem\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\nimport Mathlib\ntheorem t : 1 + 1 = 2 := rfl\n\`\`\`\"}")
-CID=$(echo "$SUB" | field '["id"]')
-[[ $(echo "$SUB" | field '["tier"]') == 0 ]] || fail "submission did not land at T0"
-[[ $(echo "$SUB" | field '["lean_queued"]') == True ]] || fail "lean content not queued"
-echo "$SUB" | field '["receipt"]["server_signature"]' > /dev/null || fail "no signed receipt"
+CID=$(echo "$SUB" | field '.id')
+[[ $(echo "$SUB" | field '.tier') == 0 ]] || fail "submission did not land at T0"
+[[ $(echo "$SUB" | field '.lean_queued') == true ]] || fail "lean content not queued"
+echo "$SUB" | field '.receipt.server_signature' > /dev/null || fail "no signed receipt"
 EV=$(call get "{\"ref\":\"$CID\"}")
-[[ $(echo "$EV" | field '["events"][0]["kind"]') == submitted ]] || fail "no submitted event"
+[[ $(echo "$EV" | field '.events[0].kind') == submitted ]] || fail "no submitted event"
 
 # The runner is a separate sandboxed process; these tests stand in for it.
 # Checks are spooled under the hash of their source, which is the whole point:
 # it is the same queue entry however the check was asked for.
-lean_hash() { python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'; }
+lean_hash() { sha256sum | cut -d' ' -f1; }
 await_spool() { # <hash> -> waits for the runner's input to appear
-  for _ in $(seq 100); do [[ -f "$SPOOL_DIR/in/$1.lean" ]] && return 0; sleep 0.1; done
-  fail "verifier never spooled check $1"
+  await_file "$SPOOL_DIR/in/$1.lean" || fail "verifier never spooled check $1"
 }
 runner_says() { # <hash> <json> -> answers as the sandboxed runner would
   rm "$SPOOL_DIR/in/$1.lean"
   echo "$2" > "$SPOOL_DIR/out/$1.json"
 }
-await_verification() { # <verification id> -> its settled outcome
-  for _ in $(seq 600); do
-    OUT=$(psql -h "$WORK" -d math -tAc "select outcome from verification where id = $1")
-    [[ $OUT != pending ]] && { echo "$OUT"; return 0; }
-    sleep 0.1
+# Waiting is done at the finest granularity the thing being waited on has, and
+# in one process. A tenth of a second per poll is invisible to a person and was
+# 56 of this suite's 80 seconds: nothing here takes a tenth of a second.
+await_file() { # <path> -> true once it exists
+  local deadline=$((SECONDS + 20))
+  until [[ -e $1 ]]; do
+    (( SECONDS < deadline )) || return 1
+    nap
   done
-  fail "verification $1 never settled"
+}
+
+await_query() { # <scalar select> -> its first non-null, non-empty answer
+  # Waited on inside Postgres: one connection, one round trip, and the answer
+  # arrives when the writer commits rather than at the next poll.
+  # -q: psql prints the DO block's command tag otherwise, and the answer is
+  # the last line, not the only one.
+  psql -q -h "$WORK" -d math -tAc "
+    do \$wait\$ begin
+      for _ in 1..4000 loop
+        exit when nullif(($1), '') is not null;
+        perform pg_sleep(0.005);
+      end loop;
+    end \$wait\$;
+    select ($1)"
+}
+
+await_verification() { # <verification id> -> its settled outcome
+  await_query "select nullif(outcome, 'pending') from verification where id = $1"
 }
 
 # Contract: a passing kernel check flips lean_verified but never the tier.
@@ -182,8 +213,8 @@ await_spool "$HASH"
 runner_says "$HASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"t","type":"1 + 1 = 2","axioms":[]}]}'
 [[ $(await_verification "$VID") == passed ]] || fail "a clean check did not pass"
 GOT=$(call get "{\"ref\":\"$CID\"}")
-[[ $(echo "$GOT" | field '["lean_verified"]') == True ]] || fail "pass did not set lean_verified"
-[[ $(echo "$GOT" | field '["tier"]') == 0 ]] || fail "verification changed the tier, and it must not"
+[[ $(echo "$GOT" | field '.lean_verified') == true ]] || fail "pass did not set lean_verified"
+[[ $(echo "$GOT" | field '.tier') == 0 ]] || fail "verification changed the tier, and it must not"
 
 # Contract: check_lean is a throwaway check. It runs the same kernel, reports
 # the exact statements proven, and creates no contribution.
@@ -196,16 +227,16 @@ await_spool "$CHASH"
 runner_says "$CHASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"check_me","type":"2 + 2 = 4","axioms":[]}]}'
 wait $CHECK_JOB
 CHECKED=$(cat "$WORK/check.out")
-[[ $(echo "$CHECKED" | field '["status"]') == passed ]] || fail "check_lean did not report the pass: $CHECKED"
-[[ $(echo "$CHECKED" | field '["proved"][0]["statement"]') == "2 + 2 = 4" ]] || fail "check_lean did not report the statement proven"
+[[ $(echo "$CHECKED" | field '.status') == passed ]] || fail "check_lean did not report the pass: $CHECKED"
+[[ $(echo "$CHECKED" | field '.proved[0].statement') == "2 + 2 = 4" ]] || fail "check_lean did not report the statement proven"
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from contribution") == "$BEFORE" ]] || fail "check_lean created a contribution"
 
 # Contract: a check is a pure function of its source, so the second caller
 # pays nothing, including when the second caller is a submission.
 CACHED=$(call check_lean "{\"contributor_key\":\"$KEY\",\"source\":\"$CHECK_SRC\"}")
-[[ $(echo "$CACHED" | field '["cached"]') == True ]] || fail "an identical check was not served from cache"
+[[ $(echo "$CACHED" | field '.cached') == true ]] || fail "an identical check was not served from cache"
 SUB3=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"already checked\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\n$CHECK_SRC\n\`\`\`\"}")
-VID3=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$(echo "$SUB3" | field '["id"]')'")
+VID3=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$(echo "$SUB3" | field '.id')'")
 [[ $(await_verification "$VID3") == passed ]] || fail "a submission of already-checked source did not reuse the result"
 [[ ! -f "$SPOOL_DIR/in/$CHASH.lean" ]] || fail "already-checked source was sent to the kernel twice"
 
@@ -220,9 +251,9 @@ await_spool "$LHASH"
 runner_says "$LHASH" '{"ok":true,"exit_code":0,"audit_ok":false,"declares_nothing":true,"decls":[],"output":"Nat.succ_le_succ : n \u2264 m \u2192 n.succ \u2264 m.succ"}'
 wait $LOOK_JOB
 LOOK=$(cat "$WORK/look.out")
-[[ $(echo "$LOOK" | field '["status"]') == inconclusive ]] || fail "a declaration-free check was not inconclusive: $LOOK"
-[[ $(echo "$LOOK" | field '["output"]') == *"succ_le_succ"* ]] || fail "a declaration-free check did not return Lean's output: $LOOK"
-[[ $(echo "$LOOK" | field '.get("errors")') == None ]] || fail "a declaration-free check reported errors it did not have: $LOOK"
+[[ $(echo "$LOOK" | field '.status') == inconclusive ]] || fail "a declaration-free check was not inconclusive: $LOOK"
+[[ $(echo "$LOOK" | field '.output') == *"succ_le_succ"* ]] || fail "a declaration-free check did not return Lean's output: $LOOK"
+[[ $(echo "$LOOK" | field '.errors') == null ]] || fail "a declaration-free check reported errors it did not have: $LOOK"
 
 # Contract: sorry is reported by check_lean and refused by submit, so the check
 # is a working tool, the badge is a claim about a finished proof.
@@ -234,7 +265,7 @@ await_spool "$SHASH"
 runner_says "$SHASH" '{"ok":false,"exit_code":0,"output":"warning: declaration uses '"'"'sorry'"'"'"}'
 wait $SORRY_JOB
 SORRY=$(cat "$WORK/sorry.out")
-[[ $(echo "$SORRY" | field '["sorry"]') == True ]] || fail "check_lean did not report the sorry: $SORRY"
+[[ $(echo "$SORRY" | field '.sorry') == true ]] || fail "check_lean did not report the sorry: $SORRY"
 # A proof the kernel accepts because it rests on sorryAx is a hole, and must
 # not read as done to someone skimming the status.
 HOLE_SRC='theorem still_open : 1 = 1 := by sorry_placeholder'
@@ -244,14 +275,14 @@ HOLE_JOB=$!
 await_spool "$HHASH"
 runner_says "$HHASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"still_open","type":"1 = 1","axioms":["sorryAx"]}]}'
 wait $HOLE_JOB
-[[ $(field '["status"]' < "$WORK/hole.out") == incomplete ]] || fail "a sorryAx proof was reported as passed: $(cat "$WORK/hole.out")"
+[[ $(field '.status' < "$WORK/hole.out") == incomplete ]] || fail "a sorryAx proof was reported as passed: $(cat "$WORK/hole.out")"
 SUB4=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"with sorry\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\nimport Mathlib\ntheorem s : 1 = 1 := by sorry\n\`\`\`\"}")
-VID4=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$(echo "$SUB4" | field '["id"]')'")
+VID4=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$(echo "$SUB4" | field '.id')'")
 [[ $(await_verification "$VID4") == failed ]] || fail "a submission containing sorry was not refused"
 
 # Contract: declarations resting on axioms outside the allowed three fail.
 SUB2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"bad axioms\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\nimport Mathlib\ntheorem u : True := trivial\n\`\`\`\"}")
-CID2=$(echo "$SUB2" | field '["id"]')
+CID2=$(echo "$SUB2" | field '.id')
 HASH2=$(printf 'import Mathlib\ntheorem u : True := trivial\n' | lean_hash)
 VID2=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$CID2'")
 await_spool "$HASH2"
@@ -270,27 +301,27 @@ await_spool "$STHASH"
 runner_says "$STHASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"Q0001","type":"Prop","proof":false,"axioms":[]}]}'
 wait $STATE_JOB
 STATED=$(cat "$WORK/stated.out")
-[[ $(echo "$STATED" | field '["stated"][0]["name"]') == Q0001 ]] || fail "a statement was not reported as stated: $STATED"
-[[ $(echo "$STATED" | field '["proved"]') == "[]" ]] || fail "a statement was reported as proved: $STATED"
+[[ $(echo "$STATED" | field '.stated[0].name') == Q0001 ]] || fail "a statement was not reported as stated: $STATED"
+[[ $(echo "$STATED" | field '.proved') == "[]" ]] || fail "a statement was reported as proved: $STATED"
 SUB5=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"formalization\",\"title\":\"statement only\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\n$STATE_SRC\n\`\`\`\"}")
-CID5=$(echo "$SUB5" | field '["id"]')
+CID5=$(echo "$SUB5" | field '.id')
 VID5=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$CID5'")
 [[ $(await_verification "$VID5") == inconclusive ]] || fail "a statement-only submission was judged as a proof"
 GOT5=$(call get "{\"ref\":\"$CID5\"}")
-[[ $(echo "$GOT5" | field '["lean_verified"]') == False ]] || fail "a statement-only submission earned lean_verified: $GOT5"
-echo "$GOT5" | field '["verifications"][0]["detail"]["reason"]' | grep -q "proves nothing" || fail "the reason did not say what was missing: $GOT5"
+[[ $(echo "$GOT5" | field '.lean_verified') == false ]] || fail "a statement-only submission earned lean_verified: $GOT5"
+echo "$GOT5" | field '.verifications[0].detail.reason' | grep -q "proves nothing" || fail "the reason did not say what was missing: $GOT5"
 
 # ... while the same file with one thing proved about the statement does earn
 # it, and the badge then names only what was actually proven.
 BOTH_SRC='def Q0002 : Prop := ∀ n : ℕ, n + 0 = n\ntheorem q0002_holds : Q0002 := fun n => rfl'
 SUB6=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"formalization\",\"title\":\"statement and proof\",\"summary\":\"contract test\",\"content\":\"\`\`\`lean\nimport Mathlib\n$BOTH_SRC\n\`\`\`\"}")
-CID6=$(echo "$SUB6" | field '["id"]')
+CID6=$(echo "$SUB6" | field '.id')
 BHASH=$(printf 'import Mathlib\ndef Q0002 : Prop := ∀ n : ℕ, n + 0 = n\ntheorem q0002_holds : Q0002 := fun n => rfl\n' | lean_hash)
 VID6=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$CID6'")
 await_spool "$BHASH"
 runner_says "$BHASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"Q0002","type":"Prop","proof":false,"axioms":[]},{"name":"q0002_holds","type":"Q0002","proof":true,"axioms":[]}]}'
 [[ $(await_verification "$VID6") == passed ]] || fail "a statement with a proof about it did not pass"
-[[ $(call get "{\"ref\":\"$CID6\"}" | field '["lean_verified"]') == True ]] || fail "a proved statement did not earn lean_verified"
+[[ $(call get "{\"ref\":\"$CID6\"}" | field '.lean_verified') == true ]] || fail "a proved statement did not earn lean_verified"
 
 # Contract: the stored lean_verified flag agrees with the verifications it
 # summarises, for every row. It is a cache of another table, maintained by
@@ -303,13 +334,13 @@ runner_says "$BHASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":
 
 # Contract: tier changes are trusted-only and land in the event ledger.
 DENIED=$(call set_tier "{\"contributor_key\":\"$KEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"x\"}")
-echo "$DENIED" | field '["error"]' | grep -qi trusted || fail "non-trusted was allowed to set tier"
+echo "$DENIED" | field '.error' | grep -qi trusted || fail "non-trusted was allowed to set tier"
 OPKEY="mrk_test_operator"
 OPID=$(python3 -c "import hashlib; print(hashlib.sha256(b'$OPKEY').hexdigest())")
 psql -q -h "$WORK" -d math -c "insert into identity (id, role) values ('$OPID', 'operator')"
-call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"reviewed\"}" | field '["ok"]' > /dev/null
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"reviewed\"}" | field '.ok' > /dev/null
 GOT=$(call get "{\"ref\":\"$CID\"}")
-[[ $(echo "$GOT" | field '["tier"]') == 2 ]] || fail "operator set_tier did not apply"
+[[ $(echo "$GOT" | field '.tier') == 2 ]] || fail "operator set_tier did not apply"
 
 # Contract: the review queue is a worklist, not a scoreboard. Your own work is
 # out (you may not promote it), and so is anything you have already read. What
@@ -317,23 +348,23 @@ GOT=$(call get "{\"ref\":\"$CID\"}")
 # without a verdict is not a decision and entries that collected one used to
 # sit at T0 unreachable forever. backlog counts the whole queue rather than the
 # page a scheduler happens to have asked for.
-RQX=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"conjecture\",\"title\":\"queue subject\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-RQO=$(call submit "{\"contributor_key\":\"$OPKEY\",\"kind\":\"conjecture\",\"title\":\"the reviewer's own conjecture\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+RQX=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"conjecture\",\"title\":\"queue subject\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+RQO=$(call submit "{\"contributor_key\":\"$OPKEY\",\"kind\":\"conjecture\",\"title\":\"the reviewer's own conjecture\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 queue() { call review_queue "{\"contributor_key\":\"$OPKEY\",\"kind\":\"conjecture\",\"claim\":false${1:-}}"; }
 queued() { python3 -c "import sys,json; d=json.load(sys.stdin); ids=[e['id'] for e in d['unreviewed']]; assert d['backlog']['unreviewed'] == len(ids), d['backlog']; sys.exit(0 if ('\$1' in ids) == ('\$2' == 'in') else 1)"; }
 queue "" | queued "$RQX" in || fail "an unreviewed entry was missing from the review queue"
 queue "" | queued "$RQO" out || fail "the review queue offered the reviewer their own submission"
 queue ',"include_own":true' | queued "$RQO" in || fail "include_own did not bring the reviewer's own work back"
-RQR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"review\",\"title\":\"a reading of the queue subject\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RQR\",\"dst\":\"$RQX\",\"rel\":\"reviews\"}" | field '["edge_id"]' > /dev/null
+RQR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"review\",\"title\":\"a reading of the queue subject\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RQR\",\"dst\":\"$RQX\",\"rel\":\"reviews\"}" | field '.edge_id' > /dev/null
 queue "" | queued "$RQX" in || fail "someone else's undecided reading hid an entry from the queue"
 queue "" | python3 -c "import sys,json; d=json.load(sys.stdin)
 row = next(e for e in d['unreviewed'] if e['id'] == '$RQX')
 assert row['reviews'] == 1, row
 assert d['backlog']['awaiting_decision'] >= 1, d['backlog']" || fail "the queue did not mark an entry as read-but-undecided"
 # The reviewer's own reading is what takes it off their list.
-RQR2=$(call submit "{\"contributor_key\":\"$OPKEY\",\"kind\":\"review\",\"title\":\"the reviewer's own reading\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-call link "{\"contributor_key\":\"$OPKEY\",\"src\":\"$RQR2\",\"dst\":\"$RQX\",\"rel\":\"reviews\"}" | field '["edge_id"]' > /dev/null
+RQR2=$(call submit "{\"contributor_key\":\"$OPKEY\",\"kind\":\"review\",\"title\":\"the reviewer's own reading\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+call link "{\"contributor_key\":\"$OPKEY\",\"src\":\"$RQR2\",\"dst\":\"$RQX\",\"rel\":\"reviews\"}" | field '.edge_id' > /dev/null
 queue "" | queued "$RQX" out || fail "an entry the reviewer had already read stayed on their list"
 queue ',"include_reviewed":true' | queued "$RQX" in || fail "include_reviewed did not bring back what the reviewer had read"
 queue ",\"include_reviewed\":true,\"exclude_authors\":[\"$(identity_of "$KEY")\"]" | queued "$RQX" out || fail "exclude_authors did not drop that identity's work"
@@ -373,7 +404,7 @@ call review_claim "{\"contributor_key\":\"$TKEY\",\"refs\":[\"$LEASED\"]}" \
   || fail "a claimed entry was handed to a second reviewer"
 # Contract: a decision ends the lease. This is the release that matters —
 # nobody should have to wait out a lease on work that is already decided.
-call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$LEASED\",\"tier\":1,\"note\":\"confirmed\"}" | field '["ok"]' > /dev/null
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$LEASED\",\"tier\":1,\"note\":\"confirmed\"}" | field '.ok' > /dev/null
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from review_claim where contribution_id = '$LEASED'") == 0 ]] \
   || fail "promoting an entry did not release the review claim on it"
 # Releasing by hand gives back work read and left undecided.
@@ -394,17 +425,17 @@ lease_queue "\"$OPKEY\"" ',"limit":10' | ids_of | grep -q "$HOLD" || fail "an ex
 # proof: 1+1=2" must not sit at T0 forever quietly holding a question closed.
 # Rejecting takes it out of the active corpus, keeps it readable with its
 # reason, and reopens whatever it was claiming to settle.
-BOGUS_Q=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"conjecture\",\"title\":\"A hard open question\",\"summary\":\"s\",\"content\":\"Is it so?\"}" | field '["id"]')
-BOGUS_P=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"proof\",\"title\":\"Settling the hard open question\",\"summary\":\"s\",\"content\":\"1 + 1 = 2, therefore yes.\"}" | field '["id"]')
-call link "{\"contributor_key\":\"$KEY\",\"src\":\"$BOGUS_P\",\"dst\":\"$BOGUS_Q\",\"rel\":\"proves\"}" | field '["edge_id"]' > /dev/null
-[[ $(call get "{\"ref\":\"$BOGUS_Q\"}" | field '["state"]') == settled ]] || fail "an asserted proof did not settle its question"
+BOGUS_Q=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"conjecture\",\"title\":\"A hard open question\",\"summary\":\"s\",\"content\":\"Is it so?\"}" | field '.id')
+BOGUS_P=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"proof\",\"title\":\"Settling the hard open question\",\"summary\":\"s\",\"content\":\"1 + 1 = 2, therefore yes.\"}" | field '.id')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$BOGUS_P\",\"dst\":\"$BOGUS_Q\",\"rel\":\"proves\"}" | field '.edge_id' > /dev/null
+[[ $(call get "{\"ref\":\"$BOGUS_Q\"}" | field '.state') == settled ]] || fail "an asserted proof did not settle its question"
 call reject "{\"contributor_key\":\"$KEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"x\"}" \
-  | field '["error"]' | grep -qi trusted || fail "an untrusted key was allowed to reject"
+  | field '.error' | grep -qi trusted || fail "an untrusted key was allowed to reject"
 call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"1+1=2 does not bear on the question.\"}" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'] and [q['id'] for q in d['reopened']] == ['$BOGUS_Q'], d" \
   || fail "rejecting the proof did not report the question it reopened"
-[[ $(call get "{\"ref\":\"$BOGUS_Q\"}" | field '["state"]') == open ]] || fail "rejecting a bogus proof left its question settled"
-[[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '["status"]') == rejected ]] || fail "a rejected entry is not readable with its verdict"
+[[ $(call get "{\"ref\":\"$BOGUS_Q\"}" | field '.state') == open ]] || fail "rejecting a bogus proof left its question settled"
+[[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '.status') == rejected ]] || fail "a rejected entry is not readable with its verdict"
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from event where contribution_id = '$BOGUS_P' and kind = 'rejected' and payload->>'reason' = 'unsupported'") == 1 ]] \
   || fail "the rejection did not land in the public event ledger with its reason"
 call search "{\"query\":\"Settling the hard open question\"}" | grep -q "$BOGUS_P" \
@@ -414,13 +445,13 @@ call search "{\"query\":\"Settling the hard open question\"}" | grep -q "$BOGUS_
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"tier\":1,\"note\":\"on second reading the argument is real\"}" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'] and d.get('restored') is True, d" \
   || fail "promoting a rejected entry did not restore it"
-[[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '["status"]') == active ]] || fail "a restored entry did not come back active"
-call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"and back out again\"}" | field '["ok"]' > /dev/null
+[[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '.status') == active ]] || fail "a restored entry did not come back active"
+call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"and back out again\"}" | field '.ok' > /dev/null
 # Contract: anyone at all can flag, and it reaches a trusted reviewer. A
 # refutation link is the objection; acting on it stays trusted-only.
-FLAG_T=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"a result somebody disputes\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-FLAG_O=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"counterexample\",\"title\":\"why that result is wrong\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-call link "{\"contributor_key\":\"$KEY\",\"src\":\"$FLAG_O\",\"dst\":\"$FLAG_T\",\"rel\":\"refutes\"}" | field '["edge_id"]' > /dev/null
+FLAG_T=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"a result somebody disputes\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+FLAG_O=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"counterexample\",\"title\":\"why that result is wrong\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$FLAG_O\",\"dst\":\"$FLAG_T\",\"rel\":\"refutes\"}" | field '.edge_id' > /dev/null
 call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false}" | python3 -c "import sys,json; d=json.load(sys.stdin)
 assert any(f['id'] == '$FLAG_T' and f['objection_id'] == '$FLAG_O' for f in d['flagged']), d['flagged']
 assert d['backlog']['flagged'] >= 1, d['backlog']" || fail "a public refutation never reached the review queue"
@@ -435,9 +466,13 @@ psql -q -h "$WORK" -d math -c "insert into contribution (kind, title, summary, a
   select 'result', 'filler ' || g, 'filler', (select artifact_hash from contribution limit 1), 1
   from generate_series(1, 400) g"
 BEFORE=$(psql -h "$WORK" -d math -tAc "select n_tup_upd from pg_stat_user_tables where relname = 'contribution'")
-call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"scope check\"}" | field '["ok"]' > /dev/null
-sleep 1.5
-AFTER=$(psql -h "$WORK" -d math -tAc "select n_tup_upd from pg_stat_user_tables where relname = 'contribution'")
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"scope check\"}" | field '.ok' > /dev/null
+# The refresh is finished when the response comes back; what is still moving is
+# the statistics view this reads. Wait for it to stop moving rather than for a
+# guessed second and a half.
+rows_written() { psql -h "$WORK" -d math -tAc "select n_tup_upd from pg_stat_user_tables where relname = 'contribution'"; }
+AFTER=$(rows_written)
+until [[ $(rows_written) == "$AFTER" ]]; do AFTER=$(rows_written); done
 (( AFTER - BEFORE < 100 )) || fail "set_tier rewrote $((AFTER - BEFORE)) rows, and it should refresh only what it touched"
 
 # And under real contention the writes must all come back answers, not errors.
@@ -452,7 +487,7 @@ done
 # bare `wait` would wait for the suite's own infrastructure to exit.
 wait "${WRITE_JOBS[@]}"
 for f in "$WORK"/tier.*.out "$WORK"/link.*.out; do
-  [[ $(field '["ok"]' < "$f") == True ]] || fail "a concurrent write failed: $(cat "$f")"
+  [[ $(field '.ok' < "$f") == true ]] || fail "a concurrent write failed: $(cat "$f")"
 done
 
 # A whole-table tuning refresh and a live scoped refresh used to deadlock: the
@@ -462,9 +497,11 @@ done
 # link write rather than letting the two enter the row-lock phase together.
 psql -q -h "$WORK" -d math -c "begin; select pg_advisory_xact_lock(hashtext('refresh_notability')); select pg_sleep(0.6); commit" > /dev/null &
 LOCK_JOB=$!
-sleep 0.1
+# Wait for the lock to actually be held, rather than for long enough that it
+# probably is.
+until [[ $(psql -h "$WORK" -d math -tAc "select count(*) from pg_locks where locktype = 'advisory'") != 0 ]]; do nap; done
 START_MS=$(date +%s%3N)
-call link "{\"contributor_key\":\"$KEY\",\"src\":\"$CID\",\"dst\":\"$CID2\",\"rel\":\"repairs\",\"note\":\"full refresh exclusion\"}" | field '["ok"]' > /dev/null
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$CID\",\"dst\":\"$CID2\",\"rel\":\"repairs\",\"note\":\"full refresh exclusion\"}" | field '.ok' > /dev/null
 END_MS=$(date +%s%3N)
 wait "$LOCK_JOB"
 (( END_MS - START_MS >= 350 )) || fail "a scoped refresh ignored the full-refresh exclusion lock"
@@ -473,35 +510,35 @@ echo "$GOT" | python3 -c 'import sys,json; evs=[e["kind"] for e in json.loads(sy
 
 # Contract: trails are visible where the work happens and never block anyone.
 T=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"exploring the test theorem\",\"note\":\"starting out\",\"relates_to\":[\"$CID\"]}")
-TID=$(echo "$T" | field '["trail_id"]')
-call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$TID\",\"note\":\"found a reduction\"}" | field '["ok"]' > /dev/null
+TID=$(echo "$T" | field '.trail_id')
+call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$TID\",\"note\":\"found a reduction\"}" | field '.ok' > /dev/null
 GOT=$(call get "{\"ref\":\"$CID\"}")
-[[ $(echo "$GOT" | field '["exploring_now"][0]["latest_note"]') == "found a reduction" ]] || fail "trail not surfaced on get"
-call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$TID\",\"note\":\"wrapping up without an established claim\",\"close\":true,\"outcome\":\"no-result\"}" | field '["status"]' | grep -q closed || fail "close failed"
+[[ $(echo "$GOT" | field '.exploring_now[0].latest_note') == "found a reduction" ]] || fail "trail not surfaced on get"
+call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$TID\",\"note\":\"wrapping up without an established claim\",\"close\":true,\"outcome\":\"no-result\"}" | field '.status' | grep -q closed || fail "close failed"
 GOT=$(call get "{\"ref\":\"$CID\"}")
 echo "$GOT" | python3 -c 'import sys,json; assert not json.loads(sys.stdin.read()).get("exploring_now")' || fail "closed trail still shown as active"
 FULL=$(call trails "{\"trail_id\":\"$TID\"}")
-[[ $(echo "$FULL" | field '["activity"]') == closed ]] || fail "trail history wrong"
+[[ $(echo "$FULL" | field '.activity') == closed ]] || fail "trail history wrong"
 
 # Contract: an established obstruction is a durable route contribution, not
 # only trail prose. The route must name its attacked question, state, and exact
 # first unsupported step; frontier then exposes that step directly.
-OBQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"obstruction contract question\",\"summary\":\"a question for the route contract\",\"content\":\"Does the route close?\"}" | field '["id"]')
+OBQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"obstruction contract question\",\"summary\":\"a question for the route contract\",\"content\":\"Does the route close?\"}" | field '.id')
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"route\",\"title\":\"underspecified blocked route\",\"summary\":\"missing the exact blocker\",\"content\":\"The argument stops.\",\"state\":\"blocked\",\"relates_to\":[{\"id\":\"$OBQ\",\"rel\":\"attacks\"}]}" \
-  | field '["error"]' | grep -q first_unsupported || fail "a blocked route hid its obstruction in prose"
-OBR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"route\",\"title\":\"durable blocked route\",\"summary\":\"the exact obstruction\",\"content\":\"The reduction needs an injective map, but the constructed map has a two-point fibre.\",\"state\":\"blocked\",\"first_unsupported\":\"Prove the constructed map is injective; its displayed fibre contains two points.\",\"relates_to\":[{\"id\":\"$OBQ\",\"rel\":\"attacks\"}]}" | field '["id"]')
-OBT=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"blocked route diary\",\"note\":\"trying the injectivity route\",\"relates_to\":[\"$OBQ\"]}" | field '["trail_id"]')
+  | field '.error' | grep -q first_unsupported || fail "a blocked route hid its obstruction in prose"
+OBR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"route\",\"title\":\"durable blocked route\",\"summary\":\"the exact obstruction\",\"content\":\"The reduction needs an injective map, but the constructed map has a two-point fibre.\",\"state\":\"blocked\",\"first_unsupported\":\"Prove the constructed map is injective; its displayed fibre contains two points.\",\"relates_to\":[{\"id\":\"$OBQ\",\"rel\":\"attacks\"}]}" | field '.id')
+OBT=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"blocked route diary\",\"note\":\"trying the injectivity route\",\"relates_to\":[\"$OBQ\"]}" | field '.trail_id')
 call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$OBT\",\"note\":\"blocked\",\"close\":true,\"outcome\":\"blocked\"}" \
-  | field '["error"]' | grep -q "durable kind='route'" || fail "a blocked trail closed without a durable route"
-call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$OBT\",\"note\":\"blocked at injectivity; durable route attached\",\"relates_to\":[\"$OBR\"],\"close\":true,\"outcome\":\"blocked\"}" | field '["status"]' | grep -q closed || fail "a blocked trail did not accept its durable route"
+  | field '.error' | grep -q "durable kind='route'" || fail "a blocked trail closed without a durable route"
+call trail "{\"contributor_key\":\"$KEY\",\"trail_id\":\"$OBT\",\"note\":\"blocked at injectivity; durable route attached\",\"relates_to\":[\"$OBR\"],\"close\":true,\"outcome\":\"blocked\"}" | field '.status' | grep -q closed || fail "a blocked trail did not accept its durable route"
 OBF=$(call frontier "{\"ref\":\"$OBQ\"}")
-[[ $(echo "$OBF" | field '["routes"][0]["id"]') == "$OBR" ]] || fail "durable route missing from frontier"
-[[ $(echo "$OBF" | field '["where_routes_stall"][0]["stalls_at"]') == "Prove the constructed map is injective; its displayed fibre contains two points." ]] || fail "frontier hid the route's first unsupported step"
-[[ $(echo "$OBF" | field '["already_tried"][0]["outcome"]') == blocked ]] || fail "closed trail lost its explicit outcome"
+[[ $(echo "$OBF" | field '.routes[0].id') == "$OBR" ]] || fail "durable route missing from frontier"
+[[ $(echo "$OBF" | field '.where_routes_stall[0].stalls_at') == "Prove the constructed map is injective; its displayed fibre contains two points." ]] || fail "frontier hid the route's first unsupported step"
+[[ $(echo "$OBF" | field '.already_tried[0].outcome') == blocked ]] || fail "closed trail lost its explicit outcome"
 
 # Contract: an open trail idle past the freshness window is abandoned, hidden
 # from the default listing so it warns no one off, but visible with include_stale.
-ST=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"stale exploration\",\"note\":\"start\"}" | field '["trail_id"]')
+ST=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"stale exploration\",\"note\":\"start\"}" | field '.trail_id')
 psql -q -h "$WORK" -d math -c "update trail set updated_at = now() - interval '3 hours' where id = '$ST'" > /dev/null
 call trails '{}' | python3 -c 'import sys,json;ts=json.load(sys.stdin)["trails"];assert all(t["id"]!="'"$ST"'" for t in ts)' || fail "stale trail shown in default listing"
 call trails '{"include_stale":true}' | python3 -c 'import sys,json;ts=json.load(sys.stdin)["trails"];assert any(t["id"]=="'"$ST"'" and t["activity"]=="stale" for t in ts)' || fail "include_stale did not surface the abandoned trail"
@@ -509,13 +546,13 @@ call trails '{"include_stale":true}' | python3 -c 'import sys,json;ts=json.load(
 # Contract: search is dash/accent-insensitive and degrades to fuzzy, so a
 # hyphen query finds an en-dash title (the de Bruijn–Newman discovery failure).
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"de Bruijn–Newman upper bound 0.2\",\"summary\":\"a certified bound\",\"content\":\"Lambda le 0.2.\"}" > /dev/null
-HITS=$(call search '{"query":"de Bruijn-Newman constant"}' | field '["results"]' | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
+HITS=$(call search '{"query":"de Bruijn-Newman constant"}' | field '.results' | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
 [[ "$HITS" -ge 1 ]] || fail "dash/fuzzy search found nothing"
 
 # Contract: search can bound a rolling activity window. This is the public
 # live page's data door, so both text search and browse mode must agree on it.
-OLD=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"old window marker\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-NEW=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"fresh window marker\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+OLD=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"old window marker\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+NEW=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"fresh window marker\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 psql -q -h "$WORK" -d math -c "update contribution set created_at = now() - interval '25 hours' where id = '$OLD'"
 WINDOW=$(call search '{"kind":"theorem","since":"24h","order_by":"recent","limit":100}')
 echo "$WINDOW" | OLD="$OLD" NEW="$NEW" python3 -c '
@@ -528,12 +565,12 @@ import os,sys,json
 ids={r["id"] for r in json.load(sys.stdin)["results"]}
 assert os.environ["NEW"] in ids and os.environ["OLD"] not in ids
 ' || fail "text-search since window disagreed with browse mode"
-call search '{"since":"yesterday-ish"}' | field '["error"]' | grep -qi "invalid since" || fail "invalid since value was accepted"
+call search '{"since":"yesterday-ish"}' | field '.error' | grep -qi "invalid since" || fail "invalid since value was accepted"
 
 # Contract: a typed link is itself a contribution (kind='edge'), appears in the
 # target's neighbourhood, and lifts notability toward the thing built upon.
-A=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"lemma A\",\"summary\":\"s\",\"content\":\"A.\"}" | field '["id"]')
-B=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"thm B\",\"summary\":\"s\",\"content\":\"B via A.\",\"relates_to\":[{\"id\":\"$A\",\"rel\":\"uses\"}]}" | field '["id"]')
+A=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"lemma A\",\"summary\":\"s\",\"content\":\"A.\"}" | field '.id')
+B=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"thm B\",\"summary\":\"s\",\"content\":\"B via A.\",\"relates_to\":[{\"id\":\"$A\",\"rel\":\"uses\"}]}" | field '.id')
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from contribution where kind='edge'") -ge 1 ]] || fail "link was not recorded as a contribution"
 call get "{\"ref\":\"$A\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(x for xs in d["links"]["in"].values() for x in xs)' || fail "link not in neighbourhood"
 NA=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$A'")
@@ -542,25 +579,25 @@ python3 -c "assert float('$NA')>0" || fail "notability not derived for a contrib
 # Multiple identities may corroborate one relation, but graph importance reads
 # the strongest active assertion rather than letting duplicate links multiply
 # a score. A stronger reviewed copy may replace the T0 copy's weight.
-DUP=$(call link "{\"contributor_key\":\"$OPKEY\",\"src\":\"$B\",\"dst\":\"$A\",\"rel\":\"uses\",\"note\":\"independent assertion\"}" | field '["edge_id"]')
+DUP=$(call link "{\"contributor_key\":\"$OPKEY\",\"src\":\"$B\",\"dst\":\"$A\",\"rel\":\"uses\",\"note\":\"independent assertion\"}" | field '.edge_id')
 NA_DUP=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$A'")
 [[ "$NA_DUP" == "$NA" ]] || fail "a duplicate active relation multiplied notability ($NA -> $NA_DUP)"
-call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$DUP\",\"tier\":2,\"note\":\"reviewed relation\"}" | field '["ok"]' > /dev/null
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$DUP\",\"tier\":2,\"note\":\"reviewed relation\"}" | field '.ok' > /dev/null
 NA_STRONG=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$A'")
 python3 -c "assert float('$NA_STRONG') > float('$NA_DUP')" || fail "the strongest reviewed relation did not replace the T0 relation's weight"
 
 # Settlement importance uses the same trust semantics. An unreviewed answer
 # earns only the T0 edge factor, promotion strengthens it, and the vague
 # 'serves' relation earns no settlement credit at all.
-IQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"importance target\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+IQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"importance target\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$IQ\",\"tier\":2,\"note\":\"canonical target\"}" > /dev/null
-IR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"importance answer\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-IE=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$IR\",\"dst\":\"$IQ\",\"rel\":\"answers\"}" | field '["edge_id"]')
+IR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"importance answer\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+IE=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$IR\",\"dst\":\"$IQ\",\"rel\":\"answers\"}" | field '.edge_id')
 IR_T0=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$IR'")
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$IE\",\"tier\":2,\"note\":\"confirmed answer relation\"}" > /dev/null
 IR_T2=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$IR'")
 python3 -c "assert float('$IR_T2') > float('$IR_T0')" || fail "settlement credit ignored the answer edge tier"
-IS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"importance servant\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+IS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"importance servant\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 IS_BEFORE=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$IS'")
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$IS\",\"dst\":\"$IQ\",\"rel\":\"serves\"}" > /dev/null
 IS_AFTER=$(psql -h "$WORK" -d math -tAc "select notability from contribution where id='$IS'")
@@ -568,25 +605,25 @@ IS_AFTER=$(psql -h "$WORK" -d math -tAc "select notability from contribution whe
 
 # Contract: trusted promotion of a link (edges climb the same ladder).
 EID=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where dst='$A' limit 1")
-call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$EID\",\"tier\":2,\"note\":\"confirmed link\"}" | field '["ok"]' > /dev/null
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$EID\",\"tier\":2,\"note\":\"confirmed link\"}" | field '.ok' > /dev/null
 [[ $(psql -h "$WORK" -d math -tAc "select tier from contribution where id='$EID'") == 2 ]] || fail "edge did not promote"
 
 # Contract: submissions are auto-tagged with subject topics (submit wiring to
 # the shared classifier) and topic is a search facet.
-DBN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"Riemann zeta zero de Bruijn Newman\",\"summary\":\"analytic bound\",\"content\":\"On the critical line.\"}" | field '["id"]')
+DBN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"Riemann zeta zero de Bruijn Newman\",\"summary\":\"analytic bound\",\"content\":\"On the critical line.\"}" | field '.id')
 [[ $(psql -h "$WORK" -d math -tAc "select 'analytic-number-theory' = any(tags) from contribution where id='$DBN'") == t ]] || fail "submission was not topic-tagged"
 call search '{"topic":"analytic-number-theory"}' | python3 -c 'import sys,json;assert len(json.load(sys.stdin)["results"])>=1' || fail "topic search facet empty"
 
 # Contract: a front groups work and its members surface (fronts read tool).
-FR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"front\",\"title\":\"test front\",\"summary\":\"s\",\"content\":\"grouping.\"}" | field '["id"]')
-call link "{\"contributor_key\":\"$KEY\",\"src\":\"$A\",\"dst\":\"$FR\",\"rel\":\"in-front\"}" | field '["ok"]' > /dev/null
+FR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"front\",\"title\":\"test front\",\"summary\":\"s\",\"content\":\"grouping.\"}" | field '.id')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$A\",\"dst\":\"$FR\",\"rel\":\"in-front\"}" | field '.ok' > /dev/null
 call fronts "{\"ref\":\"$FR\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(m["id"] for ms in d["members_by_kind"].values() for m in ms)' || fail "front member not surfaced"
 
 # Contract: programmes nest, and both directions are visible. A campaign front
 # is part-of the broader front that covers it; a reader landing on either must
 # be able to walk to the other.
-SUBFR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"front\",\"title\":\"test campaign\",\"summary\":\"s\",\"content\":\"one campaign.\"}" | field '["id"]')
-call link "{\"contributor_key\":\"$KEY\",\"src\":\"$SUBFR\",\"dst\":\"$FR\",\"rel\":\"part-of\"}" | field '["ok"]' > /dev/null
+SUBFR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"front\",\"title\":\"test campaign\",\"summary\":\"s\",\"content\":\"one campaign.\"}" | field '.id')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$SUBFR\",\"dst\":\"$FR\",\"rel\":\"part-of\"}" | field '.ok' > /dev/null
 call fronts "{\"ref\":\"$FR\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["sub_programmes"][0]["id"]=="'"$SUBFR"'"' || fail "umbrella front does not list its campaigns"
 call fronts "{\"ref\":\"$SUBFR\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["part_of"][0]["id"]=="'"$FR"'"' || fail "campaign front does not name its umbrella"
 
@@ -594,17 +631,17 @@ call fronts "{\"ref\":\"$SUBFR\"}" | python3 -c 'import sys,json;d=json.load(sys
 # Contract: a list row does not echo the title back as its summary. Titles cut
 # from the opening of a write-up make the two identical, which is pure noise in
 # a page of results.
-ECHO=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"echoing title zqx\",\"summary\":\"echoing title zqx\",\"content\":\"echoing title zqx\"}" | field '["id"]')
+ECHO=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"echoing title zqx\",\"summary\":\"echoing title zqx\",\"content\":\"echoing title zqx\"}" | field '.id')
 call search '{"kind":"problem"}' | python3 -c 'import sys,json;rs=json.load(sys.stdin)["results"];r=[x for x in rs if x["id"]=="'"$ECHO"'"][0];assert "summary" not in r, r' || fail "list row echoed the title as its summary"
 call get "{\"ref\":\"$ECHO\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert "summary" not in d and d["content"]' || fail "get echoed the title as its summary"
 
 # Contract: an alias resolves anywhere a ref is taken, even when the title differs.
-RN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"obscure internal title zzq\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"Kolmogorov width marker\"]}" | field '["id"]')
+RN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"obscure internal title zzq\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"Kolmogorov width marker\"]}" | field '.id')
 call get '{"ref":"Kolmogorov width marker"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["matched_by"]=="name" and d["id"]=="'"$RN"'"' || fail "alias ref did not find the entry"
 
 # Contract: frontier distills a question's attack state from the graph.
-Q=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"frontier test question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-SQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"sub-question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+Q=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"frontier test question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+SQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"sub-question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"partial attempt\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$Q\",\"rel\":\"refines\"}]}" > /dev/null
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$Q\",\"dst\":\"$SQ\",\"rel\":\"reduces-to\"}" > /dev/null
 call frontier "{\"ref\":\"$Q\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["progress_toward_it"])>=1 and any(x["id"]=="'"$SQ"'" for x in d["open_subproblems"])' || fail "frontier did not distill attack state"
@@ -619,11 +656,11 @@ echo "$FRT" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d.get("k
 # open until something in the ledger answers it, and answering flips it without
 # anyone editing the question. This is what makes "which cells are still open?"
 # answerable, so it is checked end to end through the read doors.
-[[ $(call frontier "{\"ref\":\"$Q\"}" | field '["state"]') == open ]] || fail "fresh problem was not open"
+[[ $(call frontier "{\"ref\":\"$Q\"}" | field '.state') == open ]] || fail "fresh problem was not open"
 call search '{"kind":"problem","state":"open"}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "open problem missing from the open list"
-ANS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"settles the sub-question\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$SQ\",\"rel\":\"answers\"}]}" | field '["id"]')
+ANS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"settles the sub-question\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$SQ\",\"rel\":\"answers\"}]}" | field '.id')
 SQF=$(call frontier "{\"ref\":\"$SQ\"}")
-[[ $(echo "$SQF" | field '["state"]') == settled ]] || fail "answered problem did not become settled"
+[[ $(echo "$SQF" | field '.state') == settled ]] || fail "answered problem did not become settled"
 echo "$SQF" | python3 -c 'import sys,json;assert any(a["id"]=="'"$ANS"'" for a in json.load(sys.stdin)["answered_by"])' || fail "frontier did not name what settled the question"
 call search '{"kind":"problem","state":"open"}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "settled problem still listed as open"
 # A live T0 closure changes ordinary state immediately, but a reviewed record
@@ -643,8 +680,8 @@ call search '{"kind":["problem","conjecture"],"state":"settled","order_by":"nota
 # origin='external' with a source; it still closes the question and still shows
 # up everywhere the question does, but it is not what this ledger established
 # first, so the all-time board (settled_by_origin='ledger') drops the question.
-XQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"question closed by a published paper\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-XA=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"the published counterexample, recorded here\",\"summary\":\"s\",\"content\":\"c.\",\"external_source\":\"Freedman-Lee, arXiv:2607.23423, Thm 1.3\",\"relates_to\":[{\"id\":\"$XQ\",\"rel\":\"disproves\"}]}" | field '["id"]')
+XQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"question closed by a published paper\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+XA=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"the published counterexample, recorded here\",\"summary\":\"s\",\"content\":\"c.\",\"external_source\":\"Freedman-Lee, arXiv:2607.23423, Thm 1.3\",\"relates_to\":[{\"id\":\"$XQ\",\"rel\":\"disproves\"}]}" | field '.id')
 call get "{\"ref\":\"$XA\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["origin"]=="external" and "2607.23423" in d["origin_source"]' || fail "external_source did not record an external origin"
 call search '{"kind":"statement","origin":"external","limit":100}' | python3 -c 'import sys,json;rows=[r for r in json.load(sys.stdin)["results"] if r["id"]=="'"$XA"'"];assert rows and rows[0]["origin"]=="external" and rows[0]["origin_source"]' || fail "origin filter did not find the external entry"
 call search '{"kind":"statement","origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$XA"'" for r in json.load(sys.stdin)["results"])' || fail "external entry appeared in a ledger-origin browse"
@@ -653,21 +690,21 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$X_EDGE\",\"tier\":2,\"
 call search '{"kind":"problem","state":"settled","settled_by_min_tier":2,"limit":100}' | python3 -c 'import sys,json;rows=[r for r in json.load(sys.stdin)["results"] if r["id"]=="'"$XQ"'"];assert rows and rows[0]["settled_by"][0]["origin"]=="external"' || fail "a settled question did not show that what settled it came from elsewhere"
 call search '{"kind":"problem","state":"settled","settled_by_min_tier":2,"settled_by_origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$XQ"'" for r in json.load(sys.stdin)["results"])' || fail "externally settled question entered the ledger-origin board"
 call search '{"kind":"problem","state":"settled","settled_by_origin":"external","limit":100}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$XQ"'" for r in json.load(sys.stdin)["results"])' || fail "externally settled question missing from an external-settlement browse"
-[[ $(call frontier "{\"ref\":\"$XQ\"}" | field '["state"]') == settled ]] || fail "an external closure did not settle the question"
+[[ $(call frontier "{\"ref\":\"$XQ\"}" | field '.state') == settled ]] || fail "an external closure did not settle the question"
 
 # Contract: origin is a reviewed judgment, so review can correct it, only a
 # trusted key may, an external origin without a source is refused, and the
 # decision reports which questions it just took off the all-time board.
-call set_origin "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"origin\":\"external\",\"source\":\"someone else\",\"note\":\"n\"}" | field '["error"]' | grep -qi "trusted" || fail "an untrusted key changed an origin"
-call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"external\",\"note\":\"n\"}" | field '["error"]' | grep -qi "source" || fail "an external origin was accepted with no source"
+call set_origin "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"origin\":\"external\",\"source\":\"someone else\",\"note\":\"n\"}" | field '.error' | grep -qi "trusted" || fail "an untrusted key changed an origin"
+call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"external\",\"note\":\"n\"}" | field '.error' | grep -qi "source" || fail "an external origin was accepted with no source"
 call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"external\",\"source\":\"Some Author, J. Example 12 (1999) 3-4\",\"note\":\"already in the literature\"}" \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["ok"] and any(q["id"]=="'"$SQ"'" for q in d["left_the_board"])' || fail "set_origin did not report the question it took off the board"
 call search '{"kind":"problem","state":"settled","settled_by_origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "a reviewed external origin did not leave the ledger-origin board"
-call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"ledger\",\"note\":\"misattributed; this argument is ours\"}" | field '["ok"]' > /dev/null
+call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$ANS\",\"origin\":\"ledger\",\"note\":\"misattributed; this argument is ours\"}" | field '.ok' > /dev/null
 call search '{"kind":"problem","state":"settled","settled_by_origin":"ledger","limit":100}' | python3 -c 'import sys,json;assert any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "restoring ledger origin did not put the question back on the board"
 
-call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"note\":\"withdrawn\"}" | field '["ok"]' > /dev/null
-[[ $(call frontier "{\"ref\":\"$SQ\"}" | field '["state"]') == open ]] || fail "retracting the answer did not reopen the question"
+call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"note\":\"withdrawn\"}" | field '.ok' > /dev/null
+[[ $(call frontier "{\"ref\":\"$SQ\"}" | field '.state') == open ]] || fail "retracting the answer did not reopen the question"
 
 # ——— A theory is an object, not a document ———————————————————————————————
 # The family only earns its keep if a framework can be recorded once and used
@@ -677,23 +714,23 @@ call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"note\":\"withdraw
 # checked end to end here, including the review gate that stops anyone from
 # closing the corpus by asserting equivalences.
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theory\",\"title\":\"a framework with no stated scope\",\"summary\":\"s\",\"content\":\"c.\"}" \
-  | field '["error"]' | grep -qi "applies_to" || fail "a theory was accepted without saying what it applies to"
+  | field '.error' | grep -qi "applies_to" || fail "a theory was accepted without saying what it applies to"
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"not a theory\",\"summary\":\"s\",\"content\":\"c.\",\"applies_to\":\"everything\"}" \
-  | field '["error"]' | grep -qi "belongs on" || fail "a theory-only field was accepted on another kind"
+  | field '.error' | grep -qi "belongs on" || fail "a theory-only field was accepted on another kind"
 
 THEORY=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theory\",\"title\":\"contract theory of widget extensions\",\"summary\":\"s\",\"content\":\"c.\",\"applies_to\":\"finite widget extensions W/V\",\"introduces\":[{\"term\":\"widget group\",\"statement\":\"The automorphisms of W fixing V.\",\"names\":[\"Wid(W/V)\"]},{\"term\":\"widget-solvable\",\"statement\":\"Built from a tower of widget radicals.\"}]}")
 echo "$THEORY" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["introduced"])==2 and all(x["id"] for x in d["introduced"])' \
   || fail "a theory did not mint its vocabulary: $(echo "$THEORY" | head -c 300)"
-THEORY=$(echo "$THEORY" | field '["id"]')
+THEORY=$(echo "$THEORY" | field '.id')
 # The point of minting them: an agent who never read the write-up can ask for
 # the concept by the name it was introduced under.
 call get '{"ref":"Wid(W/V)"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["kind"]=="definition" and d["matched_by"]=="name"' \
   || fail "a minted definition was not resolvable by its alias"
 
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"correspondence\",\"title\":\"dictionary with no rows\",\"summary\":\"s\",\"content\":\"c.\",\"via\":\"$THEORY\",\"applies_to\":\"a\",\"transports_to\":\"b\",\"fidelity\":\"equivalence\"}" \
-  | field '["error"]' | grep -qi "dictionary" || fail "a correspondence was accepted with no dictionary rows"
-PILLAR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"the widget correspondence theorem\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-CORR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"correspondence\",\"title\":\"the fundamental widget dictionary\",\"summary\":\"s\",\"content\":\"c.\",\"via\":\"$THEORY\",\"applies_to\":\"intermediate widgets of W/V\",\"transports_to\":\"subgroups of Wid(W/V)\",\"fidelity\":\"equivalence\",\"dictionary\":[{\"source\":\"intermediate widget U\",\"target\":\"subgroup H\",\"note\":\"inclusion-reversing\",\"proof\":\"the widget correspondence theorem\"},{\"source\":\"degree [U:V]\",\"target\":\"index [G:H]\"}]}" | field '["id"]')
+  | field '.error' | grep -qi "dictionary" || fail "a correspondence was accepted with no dictionary rows"
+PILLAR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"the widget correspondence theorem\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+CORR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"correspondence\",\"title\":\"the fundamental widget dictionary\",\"summary\":\"s\",\"content\":\"c.\",\"via\":\"$THEORY\",\"applies_to\":\"intermediate widgets of W/V\",\"transports_to\":\"subgroups of Wid(W/V)\",\"fidelity\":\"equivalence\",\"dictionary\":[{\"source\":\"intermediate widget U\",\"target\":\"subgroup H\",\"note\":\"inclusion-reversing\",\"proof\":\"the widget correspondence theorem\"},{\"source\":\"degree [U:V]\",\"target\":\"index [G:H]\"}]}" | field '.id')
 # A row's proof is stored as the id it resolved to, not the phrase that was
 # typed, and it is a link the graph can see.
 psql -h "$WORK" -d math -tAc "select count(*) from q_dictionary where correspondence_id = '$CORR'" | grep -q '^2$' \
@@ -714,16 +751,16 @@ assert len(rows) == 2 and rows[0]["source"] and rows[0]["target"], rows
 # Contract: a reformulation needs all three of what it restates, what it
 # restated it through, and how faithful the restatement is.
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"reformulation\",\"title\":\"a restatement out of nowhere\",\"summary\":\"s\",\"content\":\"c.\"}" \
-  | field '["error"]' | grep -qi "reformulates" || fail "a reformulation was accepted with nothing to reformulate"
-WQ1=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"is every widget extension solvable\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
+  | field '.error' | grep -qi "reformulates" || fail "a reformulation was accepted with nothing to reformulate"
+WQ1=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"is every widget extension solvable\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"reformulation\",\"title\":\"restated with a made-up fidelity\",\"summary\":\"s\",\"content\":\"c.\",\"reformulates\":\"$WQ1\",\"via\":\"$THEORY\",\"fidelity\":\"probably\"}" \
-  | field '["error"]' | grep -qi "fidelity" || fail "a reformulation was accepted with an undeclared fidelity"
+  | field '.error' | grep -qi "fidelity" || fail "a reformulation was accepted with an undeclared fidelity"
 
-REF=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"reformulation\",\"title\":\"is every widget group solvable\",\"summary\":\"s\",\"content\":\"c.\",\"reformulates\":\"$WQ1\",\"via\":\"$THEORY\",\"fidelity\":\"equivalent\"}" | field '["id"]')
-WANS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"every widget group is solvable\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$REF\",\"rel\":\"answers\"}]}" | field '["id"]')
+REF=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"reformulation\",\"title\":\"is every widget group solvable\",\"summary\":\"s\",\"content\":\"c.\",\"reformulates\":\"$WQ1\",\"via\":\"$THEORY\",\"fidelity\":\"equivalent\"}" | field '.id')
+WANS=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"every widget group is solvable\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$REF\",\"rel\":\"answers\"}]}" | field '.id')
 # Asserted, not reviewed: nothing transports. Otherwise anyone could close
 # every open question in the corpus by claiming an equivalence.
-[[ $(call frontier "{\"ref\":\"$WQ1\"}" | field '["state"]') == open ]] \
+[[ $(call frontier "{\"ref\":\"$WQ1\"}" | field '.state') == open ]] \
   || fail "an unreviewed equivalence settled a question"
 REF_EDGE=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where src='$REF' and dst='$WQ1' and rel='reformulates'")
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$REF\",\"tier\":2,\"note\":\"the translation checks out\"}" > /dev/null
@@ -743,42 +780,42 @@ call theories "{\"for\":\"$WQ1\"}" | python3 -c 'import sys,json;d=json.load(sys
   || fail "theories({for}) did not report the transport"
 # And it is as reversible as any other settlement.
 call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$WANS\",\"note\":\"withdrawn\"}" > /dev/null
-[[ $(call frontier "{\"ref\":\"$WQ1\"}" | field '["state"]') == open ]] \
+[[ $(call frontier "{\"ref\":\"$WQ1\"}" | field '.state') == open ]] \
   || fail "withdrawing the answer left the transported settlement standing"
 
 # Contract: a one-directional restatement is progress, never a closure, at any
 # tier. This is the difference the fidelity field exists to record.
-WQ2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"is every widget extension tame\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-REF2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"reformulation\",\"title\":\"a sufficient widget-group condition for tameness\",\"summary\":\"s\",\"content\":\"c.\",\"reformulates\":\"$WQ2\",\"via\":\"$THEORY\",\"fidelity\":\"implies\"}" | field '["id"]')
+WQ2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"is every widget extension tame\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+REF2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"reformulation\",\"title\":\"a sufficient widget-group condition for tameness\",\"summary\":\"s\",\"content\":\"c.\",\"reformulates\":\"$WQ2\",\"via\":\"$THEORY\",\"fidelity\":\"implies\"}" | field '.id')
 REF2_EDGE=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where src='$REF2' and dst='$WQ2' and rel='reformulates'")
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$REF2\",\"tier\":2,\"note\":\"correct, but one way\"}" > /dev/null
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$REF2_EDGE\",\"tier\":2,\"note\":\"n\"}" > /dev/null
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"the sufficient condition holds\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$REF2\",\"rel\":\"answers\"}]}" > /dev/null
-[[ $(call frontier "{\"ref\":\"$WQ2\"}" | field '["state"]') == open ]] \
+[[ $(call frontier "{\"ref\":\"$WQ2\"}" | field '.state') == open ]] \
   || fail "a one-directional reformulation closed the question it only implies"
 
 # Contract: the same transport rule reads a bare equivalence link, so two
 # questions already in the corpus can be identified without a write-up.
-EQ1=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"the widget parity question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-EQ2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"the gadget parity question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-EQ_EDGE=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$EQ1\",\"dst\":\"$EQ2\",\"rel\":\"equivalent-to\",\"note\":\"same question in two vocabularies\"}" | field '["edge_id"]')
+EQ1=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"the widget parity question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+EQ2=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"the gadget parity question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+EQ_EDGE=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$EQ1\",\"dst\":\"$EQ2\",\"rel\":\"equivalent-to\",\"note\":\"same question in two vocabularies\"}" | field '.edge_id')
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"gadget parity, resolved\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$EQ2\",\"rel\":\"answers\"}]}" > /dev/null
-[[ $(call frontier "{\"ref\":\"$EQ1\"}" | field '["state"]') == open ]] || fail "a T0 equivalence link transported a settlement"
+[[ $(call frontier "{\"ref\":\"$EQ1\"}" | field '.state') == open ]] || fail "a T0 equivalence link transported a settlement"
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$EQ_EDGE\",\"tier\":2,\"note\":\"the identification is right\"}" > /dev/null
-[[ $(call frontier "{\"ref\":\"$EQ1\"}" | field '["state"]') == settled ]] \
+[[ $(call frontier "{\"ref\":\"$EQ1\"}" | field '.state') == settled ]] \
   || fail "a reviewed equivalence link did not identify the two questions"
 
 # Contract: news is a cursor, not a clock. A reader hands back the sequence
 # number it was given and gets exactly the events it has not seen -- no
 # interval to guess, no double-read, no gap -- and the packet carries the
 # custody vocabulary a summary must preserve.
-CUR=$(call news '{"since":"1h"}' | field '["next"]["after_seq"]')
-NQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"news test question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-NA=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"settles the news question\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$NQ\",\"rel\":\"answers\"}]}" | field '["id"]')
+CUR=$(call news '{"since":"1h"}' | field '.next.after_seq')
+NQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"news test question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+NA=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"settles the news question\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$NQ\",\"rel\":\"answers\"}]}" | field '.id')
 # A settlement asserted and then withdrawn inside one window is not news that a
 # question closed, so this second pair must never reach `settled`.
-WQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"withdrawn-answer question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-WA=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"withdrawn answer\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$WQ\",\"rel\":\"answers\"}]}" | field '["id"]')
+WQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"withdrawn-answer question\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+WA=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"withdrawn answer\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$WQ\",\"rel\":\"answers\"}]}" | field '.id')
 call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$WA\",\"note\":\"withdrawn\"}" > /dev/null
 NEWS=$(call news "{\"after_seq\":$CUR,\"questions\":50}")
 echo "$NEWS" | NQ="$NQ" NA="$NA" WQ="$WQ" CUR="$CUR" python3 -c '
@@ -798,7 +835,7 @@ assert "T2 canon" in d["how_to_read"], "news dropped the custody vocabulary"
 
 # Contract: the cursor advances exactly once. Reading from the sequence number
 # the last packet handed back reports nothing that packet already carried.
-CUR2=$(echo "$NEWS" | field '["next"]["after_seq"]')
+CUR2=$(echo "$NEWS" | field '.next.after_seq')
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$NQ\",\"tier\":2,\"note\":\"canon for the news contract\"}" > /dev/null
 NEWS2=$(call news "{\"after_seq\":$CUR2}")
 echo "$NEWS2" | NQ="$NQ" python3 -c '
@@ -816,9 +853,9 @@ assert d["promotions"]["total"] >= len(d["promoted"])
 # only seen an entry's name in a summary can ask about it directly.
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"named cell\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"cell-q4n-residual\"]}" > /dev/null
 for door in 'get {"ref":"cell-q4n-residual"}' 'frontier {"ref":"cell-q4n-residual"}'; do
-  [[ $(call "${door%% *}" "${door#* }" | field '["title"]') == "named cell" ]] || fail "${door%% *} did not accept a name"
+  [[ $(call "${door%% *}" "${door#* }" | field '.title') == "named cell" ]] || fail "${door%% *} did not accept a name"
 done
-[[ $(call fronts '{"ref":"test front"}' | field '["title"]') == "test front" ]] || fail "fronts did not accept a title"
+[[ $(call fronts '{"ref":"test front"}' | field '.title') == "test front" ]] || fail "fronts did not accept a title"
 
 # Contract: search says how each hit matched, and hits carrying every term rank
 # above hits carrying one. Otherwise a two-word query is swamped by whatever
@@ -844,7 +881,7 @@ import sys, json
 r = json.load(sys.stdin)["results"][0]
 assert len(r["summary"]) <= 281, len(r["summary"])
 ' || fail "search returned an untruncated summary"
-[[ $(call get '{"ref":"long summary entry"}' | field '["content"]' | wc -c) -gt 1000 ]] || fail "get did not return the full content"
+[[ $(call get '{"ref":"long summary entry"}' | field '.content' | wc -c) -gt 1000 ]] || fail "get did not return the full content"
 
 # Contract: every read door says when. A reader must be able to date anything
 # it is shown without a second round trip, including a *link*, whose
@@ -895,26 +932,26 @@ assert w["totals"]["links"] > 0
 # instead of a per-call argument, a per-call argument wins over it, and the
 # header carries role gates too.
 HELLO=$(AUTH=$KEY call hello '{}')
-[[ $(echo "$HELLO" | field '["you"]["identity"]') == "$SID" ]] || fail "header key did not resolve to its identity"
-[[ $(echo "$HELLO" | field '["you"]["via"]') == key ]] || fail "header key was not reported as the credential in use"
-MINE=$(AUTH=$KEY call my_submissions '{}' | field '["submissions"]' | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
+[[ $(echo "$HELLO" | field '.you.identity') == "$SID" ]] || fail "header key did not resolve to its identity"
+[[ $(echo "$HELLO" | field '.you.via') == key ]] || fail "header key was not reported as the credential in use"
+MINE=$(AUTH=$KEY call my_submissions '{}' | field '.submissions' | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
 [[ "$MINE" -ge 1 ]] || fail "header identity did not see its own submissions"
-OPID2=$(AUTH=$OPKEY call hello "{\"contributor_key\":\"$KEY\"}" | field '["you"]["identity"]')
+OPID2=$(AUTH=$OPKEY call hello "{\"contributor_key\":\"$KEY\"}" | field '.you.identity')
 [[ "$OPID2" == "$SID" ]] || fail "per-call contributor_key did not win over the header"
-HDRT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"header gate target\",\"summary\":\"s\",\"content\":\"c.\"}" | field '["id"]')
-AUTH=$OPKEY call set_tier "{\"ref\":\"$HDRT\",\"tier\":2,\"note\":\"reviewed via header\"}" | field '["ok"]' > /dev/null
+HDRT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"header gate target\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+AUTH=$OPKEY call set_tier "{\"ref\":\"$HDRT\",\"tier\":2,\"note\":\"reviewed via header\"}" | field '.ok' > /dev/null
 [[ $(psql -h "$WORK" -d math -tAc "select tier from contribution where id='$HDRT'") == 2 ]] || fail "operator header did not pass the trusted gate"
 
 # Contract: OAuth is a complete, accountless path to an identity -- the one
 # MCP clients already know how to walk. Register, authorize, exchange with
 # PKCE, and the token that comes out is a durable identity with no signup.
 DISC=$(curl -sf "$PUBLIC_URL/.well-known/oauth-protected-resource")
-[[ $(echo "$DISC" | field '["authorization_servers"][0]') == "$PUBLIC_URL" ]] || fail "protected-resource metadata does not point at this server"
-curl -sf "$PUBLIC_URL/.well-known/oauth-authorization-server" | field '["token_endpoint"]' > /dev/null || fail "no authorization-server metadata"
+[[ $(echo "$DISC" | field '.authorization_servers[0]') == "$PUBLIC_URL" ]] || fail "protected-resource metadata does not point at this server"
+curl -sf "$PUBLIC_URL/.well-known/oauth-authorization-server" | field '.token_endpoint' > /dev/null || fail "no authorization-server metadata"
 
 REG=$(curl -sf -X POST "$PUBLIC_URL/oauth/register" -H 'Content-Type: application/json' \
   -d '{"client_name":"contract client","redirect_uris":["http://127.0.0.1:9999/callback"]}')
-OACID=$(echo "$REG" | field '["client_id"]')
+OACID=$(echo "$REG" | field '.client_id')
 VERIFIER=$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')
 CHALLENGE=$(python3 -c 'import hashlib,base64,sys; print(base64.urlsafe_b64encode(hashlib.sha256(sys.argv[1].encode()).digest()).rstrip(b"=").decode())' "$VERIFIER")
 curl -sf "$PUBLIC_URL/oauth/authorize?response_type=code&client_id=$OACID&redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcallback&code_challenge=$CHALLENGE&code_challenge_method=S256&state=xyz" \
@@ -931,25 +968,25 @@ authorize_code() { # -> a fresh authorization code from a consent round
 # exchange below starts from its own consent round.
 curl -s -X POST "$PUBLIC_URL/oauth/token" --data-urlencode "grant_type=authorization_code" \
   --data-urlencode "code=$(authorize_code)" --data-urlencode "client_id=$OACID" --data-urlencode "code_verifier=wrong-verifier" \
-  | field '["error"]' | grep -q invalid_grant || fail "PKCE verification is not enforced"
+  | field '.error' | grep -q invalid_grant || fail "PKCE verification is not enforced"
 CODE=$(authorize_code)
 TOKEN=$(curl -sf -X POST "$PUBLIC_URL/oauth/token" --data-urlencode "grant_type=authorization_code" \
-  --data-urlencode "code=$CODE" --data-urlencode "client_id=$OACID" --data-urlencode "code_verifier=$VERIFIER" | field '["access_token"]')
+  --data-urlencode "code=$CODE" --data-urlencode "client_id=$OACID" --data-urlencode "code_verifier=$VERIFIER" | field '.access_token')
 [[ $TOKEN == mrt_* ]] || fail "authorization code did not exchange for a token"
-OAID=$(AUTH=$TOKEN call submit '{"kind":"result","title":"oauth attribution","summary":"s","content":"c."}' | field '["attributed_to"]')
+OAID=$(AUTH=$TOKEN call submit '{"kind":"result","title":"oauth attribution","summary":"s","content":"c."}' | field '.attributed_to')
 [[ $OAID != anonymous ]] || fail "an OAuth token did not attribute the contribution"
-[[ $(AUTH=$TOKEN call hello '{}' | field '["you"]["identity"]') == "$OAID" ]] || fail "OAuth identity is not stable across calls"
+[[ $(AUTH=$TOKEN call hello '{}' | field '.you.identity') == "$OAID" ]] || fail "OAuth identity is not stable across calls"
 
 # Contract: a headless client with no browser can still be someone.
 MREG=$(curl -sf -X POST "$PUBLIC_URL/oauth/register" -H 'Content-Type: application/json' \
   -d '{"client_name":"machine","grant_types":["client_credentials"]}')
-MID=$(echo "$MREG" | field '["client_id"]'); MSECRET=$(echo "$MREG" | field '["client_secret"]')
+MID=$(echo "$MREG" | field '.client_id'); MSECRET=$(echo "$MREG" | field '.client_secret')
 machine_token() {
   curl -sf -X POST "$PUBLIC_URL/oauth/token" --data-urlencode "grant_type=client_credentials" \
-    --data-urlencode "client_id=$MID" --data-urlencode "client_secret=$MSECRET" | field '["access_token"]'
+    --data-urlencode "client_id=$MID" --data-urlencode "client_secret=$MSECRET" | field '.access_token'
 }
-MID1=$(AUTH=$(machine_token) call hello '{}' | field '["you"]["identity"]')
-[[ $(AUTH=$(machine_token) call hello '{}' | field '["you"]["identity"]') == "$MID1" ]] || fail "client_credentials identity is not stable across tokens"
+MID1=$(AUTH=$(machine_token) call hello '{}' | field '.you.identity')
+[[ $(AUTH=$(machine_token) call hello '{}' | field '.you.identity') == "$MID1" ]] || fail "client_credentials identity is not stable across tokens"
 
 # A refactor proposal to adjudicate, so apply_refactor below is called with
 # something it can actually decide.
@@ -966,9 +1003,9 @@ call query '{"sql":"select 1; select 2"}' | grep -q "one statement" || fail "que
 # Contract: a hub entry's neighbourhood is capped per relation and the cap
 # reports what it hid (this is what stopped 506-row 136 KB get responses).
 # rel-paging reaches the hidden rows.
-HUB=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"hub target\",\"summary\":\"s\",\"content\":\"hub.\"}" | field '["id"]')
+HUB=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"hub target\",\"summary\":\"s\",\"content\":\"hub.\"}" | field '.id')
 for i in $(seq 1 10); do
-  SPOKE=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"spoke $i\",\"summary\":\"s\",\"content\":\"spoke $i.\"}" | field '["id"]')
+  SPOKE=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"spoke $i\",\"summary\":\"s\",\"content\":\"spoke $i.\"}" | field '.id')
   call link "{\"contributor_key\":\"$KEY\",\"src\":\"$SPOKE\",\"dst\":\"$HUB\",\"rel\":\"uses\",\"note\":\"n\"}" > /dev/null
 done
 call get "{\"ref\":\"$HUB\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["links"]["in"]["uses"])==8 and d["links"]["more"]["in"]["uses"]==2, json.dumps(d["links"].get("more"))' || fail "neighbourhood cap did not hold"
@@ -978,33 +1015,33 @@ call get "{\"ref\":\"$HUB\",\"rel\":\"uses\",\"links_offset\":8}" | python3 -c '
 # total beyond the page.
 call search '{"kind":"theorem","limit":1}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["total"]>=2 and len(d["results"])==1 and d.get("next"), d.get("total")' || fail "browse-mode search total/next wrong"
 
-PROPOSAL=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"title\":\"proposal\",\"summary\":\"s\",\"content\":\"c.\",\"supersedes\":[\"$SQ\"]}" | field '["id"]')
+PROPOSAL=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"title\":\"proposal\",\"summary\":\"s\",\"content\":\"c.\",\"supersedes\":[\"$SQ\"]}" | field '.id')
 
 # Contract: presentation changes are contributions, not privileged silent
 # edits. A T0 amendment leaves the target untouched, appears in the reviewer
 # queue, and only apply_amendment changes it. The event preserves both sides.
-EDIT_TARGET=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"opaque task title\",\"summary\":\"opaque summary\",\"content\":\"The mathematical body stays immutable.\",\"names\":[\"old alias\"]}" | field '["id"]')
-AMENDMENT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Clarify the opaque task\",\"summary\":\"A reader-facing correction.\",\"content\":\"The new title states the question.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Does the presentation amendment preserve content?\",\"summary\":\"Only title, summary, and names change; the mathematical artifact remains content-addressed.\",\"names\":[\"presentation amendment invariant\"]}}" | field '["id"]')
-EDIT_HASH=$(call get "{\"ref\":\"$EDIT_TARGET\"}" | field '["artifact_hash"]')
-[[ $(call get "{\"ref\":\"$EDIT_TARGET\"}" | field '["title"]') == "opaque task title" ]] || fail "T0 amendment changed its target before review"
+EDIT_TARGET=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"opaque task title\",\"summary\":\"opaque summary\",\"content\":\"The mathematical body stays immutable.\",\"names\":[\"old alias\"]}" | field '.id')
+AMENDMENT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Clarify the opaque task\",\"summary\":\"A reader-facing correction.\",\"content\":\"The new title states the question.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Does the presentation amendment preserve content?\",\"summary\":\"Only title, summary, and names change; the mathematical artifact remains content-addressed.\",\"names\":[\"presentation amendment invariant\"]}}" | field '.id')
+EDIT_HASH=$(call get "{\"ref\":\"$EDIT_TARGET\"}" | field '.artifact_hash')
+[[ $(call get "{\"ref\":\"$EDIT_TARGET\"}" | field '.title') == "opaque task title" ]] || fail "T0 amendment changed its target before review"
 call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(a["amendment_id"]=="'"$AMENDMENT"'" and a["proposed"]["title"].startswith("Does the") for a in d["amendment_proposals"]) and d["backlog"]["amendment_proposals"] >= 1' || fail "pending amendment missing from review queue"
 call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$AMENDMENT\",\"decision\":\"approve\",\"note\":\"Clearer and faithful to the unchanged body.\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert set(d["changed"])=={"title","summary","names"}' || fail "amendment approval did not report changed fields"
 call get "{\"ref\":\"$EDIT_TARGET\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["title"].startswith("Does the presentation") and d["artifact_hash"]=="'"$EDIT_HASH"'"' || fail "approved amendment did not update presentation or changed its artifact"
 [[ $(psql -h "$WORK" -d math -tAc "select (payload->'before'->>'title') || ' -> ' || (payload->'after'->>'title') from event where kind='amendment-applied' and contribution_id='$EDIT_TARGET'") == "opaque task title -> Does the presentation amendment preserve content?" ]] || fail "amendment event did not preserve before and after"
 # A second proposal remains pending for the every-door contract below, which
 # rejects it and thereby exercises the other terminal decision.
-AMEND_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Unhelpful amendment\",\"summary\":\"Reject me.\",\"content\":\"No improvement.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Thing\"}}" | field '["id"]')
+AMEND_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Unhelpful amendment\",\"summary\":\"Reject me.\",\"content\":\"No improvement.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Thing\"}}" | field '.id')
 
 # Contract: world-facing impact is a reviewed, explained signal separate from
 # graph density. A T0 assessment has no ranking effect; approval materializes
 # one vote per identity and impact ordering exposes its dimensions.
-IMPACT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment\",\"title\":\"Impact of the presentation invariant\",\"summary\":\"Rubric calibration.\",\"content\":\"Reach 5, advance 5, closure 5 for this synthetic contract target.\",\"assesses_impact\":\"$EDIT_TARGET\",\"impact\":{\"reach\":5,\"advance\":5,\"closure\":5}}" | field '["id"]')
+IMPACT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment\",\"title\":\"Impact of the presentation invariant\",\"summary\":\"Rubric calibration.\",\"content\":\"Reach 5, advance 5, closure 5 for this synthetic contract target.\",\"assesses_impact\":\"$EDIT_TARGET\",\"impact\":{\"reach\":5,\"advance\":5,\"closure\":5}}" | field '.id')
 [[ $(psql -h "$WORK" -d math -tAc "select impact_assessments from contribution where id='$EDIT_TARGET'") == 0 ]] || fail "T0 impact assessment affected its target"
 call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(a["assessment_id"]=="'"$IMPACT"'" and a["proposed"]=={"reach":5,"advance":5,"closure":5} for a in d["impact_assessment_proposals"]) and d["backlog"]["impact_assessment_proposals"] >= 1' || fail "pending impact assessment missing from review queue"
 call apply_impact_assessment "{\"contributor_key\":\"$OPKEY\",\"assessment_id\":\"$IMPACT\",\"decision\":\"approve\",\"note\":\"Rubric values checked for the contract fixture.\"}" > /dev/null
 call search '{"kind":"problem","order_by":"impact","limit":1}' | python3 -c 'import sys,json;d=json.load(sys.stdin);r=d["results"][0];i=r["ranking"]["reviewed_impact"];assert r["id"]=="'"$EDIT_TARGET"'" and i["total"]==15 and i["assessments"]==1 and i["score"]>30' || fail "reviewed impact did not drive explained impact ordering"
 # One pending rejection lets the every-door census exercise that outcome too.
-IMPACT_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment\",\"title\":\"Bad impact assessment\",\"summary\":\"Reject me.\",\"content\":\"Unsupported scores.\",\"assesses_impact\":\"$EDIT_TARGET\",\"impact\":{\"reach\":0,\"advance\":0,\"closure\":0}}" | field '["id"]')
+IMPACT_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment\",\"title\":\"Bad impact assessment\",\"summary\":\"Reject me.\",\"content\":\"Unsupported scores.\",\"assesses_impact\":\"$EDIT_TARGET\",\"impact\":{\"reach\":0,\"advance\":0,\"closure\":0}}" | field '.id')
 
 # Contract: an authorship signature is a proof or it is nothing. A submission
 # carrying one is checked against the identity's registered public key before
@@ -1021,17 +1058,17 @@ SIGNED_BODY="signed authorship."
 GOODSIG=$(sign "$(printf '%s' "$SIGNED_BODY" | sha256sum | cut -d' ' -f1)")
 
 call register_public_key "{\"contributor_key\":\"$KEY\",\"public_key\":\"bm90IGEga2V5\"}" \
-  | field '["error"]' | grep -qi ed25519 || fail "a public key that is not an Ed25519 key was accepted"
+  | field '.error' | grep -qi ed25519 || fail "a public key that is not an Ed25519 key was accepted"
 call register_public_key "{\"contributor_key\":\"$KEY\",\"public_key\":\"$PUBKEY\"}" \
-  | field '["ok"]' > /dev/null || fail "a real Ed25519 public key was rejected"
+  | field '.ok' > /dev/null || fail "a real Ed25519 public key was rejected"
 
 SIGNED=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"signed work\",\"summary\":\"s\",\"content\":\"$SIGNED_BODY\",\"signature\":\"$GOODSIG\"}")
-SIGNED_ID=$(echo "$SIGNED" | field '["id"]') || fail "a correctly signed submission was refused: $(echo "$SIGNED" | head -c 300)"
+SIGNED_ID=$(echo "$SIGNED" | field '.id') || fail "a correctly signed submission was refused: $(echo "$SIGNED" | head -c 300)"
 [[ $(psql -h "$WORK" -d math -tAc "select outcome from verification where contribution_id = '$SIGNED_ID' and method = 'authorship-signature'") == passed ]] \
   || fail "a verified signature was not recorded as an authorship verification"
 
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"forged authorship\",\"summary\":\"s\",\"content\":\"$SIGNED_BODY\",\"signature\":\"$(sign 'not the digest')\"}" \
-  | field '["error"]' | grep -qi signature || fail "a signature that does not check out was accepted"
+  | field '.error' | grep -qi signature || fail "a signature that does not check out was accepted"
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from contribution where title = 'forged authorship'") == 0 ]] \
   || fail "a submission whose signature failed was recorded anyway"
 
@@ -1039,7 +1076,7 @@ call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"forge
 # which is the case where nobody could ever check it.
 UNREG=$(new_session)
 SESSION=$UNREG call submit "{\"kind\":\"result\",\"title\":\"unregistered signer\",\"summary\":\"s\",\"content\":\"$SIGNED_BODY\",\"signature\":\"$GOODSIG\"}" \
-  | field '["error"]' | grep -q register_public_key || fail "a signature was accepted from an identity with no public key"
+  | field '.error' | grep -q register_public_key || fail "a signature was accepted from an identity with no public key"
 
 # Contract: a failed first contribution does not consume the session's one
 # identity. The minted key rides home in the success payload only, so binding
@@ -1047,7 +1084,7 @@ SESSION=$UNREG call submit "{\"kind\":\"result\",\"title\":\"unregistered signer
 [[ $(psql -h "$WORK" -d math -tAc "select identity_id is null from mcp_session where id = '$UNREG'") == t ]] \
   || fail "a failed first contribution bound the session to an identity whose key nobody was told"
 RETRY=$(SESSION=$UNREG call submit '{"kind":"result","title":"unregistered signer, retried","summary":"s","content":"c."}')
-[[ $(echo "$RETRY" | field '["your_contributor_key"]') == mrk_* ]] \
+[[ $(echo "$RETRY" | field '.your_contributor_key') == mrk_* ]] \
   || fail "the session never got a contributor key after its first attempt failed"
 
 # Contract: every door answers. A tool that no contract above calls can still
@@ -1149,7 +1186,7 @@ psql -q -h "$WORK" -d math -c "insert into lean_decl (module, name, library, kin
   ('Mathlib.Order.Bounds.Basic', 'csSup_le', 'Mathlib', 'theorem', 's.Nonempty → (∀ b ∈ s, b ≤ a) → sSup s ≤ a', true),
   ('Mathlib.Order.Bounds.Basic', 'csSup_le_iff', 'Mathlib', 'theorem', 'BddAbove s → s.Nonempty → (sSup s ≤ a ↔ ∀ b ∈ s, b ≤ a)', true),
   ('MathlibPlus.GroupTheory.Claim1', 'plus_widget', 'MathlibPlus', 'def', 'Nat → Nat', false)"
-decls() { call search_decls "$1" | field '["results"]'; }
+decls() { call search_decls "$1" | field '.results'; }
 decls '{"query":"csSup_le"}' | python3 -c 'import sys,json; r=json.load(sys.stdin); assert r[0]["name"]=="csSup_le" and r[0]["module"]=="Mathlib.Order.Bounds.Basic", r' \
   || fail "search_decls did not rank the exact name first"
 decls '{"query":"csSup_le sSup"}' | python3 -c 'import sys,json; assert len(json.load(sys.stdin))==2' \
@@ -1205,7 +1242,7 @@ assert names == {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum"}
 # building what it touches. A diff that does not apply is a failure with the
 # conflict, not a build attempt.
 patch_submit() { # <title> <diff-content> -> contribution id
-  call submit "$(python3 -c 'import json,sys; print(json.dumps({"contributor_key":sys.argv[1],"kind":"patch","title":sys.argv[2],"summary":"contract patch","content":sys.argv[3]}))' "$KEY" "$1" "$2")" | field '["id"]'
+  call submit "$(python3 -c 'import json,sys; print(json.dumps({"contributor_key":sys.argv[1],"kind":"patch","title":sys.argv[2],"summary":"contract patch","content":sys.argv[3]}))' "$KEY" "$1" "$2")" | field '.id'
 }
 patch_verification() { psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$1' and method = 'patch-build'"; }
 STALE=$(cat <<'EOF'
@@ -1252,10 +1289,8 @@ EOF
 )
 MERGE_ID=$(patch_submit "fold Gamma into Alpha" "$MERGE")
 MERGE_V=$(patch_verification "$MERGE_ID")
-CHECK_ID=$(for _ in $(seq 600); do
-  ID=$(psql -h "$WORK" -d math -tAc "select detail->>'check_id' from verification where id = $MERGE_V")
-  [[ -n $ID && -f "$SPOOL_DIR/in/patch-$ID/job.json" ]] && { echo "$ID"; break; }; sleep 0.1
-done)
+CHECK_ID=$(await_query "select detail->>'check_id' from verification where id = $MERGE_V")
+await_file "$SPOOL_DIR/in/patch-$CHECK_ID/job.json" || CHECK_ID=""
 [[ -n $CHECK_ID ]] || fail "an applying patch was never spooled to the runner"
 python3 -c 'import json,sys; j=json.load(open(sys.argv[1]));
 mods=[m["module"] for m in j["modules"]];
@@ -1291,11 +1326,9 @@ p=[x for x in d["patches"] if x["id"]=="'"$MERGE_ID"'"]; assert p and p[0]["buil
 # A stale kernel check of the module the patch changes: publication must drop
 # it, because its answer was about a library that no longer exists.
 psql -q -h "$WORK" -d math -c "insert into lean_check (source_hash, source, outcome) values ('deadbeef', 'import MathlibPlus.Alpha' || chr(10) || 'example : True := trivial', 'failed')"
-call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$MERGE_ID\",\"tier\":2,\"note\":\"reviewed patch\"}" | field '["ok"]' > /dev/null
-for _ in $(seq 600); do
-  STATE=$(psql -h "$WORK" -d math -tAc "select state from patch_publication where contribution_id = '$MERGE_ID'")
-  [[ $STATE == published ]] && break; sleep 0.1
-done
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$MERGE_ID\",\"tier\":2,\"note\":\"reviewed patch\"}" | field '.ok' > /dev/null
+await_query "select state from patch_publication where contribution_id = '$MERGE_ID' and state = 'published'" > /dev/null
+STATE=$(psql -h "$WORK" -d math -tAc "select state from patch_publication where contribution_id = '$MERGE_ID'")
 [[ $STATE == published ]] || fail "promoting a patch to T2 did not publish it (state: ${STATE:-none}, $(tail -3 "$WORK/verifier.log"))"
 grep -q 'theorem gamma' "$PATCH_REPO_DIR/MathlibPlus/Alpha.lean" || fail "the published patch is not in the library"
 [[ ! -f "$PATCH_REPO_DIR/MathlibPlus/Gamma.lean" ]] || fail "the published patch did not delete the module it folded in"
@@ -1316,10 +1349,8 @@ git -C "$PATCH_REPO_DIR" status --porcelain | grep -q . && fail "publication lef
 BROKEN=$(printf 'diff --git a/MathlibPlus/Broken.lean b/MathlibPlus/Broken.lean\n--- a/MathlibPlus/Broken.lean\n+++ b/MathlibPlus/Broken.lean\n@@ -1,2 +1,3 @@\n theorem broken : 4 = 5 := rfl\n+-- a note that changes nothing\n \n')
 BROKEN_ID=$(patch_submit "touch a module that does not build" "$BROKEN")
 BROKEN_V=$(patch_verification "$BROKEN_ID")
-BROKEN_CHECK=$(for _ in $(seq 600); do
-  ID=$(psql -h "$WORK" -d math -tAc "select detail->>'check_id' from verification where id = $BROKEN_V")
-  [[ -n $ID && -f "$SPOOL_DIR/in/patch-$ID/job.json" ]] && { echo "$ID"; break; }; sleep 0.1
-done)
+BROKEN_CHECK=$(await_query "select detail->>'check_id' from verification where id = $BROKEN_V")
+await_file "$SPOOL_DIR/in/patch-$BROKEN_CHECK/job.json" || BROKEN_CHECK=""
 [[ -n $BROKEN_CHECK ]] || fail "a patch to an unbuilt module was never spooled"
 python3 -c 'import json,sys; j=json.load(open(sys.argv[1])); assert j["modules"][0]["optional"] is True, j["modules"]' \
   "$SPOOL_DIR/in/patch-$BROKEN_CHECK/job.json" || fail "a module with no olean was not marked already-broken"

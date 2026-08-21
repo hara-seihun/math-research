@@ -271,10 +271,31 @@ async function recover() {
   if (patches.length > 0) console.log(`re-queued ${patches.length} orphaned pending patch build(s)`);
 }
 
+// A wakeup that arrives while a tick is running is remembered, not dropped.
+// Both ends of this loop are mutated by other processes -- the ledger by the
+// MCP server, the spool by the sandboxed runner -- so the wakeup that matters
+// almost always lands mid-tick, and dropping it means the work waits for the
+// reconciler. That was five seconds of nothing per check, and most of what the
+// contract suite spent its time on.
 let ticking = false;
+let woken = false;
 async function tick() {
-  if (ticking) return;
+  if (ticking) {
+    woken = true;
+    return;
+  }
   ticking = true;
+  try {
+    do {
+      woken = false;
+      await pass();
+    } while (woken);
+  } finally {
+    ticking = false;
+  }
+}
+
+async function pass() {
   try {
     await adopt();
     await spool();
@@ -288,8 +309,6 @@ async function tick() {
     await revalidatePatches();
   } catch (error) {
     console.error("tick failed:", error);
-  } finally {
-    ticking = false;
   }
 }
 
@@ -298,7 +317,7 @@ mkdirSync(SPOOL_OUT, { recursive: true });
 await recover();
 // A new check and a finished check both wake the loop immediately; the
 // interval is the reconciler that makes the work happen anyway.
-await sql.listen("lean_check", () => void tick());
+await sql.listen("verifier_work", () => void tick());
 watch(SPOOL_OUT, () => void tick());
 console.log(
   `lean verifier (orchestrator): spool=${SPOOL} timeout=${TIMEOUT_MS}ms patches=${repoPresent() ? "on" : "no library checkout"}`,

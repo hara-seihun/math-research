@@ -171,9 +171,14 @@ than hiding a favored entry in a keyword rule or a mystery multiplier.
   the declaration index on the guest, and `publish-mathlibplus.sh` which
   carries reviewed patches between the guest's library checkout and GitHub.
 - `test/contracts.sh`, the contract suite. Ephemeral Postgres, real server,
-  about 30 seconds. It runs with `MCP_VALIDATE=1` and the shared read caches
-  switched off, so every response is checked against its schema and every
-  assertion sees its own write. Run it before deploying.
+  about thirty seconds. It runs with `MCP_VALIDATE=1` and the shared read
+  caches switched off, so every response is checked against its schema and
+  every assertion sees its own write. Run it before deploying.
+- `test/under-a-minute.sh`, sourced by both suites: the whole pipeline runs
+  under a one minute deadline and is killed if it exceeds it. A suite that
+  wants longer gets rewritten, because waiting is where the bugs hide — the
+  56 seconds this one used to spend in `sleep 0.1` were hiding a five second
+  wake-up gap in the verifier that every real submission paid as well.
 - `test/doc-ssot.sh`, the check that keeps one fact in one file: no second copy
   of a version the Lake project pins, and no page restating rules that belong
   to `guides/how-this-works.md`. It needs nothing but the checkout and runs

@@ -15,6 +15,15 @@ import { sha256hex } from "./identity.ts";
 export const MAX_SOURCE_BYTES = 64 * 1024;
 
 /**
+ * Tell the verifier there is work now. Whoever creates the work sends this:
+ * a check nobody has run, or a submission whose verification is queued behind
+ * a check that already exists. Without it the verifier finds out from its own
+ * reconciler, which is a five second wait for a badge on an artifact whose
+ * kernel answer was already sitting in the table.
+ */
+export const wakeVerifier = (reason: string): Promise<unknown> => sql.notify("verifier_work", reason);
+
+/**
  * Pending checks nobody has started yet, beyond which we shed load instead of
  * queueing. This is the only bound on how much kernel time one caller can ask
  * for, and it is deliberately deep: a batch is what this checker is for, a
@@ -122,7 +131,7 @@ export async function requestCheck(rawContent: string): Promise<CheckRequest> {
     insert into lean_check (source_hash, source) values (${hash}, ${source})
     on conflict (source_hash) do update set source_hash = excluded.source_hash
     returning source_hash, outcome, detail, created_at, updated_at`;
-  await sql.notify("lean_check", hash);
+  await wakeVerifier(hash);
   return { ok: true, hash, row: row!, cached: false };
 }
 

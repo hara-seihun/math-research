@@ -454,6 +454,22 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"tier\":1,\
   || fail "promoting a rejected entry did not restore it"
 [[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '.status') == active ]] || fail "a restored entry did not come back active"
 call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"and back out again\"}" | field '.ok' > /dev/null
+# Contract: a link to a retired entry is a dead link, so the neighbourhood
+# hides it (this is what kept three withdrawn copies of one paper stacked on
+# an entry's expounds relation) — except through `supersedes`, whose whole
+# point is to name what was replaced.
+call get "{\"ref\":\"$BOGUS_Q\"}" | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+assert not any(x["id"]=="'"$BOGUS_P"'" for xs in d["links"].get("in",{}).values() for x in xs), d["links"]' \
+  || fail "a rejected entry still appears in its question's neighbourhood"
+SUP_OLD=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"the first cut\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+SUP_NEW=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"title\":\"the better cut\",\"summary\":\"s\",\"content\":\"c.\",\"supersedes\":[\"$SUP_OLD\"]}" | field '.id')
+call apply_refactor "{\"contributor_key\":\"$OPKEY\",\"refactor_id\":\"$SUP_NEW\",\"decision\":\"approve\",\"note\":\"n\"}" | field '.ok' > /dev/null
+call get "{\"ref\":\"$SUP_NEW\"}" | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+rows=d["links"]["out"]["supersedes"]
+assert any(x["id"]=="'"$SUP_OLD"'" and x["status"]=="superseded" for x in rows), rows' \
+  || fail "a supersedes link lost its retired target"
 # Contract: anyone at all can flag, and it reaches a trusted reviewer. A
 # refutation link is the objection; acting on it stays trusted-only.
 FLAG_T=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"a result somebody disputes\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
@@ -488,12 +504,17 @@ call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RV_SUBJ\",\"dst\":\"$RV\",\"
 psql -q -h "$WORK" -d math -c "insert into contribution (kind, title, summary, artifact_hash, tier)
   select 'result', 'filler ' || g, 'filler', (select artifact_hash from contribution limit 1), 1
   from generate_series(1, 400) g"
-BEFORE=$(psql -h "$WORK" -d math -tAc "select n_tup_upd from pg_stat_user_tables where relname = 'contribution'")
+rows_written() { psql -h "$WORK" -d math -tAc "select n_tup_upd from pg_stat_user_tables where relname = 'contribution'"; }
+# The statistics view lags: each server backend flushes its counters when it
+# goes idle, up to a second late. Settle the baseline first, or updates from
+# writes made moments ago land inside the measured window and fail this for
+# the wrong reason.
+BEFORE=$(rows_written)
+until [[ $(rows_written) == "$BEFORE" ]]; do BEFORE=$(rows_written); done
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"scope check\"}" | field '.ok' > /dev/null
 # The refresh is finished when the response comes back; what is still moving is
 # the statistics view this reads. Wait for it to stop moving rather than for a
 # guessed second and a half.
-rows_written() { psql -h "$WORK" -d math -tAc "select n_tup_upd from pg_stat_user_tables where relname = 'contribution'"; }
 AFTER=$(rows_written)
 until [[ $(rows_written) == "$AFTER" ]]; do AFTER=$(rows_written); done
 (( AFTER - BEFORE < 100 )) || fail "set_tier rewrote $((AFTER - BEFORE)) rows, and it should refresh only what it touched"

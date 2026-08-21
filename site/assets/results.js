@@ -300,6 +300,9 @@ function linkList(entry) {
       });
       item.append(link, document.createTextNode(" "), element("span", "kind", row.kind));
       item.append(document.createTextNode(" "), element("span", `badge tier-${row.tier}`, tierLabel(row.tier)));
+      // The server only ships a non-active endpoint through `supersedes`,
+      // where pointing at a retired entry is the relation's whole point.
+      if (row.status && row.status !== "active") item.append(document.createTextNode(" "), element("span", "kind", row.status));
       list.append(item);
     }
     block.append(list);

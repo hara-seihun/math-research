@@ -241,6 +241,13 @@ export async function createEdge(
 // notability) and reports how many it is not showing in `more`; a caller who
 // wants the rest pages one relation with `rel`/`offset`, or reaches for the
 // query tool. The 507th neighbour is never worth inline tokens unasked.
+//
+// A link to a retracted, superseded, or rejected entry is a dead link: three
+// near-identical copies of one withdrawn paper crowding a relation tell a
+// reader nothing the surviving copy does not. So the neighbourhood keeps only
+// active endpoints, with one exception: `supersedes` exists to name what was
+// replaced, so retiring its target is the relation working, not noise. The
+// full history stays reachable through the query tool (q_links).
 export const NEIGHBOUR_CAP = 8;
 
 export async function neighbourhood(id: string, opts?: { rel?: string; offset?: number; limit?: number }) {
@@ -251,6 +258,7 @@ export async function neighbourhood(id: string, opts?: { rel?: string; offset?: 
     from edge e join contribution ec on ec.id = e.contribution_id
     join contribution c on c.id = e.dst
     where e.src = ${id} and ec.status = 'active' and (${rel}::text is null or e.rel = ${rel})
+      and (c.status = 'active' or e.rel = 'supersedes')
     order by ec.tier desc, c.notability desc`;
   const incoming = await sql`
     select e.rel, e.src as id, c.kind, c.title, c.tier, c.notability, c.status,
@@ -258,6 +266,7 @@ export async function neighbourhood(id: string, opts?: { rel?: string; offset?: 
     from edge e join contribution ec on ec.id = e.contribution_id
     join contribution c on c.id = e.src
     where e.dst = ${id} and ec.status = 'active' and (${rel}::text is null or e.rel = ${rel})
+      and (c.status = 'active' or e.rel = 'supersedes')
     order by ec.tier desc, c.notability desc`;
   const group = (rows: typeof out) =>
     rows.reduce<Record<string, unknown[]>>((acc, r) => {

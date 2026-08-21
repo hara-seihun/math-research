@@ -17,26 +17,28 @@ const RESULT_KINDS = [
 
 const PAGE = 25;
 
-const VIEWS = {
-  top: {
-    windowed: true,
-    request: (since) => ({
-      board: true,
-      order_by: "impact",
-      ...(since === "all" ? {} : { since }),
-    }),
+const FILTERS = {
+  "top-all": {
+    request: () => ({ board: true, order_by: "impact" }),
     reasonLabel: "Why it ranks: ",
-    empty: "Nothing on the board was recorded in this window.",
+    empty: "Nothing is on the board yet.",
+  },
+  "top-week": {
+    request: () => ({ board: true, order_by: "impact", since: "7d" }),
+    reasonLabel: "Why it ranks: ",
+    empty: "Nothing reached the board this week.",
+  },
+  "top-day": {
+    request: () => ({ board: true, order_by: "impact", since: "24h" }),
+    reasonLabel: "Why it ranks: ",
+    empty: "Nothing reached the board in the last 24 hours.",
   },
   new: {
-    windowed: false,
     request: () => ({ kind: RESULT_KINDS, order_by: "recent" }),
     reasonLabel: "Current signals: ",
     empty: "Nothing has been recorded here yet.",
   },
 };
-
-const WINDOW_WORDS = { "24h": "day", "7d": "week", "30d": "month", "1y": "year" };
 
 const root = document.querySelector("[data-feed]");
 const entryNode = document.querySelector("[data-entry]");
@@ -44,9 +46,9 @@ if (!root || !entryNode) throw new Error("results page is missing its feed or en
 
 const listNode = root.querySelector("[data-list]");
 const moreButton = root.querySelector("[data-more]");
-const windowRow = root.querySelector("[data-window-row]");
-const windowSelect = root.querySelector("[data-window]");
-const tabs = [...root.querySelectorAll("[data-view]")];
+const filterSelect = root.querySelector("[data-filter]");
+const searchForm = root.querySelector("[data-search-form]");
+const searchInput = root.querySelector("[data-search]");
 // Everything on the page that is neither the feed nor the open entry: the
 // explanation of how to read this, which belongs with the list and not with a
 // theorem someone came to read.
@@ -57,9 +59,9 @@ const entries = new Map();
 const renders = new Map();
 const pages = new Map();
 
-let view = "top";
-let since = "all";
-let loading = false;
+let filter = "top-all";
+let query = "";
+const loading = new Set();
 
 // --- Talking to the ledger ------
 
@@ -208,45 +210,50 @@ function card(entry, rank) {
   }
 
   const reason = element("p", "card-reason");
-  reason.append(element("strong", "", VIEWS[view].reasonLabel));
-  reason.append(document.createTextNode(rankingReasons(entry).join(" · ")));
+  if (query) {
+    reason.append(element("strong", "", "Text match: "));
+    reason.append(document.createTextNode(entry.matched ?? "relevant"));
+  } else {
+    reason.append(element("strong", "", FILTERS[filter].reasonLabel));
+    reason.append(document.createTextNode(rankingReasons(entry).join(" · ")));
+  }
   link.append(reason);
 
   item.append(link);
   return item;
 }
 
-function renderList() {
-  for (const tab of tabs) {
-    const selected = tab.dataset.view === view;
-    tab.setAttribute("aria-selected", String(selected));
-    tab.tabIndex = selected ? 0 : -1;
-  }
-  windowRow.hidden = !VIEWS[view].windowed;
+const stateKey = () => JSON.stringify([filter, query]);
 
-  const page = pages.get(view);
+function searchRequest() {
+  const request = FILTERS[filter].request();
+  return query ? { ...request, query } : request;
+}
+
+function renderList() {
+  const page = pages.get(stateKey());
   if (!page) return;
   listNode.replaceChildren(...page.results.map((entry, index) => card(entry, index + 1)));
-  if (!page.results.length) listNode.append(element("li", "empty", VIEWS[view].empty));
+  if (!page.results.length) listNode.append(element("li", "empty", query ? `Nothing matched “${query}”.` : FILTERS[filter].empty));
   moreButton.hidden = !page.next;
   moreButton.disabled = false;
   moreButton.textContent = "Load more";
 }
 
 async function load({ append = false } = {}) {
-  if (loading) return;
-  loading = true;
-  const wanted = view;
+  const wanted = stateKey();
+  if (loading.has(wanted)) return;
+  loading.add(wanted);
   const existing = pages.get(wanted);
   try {
-    const request = { ...VIEWS[wanted].request(since), limit: PAGE, offset: append ? (existing?.next?.offset ?? 0) : 0 };
+    const request = { ...searchRequest(), limit: PAGE, offset: append ? (existing?.next?.offset ?? 0) : 0 };
     const page = await callTool("search", request);
     pages.set(wanted, append && existing ? { ...page, results: [...existing.results, ...page.results] } : page);
-    if (view === wanted) renderList();
+    if (stateKey() === wanted) renderList();
   } catch (error) {
-    if (view === wanted) listNode.replaceChildren(element("li", "empty", `The ledger could not be read: ${error.message}`));
+    if (stateKey() === wanted) listNode.replaceChildren(element("li", "empty", `The ledger could not be read: ${error.message}`));
   } finally {
-    loading = false;
+    loading.delete(wanted);
   }
 }
 
@@ -466,7 +473,7 @@ function navigate(id, { push = true } = {}) {
   if (id) void showEntry(id);
   else {
     showFeed();
-    renderList();
+    showSelection();
   }
   window.scrollTo({ top: 0 });
 }
@@ -478,35 +485,51 @@ function idFromPath() {
 
 // --- Wiring ------
 
-for (const tab of tabs) {
-  tab.addEventListener("click", () => {
-    view = tab.dataset.view;
-    const url = new URL(location.href);
-    if (view === "top") url.searchParams.delete("view");
-    else url.searchParams.set("view", view);
-    history.replaceState(history.state, "", url);
-    renderList();
-    if (!pages.has(view)) void load();
-  });
-  tab.addEventListener("keydown", (event) => {
-    if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
-    event.preventDefault();
-    const order = tabs.map((candidate) => candidate.dataset.view);
-    const step = event.key === "ArrowRight" ? 1 : -1;
-    const next = order[(order.indexOf(view) + step + order.length) % order.length];
-    tabs.find((candidate) => candidate.dataset.view === next)?.focus();
-    tabs.find((candidate) => candidate.dataset.view === next)?.click();
-  });
+function readControlsFromUrl() {
+  const params = new URL(location.href).searchParams;
+  filter = FILTERS[params.get("filter")] ? params.get("filter") : "top-all";
+  query = params.get("q")?.trim() ?? "";
+  filterSelect.value = filter;
+  searchInput.value = query;
 }
 
-windowSelect.addEventListener("change", () => {
-  since = windowSelect.value;
+function writeControlsToUrl() {
   const url = new URL(location.href);
-  if (since === "all") url.searchParams.delete("since");
-  else url.searchParams.set("since", since);
+  if (filter === "top-all") url.searchParams.delete("filter");
+  else url.searchParams.set("filter", filter);
+  if (query) url.searchParams.set("q", query);
+  else url.searchParams.delete("q");
   history.replaceState(history.state, "", url);
-  pages.delete("top");
-  void load();
+}
+
+function showSelection() {
+  const page = pages.get(stateKey());
+  if (page) renderList();
+  else {
+    listNode.replaceChildren();
+    moreButton.hidden = true;
+    void load();
+  }
+}
+
+filterSelect.addEventListener("change", () => {
+  filter = filterSelect.value;
+  writeControlsToUrl();
+  showSelection();
+});
+
+searchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  query = searchInput.value.trim();
+  writeControlsToUrl();
+  showSelection();
+});
+
+searchInput.addEventListener("search", () => {
+  if (searchInput.value) return;
+  query = "";
+  writeControlsToUrl();
+  showSelection();
 });
 
 moreButton.addEventListener("click", () => {
@@ -515,17 +538,15 @@ moreButton.addEventListener("click", () => {
   void load({ append: true });
 });
 
-window.addEventListener("popstate", () => navigate(idFromPath(), { push: false }));
+window.addEventListener("popstate", () => {
+  readControlsFromUrl();
+  navigate(idFromPath(), { push: false });
+});
 
-const params = new URL(location.href).searchParams;
-if (VIEWS[params.get("view")]) view = params.get("view");
-if (WINDOW_WORDS[params.get("since")]) {
-  since = params.get("since");
-  windowSelect.value = since;
-}
-
+readControlsFromUrl();
 const opened = idFromPath();
 if (opened) void showEntry(opened);
-else showFeed();
-renderList();
-void load();
+else {
+  showFeed();
+  showSelection();
+}

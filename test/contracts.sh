@@ -719,6 +719,7 @@ call search '{"kind":"problem","state":"settled","settled_by_origin":"external",
 # question itself sits at, and a question closed by mathematics established
 # elsewhere is not, so a board selected by kind cannot be substituted for it.
 call search '{"board":true,"order_by":"impact","limit":100}' | python3 -c 'import sys,json;ids={r["id"] for r in json.load(sys.stdin)["results"]};assert "'"$SQ"'" in ids, "our own T2 closure missing from the board";assert "'"$XQ"'" not in ids, "a published closure put a question on the board"' || fail "the all-time board admitted the wrong closures"
+call search '{"board":true,"query":"question","limit":100}' | python3 -c 'import sys,json;ids={r["id"] for r in json.load(sys.stdin)["results"]};assert "'"$SQ"'" in ids, "text search dropped a matching board entry";assert "'"$XQ"'" not in ids, "text search ignored the board population"' || fail "text search did not preserve the board filter"
 
 # Contract: origin is a reviewed judgment, so review can correct it, only a
 # trusted key may, an external origin without a source is refused, and the

@@ -3,7 +3,7 @@ import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, isInitializeRequest, McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { announceWrite, cacheKey, listenForWrites, shared } from "./cache.ts";
-import { drainRequestLog, impactScore, logRequest, onBoard, pruneRequestLog, SETTLES, sql } from "./db.ts";
+import { certified, drainRequestLog, impactScore, logRequest, onBoard, pruneRequestLog, SETTLES, sql, statesAFinding } from "./db.ts";
 import { guide, guideList, guideNames, guides as shelf } from "./guides.ts";
 import { leanVersion, mathlibVersion } from "./pinned.ts";
 import { corpus } from "./snapshot.ts";
@@ -496,7 +496,7 @@ defineTool(
     title: "Search and browse the ledger",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact damps internal graph density hard and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, minimum tier, or origin. `origin:'ledger'` keeps only what was first established here, and for questions `settled_by_origin:'ledger'` keeps only the ones this ledger actually closed rather than recorded a published closure of. `board:true` with `order_by:'impact'` is the all-time board this ledger publishes. Returns short list rows; get(<ref>) has the full text.",
+      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact damps internal graph density hard and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, minimum tier, or origin. `origin:'ledger'` keeps only what was first established here, and for questions `settled_by_origin:'ledger'` keeps only the ones this ledger actually closed rather than recorded a published closure of. `board:true` keeps the all-time board this ledger publishes, with `order_by:'impact'` for browsing or relevance order when combined with `query`. Returns short list rows; get(<ref>) has the full text.",
     inputSchema: z.object({
       query: z.string().optional().describe("What are you looking for? Plain language is fine; \"quote\" a phrase to require it. Leave it out to browse by importance or recency."),
       kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. ['theorem','result']."),
@@ -538,7 +538,7 @@ defineTool(
     }
     if (query?.trim()) {
       const rows = await searchContributions({
-        query, kind, state, topic, front: frontId, lean_verified, min_tier, origin, since: sinceAt, include_inactive, limit, offset,
+        query, kind, state, topic, front: frontId, lean_verified, min_tier, origin, board, since: sinceAt, include_inactive, limit, offset,
       });
       const strong = rows.filter((r) => r.matched === "every term").length;
       return structured(SearchOut, {
@@ -2021,6 +2021,25 @@ defineTool(
     // Patches are the one thing here whose promotion leaves the ledger: T2 is
     // what commits a change to the Lean library, so the build result and the
     // publication state travel with the row a reviewer is deciding on.
+    // Certified mathematics whose headline is still the interrogative it was
+    // filed as. The board will not print a question as a finding, so these
+    // are off it until someone amends the headline to say what was found.
+    // An answer nobody can read from the board is not published.
+    const askingWhere = sql`c.status = 'active' and (${certified()}) and not (${statesAFinding()})`;
+    const askingClosures = await sql`
+      select c.id, c.kind, c.title, c.tier, c.state, c.notability, ${impactScore()} as impact_score,
+             s.title as settled_by
+      from contribution c
+      left join lateral (
+        select src.title
+        from edge e
+        join contribution ec on ec.id = e.contribution_id
+        join contribution src on src.id = e.src
+        where e.dst = c.id and e.rel = any(${SETTLES})
+          and ec.status = 'active' and src.status = 'active' and ec.tier >= 2
+        order by src.notability desc limit 1) s on true
+      where ${askingWhere}
+      order by impact_score desc, c.notability desc limit 25`;
     const patchWhere = sql`c.kind = 'patch' and c.status = 'active'`;
     const patches = await sql`
       select c.id, c.title, c.summary, c.tier, c.identity_id as by, c.created_at as submitted_at,
@@ -2067,6 +2086,7 @@ defineTool(
                 join contribution ac on ac.id = e.src
                 join contribution tgt on tgt.id = e.dst
                 where ${impactWhere})::int as impact_assessment_proposals,
+             (select count(*) from contribution c where ${askingWhere})::int as asking_closures,
              (select count(*) from contribution c where ${patchWhere})::int as patches`;
     const held = await claimsHeldBy(who.identityId);
     const tip = !include_claimed && unreviewed.length < limit && (counts?.claimed_by_others ?? 0) > 0
@@ -2082,12 +2102,14 @@ defineTool(
         awaiting_decision: 0,
         claimed_by_others: 0,
         flagged: flagged.length,
+        asking_closures: askingClosures.length,
         refactor_proposals: proposals.length,
         amendment_proposals: amendments.length,
         impact_assessment_proposals: impactAssessments.length,
         patches: patches.length,
       },
       flagged,
+      asking_closures: askingClosures,
       patches,
       refactor_proposals: proposals,
       amendment_proposals: amendments,

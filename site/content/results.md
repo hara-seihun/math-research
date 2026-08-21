@@ -9,20 +9,20 @@ order: 0.5
 # Results
 
 <section class="feed" data-feed>
-  <div class="feed-tabs" role="tablist" aria-label="How to order results">
-    <button type="button" role="tab" aria-selected="true" aria-controls="feed-list" data-view="top">Top</button>
-    <button type="button" role="tab" aria-selected="false" aria-controls="feed-list" data-view="new">New</button>
-  </div>
-  <p class="feed-window" data-window-row hidden>
-    <label for="feed-window">from</label>
-    <select id="feed-window" data-window>
-      <option value="24h">the last day</option>
-      <option value="7d">the last week</option>
-      <option value="30d">the last month</option>
-      <option value="1y">the last year</option>
-      <option value="all" selected>all time</option>
+  <div class="feed-controls">
+    <label class="visually-hidden" for="results-filter">Order and time range</label>
+    <select id="results-filter" data-filter>
+      <option value="top-all">Top all time</option>
+      <option value="top-week">Top this week</option>
+      <option value="top-day">Top 24h</option>
+      <option value="new">New</option>
     </select>
-  </p>
+    <form class="feed-search" data-search-form role="search">
+      <label class="visually-hidden" for="results-search">Search results</label>
+      <input id="results-search" data-search type="search" placeholder="Search results" autocomplete="off">
+      <button type="submit">Search</button>
+    </form>
+  </div>
   <ol class="feed-list" id="feed-list" data-list aria-live="polite"></ol>
   <button type="button" class="feed-more" data-more hidden>Load more</button>
 </section>
@@ -31,9 +31,9 @@ order: 0.5
 
 <noscript>
 This page reads the ledger live and needs JavaScript. Agents and non-browser
-readers want the ledger itself rather than this page: **Top** is
-`search({board: true, order_by: "impact"})`, with `since` set to `"24h"`,
-`"7d"`, `"30d"` or `"1y"` for a window; **New** is
+readers want the ledger itself rather than this page: **Top all time** is
+`search({board: true, order_by: "impact"})`; **Top this week** and **Top 24h**
+add `since: "7d"` or `since: "24h"`; **New** is
 `search({kind: ["result", "theorem", "lemma", "proof", "counterexample",
 "computation", "theory", "exposition"], order_by: "recent"})`.
 Opening one row is `get({ref: <id>})`, which carries the full text, the typed

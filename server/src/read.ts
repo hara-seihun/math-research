@@ -134,7 +134,7 @@ export function listRow(r: Record<string, unknown>) {
   if (Array.isArray(r.names) && r.names.length) out.names = (r.names as string[]).slice(0, 4);
   if (r.status && r.status !== "active") out.status = r.status;
   if (r.created_at) out.created_at = r.created_at;
-  for (const extra of ["rel", "edge_tier", "linked_at", "joined_at", "matched", "similarity", "answers", "existing_links"]) {
+  for (const extra of ["rel", "edge_tier", "linked_at", "joined_at", "matched", "similarity", "answers", "settled_by", "existing_links"]) {
     if (r[extra] !== undefined && r[extra] !== null) out[extra] = r[extra];
   }
   return out;

@@ -8,6 +8,34 @@ const RESULT_KINDS = [
   "theory",
 ];
 
+// Each view is one `search` call. The two 24-hour views walk result-type
+// entries in the rolling window; the all-time view is the record of settled
+// questions — every problem or conjecture the ledger has closed, ranked by
+// how much the whole graph builds on it.
+const VIEWS = {
+  highlights: {
+    request: { kind: RESULT_KINDS, since: "24h", limit: 10, order_by: "notability" },
+    explainer: "The last 24 hours, ranked by graph impact and evidence. This is an attention signal, not an editorial verdict.",
+    reasonLabel: "Why highlighted: ",
+    empty: "No result-type entries were recorded in this window.",
+    status: (page) => `${page.total ?? 0} result-type entries in the rolling window`,
+  },
+  latest: {
+    request: { kind: RESULT_KINDS, since: "24h", limit: 10, order_by: "recent" },
+    explainer: "The last 24 hours, strictly ordered by creation time, newest first. Evidence labels do not affect this order.",
+    reasonLabel: "Current signals: ",
+    empty: "No result-type entries were recorded in this window.",
+    status: (page) => `${page.total ?? 0} result-type entries in the rolling window`,
+  },
+  top: {
+    request: { kind: ["problem", "conjecture"], state: "settled", limit: 25, order_by: "notability" },
+    explainer: "The all-time board: every question the ledger has closed, ranked by how much the whole graph builds on it. Each card names what settled it.",
+    reasonLabel: "Why it ranks: ",
+    empty: "The ledger has not settled any questions yet.",
+    status: (page) => `${page.total ?? 0} settled questions on the ledger, all time`,
+  },
+};
+
 const root = document.querySelector("[data-live-root]");
 if (!root) throw new Error("live page has no data-live-root");
 
@@ -21,7 +49,7 @@ let loading = false;
 let lastLoadedAt = 0;
 
 const requestedView = new URL(location.href).searchParams.get("view");
-let activeView = requestedView === "latest" ? "latest" : "highlights";
+let activeView = requestedView && VIEWS[requestedView] ? requestedView : "highlights";
 
 async function callTool(name, args) {
   const response = await fetch("/mcp", {
@@ -75,11 +103,16 @@ function relativeTime(iso) {
   if (Math.abs(seconds) < 60) return formatter.format(seconds, "second");
   const minutes = Math.round(seconds / 60);
   if (Math.abs(minutes) < 60) return formatter.format(minutes, "minute");
-  return formatter.format(Math.round(minutes / 60), "hour");
+  const hours = Math.round(minutes / 60);
+  if (Math.abs(hours) < 48) return formatter.format(hours, "hour");
+  const days = Math.round(hours / 24);
+  if (Math.abs(days) < 60) return formatter.format(days, "day");
+  return formatter.format(Math.round(days / 30), "month");
 }
 
 function rankingReasons(entry) {
   const reasons = [];
+  if (entry.state === "settled") reasons.push("settled — an active entry closes this question");
   if (entry.ranking?.settles) {
     reasons.push(`settles ${entry.ranking.settles} active ${entry.ranking.settles === 1 ? "question" : "questions"}`);
   }
@@ -115,6 +148,37 @@ async function loadDetails(entry, panel, button) {
   }
 }
 
+/** A button/panel pair that lazily loads one ledger entry's full text. */
+function detailToggle(entry, label) {
+  const button = element("button", "live-detail-button", label);
+  button.type = "button";
+  const panel = element("div", "live-entry-detail");
+  panel.hidden = true;
+  button.addEventListener("click", async () => {
+    if (button.dataset.open === "true") {
+      panel.hidden = !panel.hidden;
+      button.textContent = panel.hidden ? label : "Hide full entry";
+      return;
+    }
+    panel.hidden = false;
+    await loadDetails(entry, panel, button);
+  });
+  return { button, panel };
+}
+
+function settlerBlock(settler) {
+  const wrap = element("div", "live-settler");
+  const head = element("p", "live-settler-head");
+  head.append(element("strong", "", "Settled by: "));
+  head.append(document.createTextNode(`${settler.title} `));
+  head.append(element("span", "live-kind", settler.kind));
+  head.append(document.createTextNode(" "));
+  head.append(element("span", `live-badge tier-${settler.tier}`, tierLabel(settler.tier)));
+  const { button, panel } = detailToggle(settler, "Read the settling entry");
+  wrap.append(head, button, panel);
+  return wrap;
+}
+
 function resultCard(entry, rank) {
   const item = element("li", "live-result");
   const article = document.createElement("article");
@@ -131,30 +195,21 @@ function resultCard(entry, rank) {
   if (entry.summary) article.append(element("p", "live-result-summary", entry.summary));
 
   const badges = element("div", "live-badges");
+  if (entry.state) badges.append(element("span", `live-badge state-${entry.state}`, entry.state));
   badges.append(element("span", `live-badge tier-${entry.tier}`, tierLabel(entry.tier)));
   if (entry.lean_verified) badges.append(element("span", "live-badge lean", "Lean verified"));
   for (const topic of entry.topics ?? []) badges.append(element("span", "live-badge topic", topic));
   article.append(badges);
 
+  for (const settler of entry.settled_by ?? []) article.append(settlerBlock(settler));
+
   const reason = element("p", "live-ranking-reason");
-  reason.append(element("strong", "", activeView === "highlights" ? "Why highlighted: " : "Current signals: "));
+  reason.append(element("strong", "", VIEWS[activeView].reasonLabel));
   reason.append(document.createTextNode(rankingReasons(entry).join(" · ")));
   article.append(reason);
 
-  const detailButton = element("button", "live-detail-button", "Read full ledger entry");
-  detailButton.type = "button";
-  const panel = element("div", "live-entry-detail");
-  panel.hidden = true;
-  detailButton.addEventListener("click", async () => {
-    if (detailButton.dataset.open === "true") {
-      panel.hidden = !panel.hidden;
-      detailButton.textContent = panel.hidden ? "Show full entry" : "Hide full entry";
-      return;
-    }
-    panel.hidden = false;
-    await loadDetails(entry, panel, detailButton);
-  });
-  article.append(detailButton, panel);
+  const { button, panel } = detailToggle(entry, "Read full ledger entry");
+  article.append(button, panel);
   item.append(article);
   return item;
 }
@@ -165,17 +220,16 @@ function render() {
     tab.setAttribute("aria-selected", String(selected));
     tab.tabIndex = selected ? 0 : -1;
   }
-  explainerNode.textContent = activeView === "highlights"
-    ? "Ranked by graph impact and evidence. This is an attention signal, not an editorial verdict."
-    : "Strictly ordered by creation time, newest first. Evidence labels do not affect this order.";
+  const view = VIEWS[activeView];
+  explainerNode.textContent = view.explainer;
 
   const page = pages.get(activeView);
   if (!page) return;
   const entries = page.results ?? [];
   resultsNode.replaceChildren(...entries.map((entry, index) => resultCard(entry, index + 1)));
-  if (!entries.length) resultsNode.append(element("li", "live-empty", "No result-type entries were recorded in this window."));
+  if (!entries.length) resultsNode.append(element("li", "live-empty", view.empty));
   const loaded = new Date(lastLoadedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
-  statusNode.textContent = `Updated ${loaded} · ${page.total ?? entries.length} result-type entries in the rolling window`;
+  statusNode.textContent = `Updated ${loaded} · ${view.status(page)}`;
 }
 
 async function refresh() {
@@ -183,13 +237,9 @@ async function refresh() {
   loading = true;
   statusNode.textContent = pages.size ? "Refreshing the ledger…" : "Loading the ledger…";
   try {
-    const common = { kind: RESULT_KINDS, since: "24h", limit: 10 };
-    const [highlights, latest] = await Promise.all([
-      callTool("search", { ...common, order_by: "notability" }),
-      callTool("search", { ...common, order_by: "recent" }),
-    ]);
-    pages.set("highlights", highlights);
-    pages.set("latest", latest);
+    const names = Object.keys(VIEWS);
+    const loadedPages = await Promise.all(names.map((name) => callTool("search", VIEWS[name].request)));
+    names.forEach((name, index) => pages.set(name, loadedPages[index]));
     lastLoadedAt = Date.now();
     render();
   } catch (error) {
@@ -215,7 +265,9 @@ for (const tab of tabs) {
   tab.addEventListener("keydown", (event) => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
     event.preventDefault();
-    const next = activeView === "highlights" ? "latest" : "highlights";
+    const order = tabs.map((candidate) => candidate.dataset.liveView);
+    const step = event.key === "ArrowRight" ? 1 : -1;
+    const next = order[(order.indexOf(activeView) + step + order.length) % order.length];
     selectView(next);
     tabs.find((candidate) => candidate.dataset.liveView === next)?.focus();
   });

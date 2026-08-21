@@ -293,6 +293,28 @@ footer p { margin: 0 0 0.4rem; }
 
 .live-badge.topic { font-weight: 500; }
 
+.live-badge.state-settled {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--rule));
+  background: var(--accent);
+  color: var(--bg, #fff);
+}
+
+.live-settler {
+  margin: 0.55rem 0;
+  padding: 0.5rem 0.7rem;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 45%, var(--rule));
+  background: var(--accent-soft);
+}
+
+.live-settler-head {
+  margin: 0 0 0.2rem;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.live-settler-head strong { color: var(--accent); }
+.live-settler-head .live-kind { font: 600 0.68rem/1.35 system-ui, sans-serif; color: var(--muted); }
+
 .live-ranking-reason {
   margin: 0.55rem 0;
   color: var(--muted);

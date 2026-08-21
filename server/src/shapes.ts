@@ -88,6 +88,10 @@ export const ListRow = z
     matched: z.string().optional().describe("How search matched it: 'every term', 'some terms', or 'fuzzy'."),
     similarity: z.number().optional(),
     answers: z.number().int().optional().describe("How many active entries answer/prove/refute this."),
+    settled_by: z
+      .array(z.strictObject({ id: z.string(), kind: z.string(), title: z.string(), tier: z.number().int() }))
+      .optional()
+      .describe("For a settled question on a browse page: the active entries that answer/prove/disprove/refute/resolve it, most notable first (up to 3)."),
     existing_links: z
       .array(z.strictObject({ rel: z.string(), edge_tier: z.number().int() }))
       .optional()

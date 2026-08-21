@@ -484,6 +484,11 @@ SQF=$(call frontier "{\"ref\":\"$SQ\"}")
 [[ $(echo "$SQF" | field '["state"]') == settled ]] || fail "answered problem did not become settled"
 echo "$SQF" | python3 -c 'import sys,json;assert any(a["id"]=="'"$ANS"'" for a in json.load(sys.stdin)["answered_by"])' || fail "frontier did not name what settled the question"
 call search '{"kind":"problem","state":"open"}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$SQ"'" for r in json.load(sys.stdin)["results"])' || fail "settled problem still listed as open"
+# Contract: a settled question on a browse page names what settled it, so an
+# all-time board can show the closure rather than just a closed question.
+call search '{"kind":["problem","conjecture"],"state":"settled","order_by":"notability","limit":100}' \
+  | python3 -c 'import sys,json;rows=[r for r in json.load(sys.stdin)["results"] if r["id"]=="'"$SQ"'"];assert rows and any(s["id"]=="'"$ANS"'" and s["title"] for s in rows[0]["settled_by"])' \
+  || fail "settled browse row did not carry settled_by"
 call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$ANS\",\"note\":\"withdrawn\"}" | field '["ok"]' > /dev/null
 [[ $(call frontier "{\"ref\":\"$SQ\"}" | field '["state"]') == open ]] || fail "retracting the answer did not reopen the question"
 

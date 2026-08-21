@@ -146,11 +146,14 @@ async function refOr(
 
 /** Add small, human-readable graph facts to a notability-ranked page. The
  * score remains derived in Postgres; these signals explain why an entry can
- * rise without asking a browser to reverse-engineer a decimal. */
+ * rise without asking a browser to reverse-engineer a decimal. A settled
+ * question additionally names what settles it, so an all-time board can show
+ * the closure itself rather than just a closed question. */
 async function addRankingSignals(rows: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
   if (!rows.length) return rows;
   const ids = rows.map((row) => row.id as string);
-  const signals = await sql<{ id: string; built_on_by: number; settles: number }[]>`
+  const [signals, settlers] = await Promise.all([
+    sql<{ id: string; built_on_by: number; settles: number }[]>`
     select w.id,
       (select count(distinct e.src)::int
        from edge e join contribution ec on ec.id = e.contribution_id
@@ -162,9 +165,34 @@ async function addRankingSignals(rows: Record<string, unknown>[]): Promise<Recor
        where e.src = w.id and ec.status = 'active' and target.status = 'active'
          and target.kind in ('problem', 'conjecture')
          and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')) as settles
-    from unnest(${ids}::uuid[]) as w(id)`;
+    from unnest(${ids}::uuid[]) as w(id)`,
+    sql<{ id: string; sid: string; kind: string; title: string; tier: number }[]>`
+    select w.id, s.sid, s.kind, s.title, s.tier
+    from unnest(${ids}::uuid[]) as w(id)
+    join contribution q on q.id = w.id and q.kind in ('problem', 'conjecture')
+    cross join lateral (
+      select distinct src.id as sid, src.kind, src.title, src.tier, src.notability
+      from edge e
+      join contribution ec on ec.id = e.contribution_id
+      join contribution src on src.id = e.src
+      where e.dst = w.id and ec.status = 'active' and src.status = 'active'
+        and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+      order by src.notability desc, src.id
+      limit 3
+    ) s`,
+  ]);
   const byId = new Map(signals.map((row) => [row.id, { built_on_by: row.built_on_by, settles: row.settles }]));
-  return rows.map((row) => ({ ...row, ranking: byId.get(row.id as string) ?? { built_on_by: 0, settles: 0 } }));
+  const settledBy = new Map<string, { id: string; kind: string; title: string; tier: number }[]>();
+  for (const s of settlers) {
+    const list = settledBy.get(s.id) ?? [];
+    list.push({ id: s.sid, kind: s.kind, title: s.title, tier: s.tier });
+    settledBy.set(s.id, list);
+  }
+  return rows.map((row) => ({
+    ...row,
+    ranking: byId.get(row.id as string) ?? { built_on_by: 0, settles: 0 },
+    ...(settledBy.has(row.id as string) ? { settled_by: settledBy.get(row.id as string) } : {}),
+  }));
 }
 
 // What each kind means here, so a first-time reader can tell a research

@@ -70,13 +70,14 @@ mkdir -p "$PATCH_REPO_DIR/MathlibPlus" "$PATCH_BUILD_LIB"
 printf 'theorem alpha : 1 + 1 = 2 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Alpha.lean"
 printf 'import MathlibPlus.Alpha\ntheorem beta : 2 + 2 = 4 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Beta.lean"
 printf 'theorem gamma : 3 = 3 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Gamma.lean"
+printf 'theorem delta : 4 = 4 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Delta.lean"
 printf 'theorem broken : 4 = 5 := rfl\n\n' > "$PATCH_REPO_DIR/MathlibPlus/Broken.lean"
 printf '.lake/\n' > "$PATCH_REPO_DIR/.gitignore"   # as in the real repository: build output is not source
 # The build tree says what currently builds. Part of the real library does not
 # (the umbrella module cannot, and ~1-2% has bit-rotted), and a module with no
 # olean is exactly that: Broken has none.
 mkdir -p "$PATCH_BUILD_LIB/MathlibPlus"
-touch "$PATCH_BUILD_LIB/MathlibPlus/Alpha.olean" "$PATCH_BUILD_LIB/MathlibPlus/Beta.olean" "$PATCH_BUILD_LIB/MathlibPlus/Gamma.olean"
+touch "$PATCH_BUILD_LIB/MathlibPlus/Alpha.olean" "$PATCH_BUILD_LIB/MathlibPlus/Beta.olean" "$PATCH_BUILD_LIB/MathlibPlus/Gamma.olean" "$PATCH_BUILD_LIB/MathlibPlus/Delta.olean"
 git -C "$PATCH_REPO_DIR" init -q -b main
 git -C "$PATCH_REPO_DIR" add -A
 git -C "$PATCH_REPO_DIR" -c user.name=contracts -c user.email=c@example.invalid commit -qm "library"
@@ -1384,6 +1385,13 @@ ORPHAN_V=$(patch_verification "$(patch_submit "delete a module others import" "$
 [[ $(await_verification "$ORPHAN_V") == failed ]] || fail "deleting an imported module was not refused"
 psql -h "$WORK" -d math -tAc "select detail->>'reason' from verification where id = $ORPHAN_V" | grep -q "still imports" \
   || fail "the dangling import was not explained"
+
+# A leaf deletion has no new Lean term to compile. The import graph and the
+# base olean are its proof obligation; requiring a positive build would make
+# deletion-only cleanup impossible.
+LEAF=$(printf 'diff --git a/MathlibPlus/Delta.lean b/MathlibPlus/Delta.lean\ndeleted file mode 100644\n--- a/MathlibPlus/Delta.lean\n+++ /dev/null\n@@ -1 +0,0 @@\n-theorem delta : 4 = 4 := rfl\n')
+LEAF_V=$(patch_verification "$(patch_submit "delete an unimported leaf" "$LEAF")")
+[[ $(await_verification "$LEAF_V") == passed ]] || fail "a verified leaf deletion was rejected for compiling nothing"
 
 # Contract: a patch that applies is compiled in dependency order, and a module
 # that merely imports what changed is rebuilt too.

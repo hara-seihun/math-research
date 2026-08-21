@@ -51,7 +51,7 @@ export const isPatchSubmission = (kind: string, mediaType: string, content: stri
 /** A check is a pure function of the runner contract plus repository, base,
  *  and diff. Bump this when the runner changes what a pass or failure means;
  *  otherwise an infrastructure failure stays cached after its cause is fixed. */
-export const PATCH_CHECK_VERSION = 3;
+export const PATCH_CHECK_VERSION = 4;
 export const patchCheckId = (repo: string, base: string, diff: string): string =>
   sha256hex(`${PATCH_CHECK_VERSION}\n${repo}\n${base}\n${diff}`);
 

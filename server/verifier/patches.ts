@@ -418,7 +418,18 @@ export async function collectPatches(inflight: Map<string, number>) {
         decl_summary: declSummary(parsed.decls),
         foreign_axioms: foreignAxioms(parsed.decls),
       };
-      if (parsed.ok && parsed.built.length === 0) {
+      const pureDeletion =
+        (detail.deleted_modules?.length ?? 0) > 0 &&
+        (detail.changed_modules ?? []).every((module) => module === LIB);
+      if (parsed.ok && parsed.built.length === 0 && pureDeletion) {
+        // A pure deletion introduces no Lean term to audit. `prepare` already
+        // proved that no surviving source imports it, and publication removes
+        // the old olean. Requiring a positive build made cleanup of leaf
+        // modules impossible (the only changed importer is the broken umbrella).
+        rmSync(oleanDir(id), { recursive: true, force: true });
+        mkdirSync(oleanDir(id), { recursive: true });
+        await resolvePatchDetail(id, "passed", detail);
+      } else if (parsed.ok && parsed.built.length === 0) {
         await resolvePatchDetail(id, "inconclusive", {
           ...detail,
           reason: `nothing in this patch could be built: ${

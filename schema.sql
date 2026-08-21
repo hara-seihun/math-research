@@ -248,9 +248,16 @@ create table if not exists trail (
   search      tsvector generated always as (to_tsvector('english', title)) stored
 );
 alter table trail add column if not exists metadata jsonb not null default '{}'::jsonb;
+-- No door searches trail prose: `trails` browses by recency, by trail id, and
+-- by the entries a trail touches. These indexed a full-text search that does
+-- not exist, and every trail write paid to maintain them. If trail search is
+-- wanted later it is these two lines back, and the tsvector columns are still
+-- here to build it from.
+drop index if exists trail_search_idx;
+drop index if exists trail_entry_search_idx;
 create unique index if not exists trail_import_key_idx
   on trail ((metadata->>'import_key')) where metadata ? 'import_key';
-create index if not exists trail_search_idx on trail using gin (search);
+
 create index if not exists trail_status_idx on trail (status, updated_at);
 
 create table if not exists trail_entry (
@@ -262,7 +269,10 @@ create table if not exists trail_entry (
   search           tsvector generated always as (to_tsvector('english', note)) stored
 );
 create index if not exists trail_entry_trail_idx on trail_entry (trail_id, id);
-create index if not exists trail_entry_search_idx on trail_entry using gin (search);
+-- Reached with the array-overlap operator, which is what `trails` and the
+-- "who else is here" panel of get/frontier ask with. Asked as `unnest(...)
+-- where c = any(...)` instead, no index applies and every lookup unnests
+-- every trail entry in the table.
 create index if not exists trail_entry_contributions_idx on trail_entry using gin (contribution_ids);
 
 -- Machine and review verification records. `method` vocabulary:

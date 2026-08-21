@@ -82,9 +82,9 @@ async function trailsTouching(ids: string[]) {
            (select note from trail_entry where trail_id = t.id order by id desc limit 1) as latest_note
     from trail t
     join identity i on i.id = t.identity_id
-    join trail_entry te on te.trail_id = t.id
-    join lateral unnest(te.contribution_ids) as cid(c) on true
-    where cid.c = any(${ids}::uuid[]) and t.status = 'open'
+    join trail_entry te on te.trail_id = t.id and te.contribution_ids && ${ids}::uuid[]
+    join lateral unnest(te.contribution_ids) as cid(c) on cid.c = any(${ids}::uuid[])
+    where t.status = 'open'
       and t.updated_at > now() - ${TRAIL_FRESH}::interval`;
   return rows.map((r) => ({
     trail_id: r.id,
@@ -435,7 +435,7 @@ defineTool(
       where (${include_inactive}::bool or c.status = 'active') and c.kind <> 'edge'
         and (${kinds}::text[] is null or c.kind = any(${kinds}))
         and (${state ?? null}::text is null or c.state = ${state ?? null})
-        and (${topic ?? null}::text is null or ${topic ?? null} = any(c.tags))
+        and (${topic ?? null}::text is null or c.tags @> array[${topic ?? null}]::text[])
         and (${min_tier ?? null}::int is null or c.tier >= ${min_tier ?? 0})
         and (${sinceAt ?? null}::timestamptz is null or c.created_at >= ${sinceAt ?? null})
         and (${lean_verified ?? null}::bool is null or c.lean_verified = ${lean_verified ?? false})

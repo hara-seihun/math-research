@@ -113,9 +113,20 @@ you want authorship proofs that don't depend on this server.
 - `schema.sql`, the Postgres schema. The data model is the design document.
 - `server/`, the MCP server (Bun and TypeScript, streamable HTTP) and the Lean
   verification daemon. Every tool carries annotations, a described input
-  schema, and a strict output schema (`src/shapes.ts`); results come back as
-  structured content validated against that schema on every call, and failures
-  come back as MCP errors carrying the same teaching JSON.
+  schema, and an output schema (`src/shapes.ts`); failures come back as MCP
+  errors carrying the same teaching JSON. The write and admin tools advertise
+  their output schema and so answer with `structuredContent`; the read tools
+  deliberately do not, because advertising all of them cost every connecting
+  client ~16k tokens at session start, and they describe their shape in prose
+  instead. Shapes are checked against those schemas by the contract suite
+  (`MCP_VALIDATE=1`) rather than on every production call.
+- Serving the same answer to many callers cheaply is a design constraint, not
+  an afterthought: `src/snapshot.ts` derives the corpus-wide counts once on a
+  short cycle, `src/cache.ts` shares identical anonymous read results across
+  callers keyed to an epoch that every write bumps over Postgres `NOTIFY` (so
+  a submission is visible immediately, on every instance), `src/limits.ts`
+  meters only the expensive doors and only on a cache miss, and `src/ncd.ts`
+  keeps compression scoring off the request thread.
 - `lean/`, the pinned Lake project the verifier checks against.
 - `guides/`, material served through the `guides` tool: attack heuristics, Lean
   notes, tooling suggestions.
@@ -125,7 +136,9 @@ you want authorship proofs that don't depend on this server.
   directions: what the export stops asserting is retracted, so fixing the
   exporter corrects work already published).
 - `test/contracts.sh`, the contract suite. Ephemeral Postgres, real server,
-  about 20 seconds. Run it before deploying.
+  about 30 seconds. It runs with `MCP_VALIDATE=1` and the shared read caches
+  switched off, so every response is checked against its schema and every
+  assertion sees its own write. Run it before deploying.
 - `admin/`, the content editor at <https://math.seihun.com/admin>. It takes a
   password, minted on first start into `/var/lib/math-admin/password` on the
   instance, edits every Markdown file the site and the `guides` tool are built

@@ -1,5 +1,6 @@
-import { readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync, cpSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join, dirname, extname, basename } from "node:path";
+import { createHash } from "node:crypto";
 import { marked } from "marked";
 
 const HERE = import.meta.dir;
@@ -13,6 +14,21 @@ const ORIGIN = process.env.SITE_ORIGIN ?? "https://math.seihun.com";
 // the public one.
 const BUILD_SOURCE = process.env.MATH_MCP_URL ?? "https://math.seihun.com/mcp";
 const ENDPOINT = `${ORIGIN}/mcp`;
+const ASSET_DIR = join(HERE, "assets");
+const ASSETS = new Map(
+  readdirSync(ASSET_DIR).map((name) => {
+    const content = readFileSync(join(ASSET_DIR, name));
+    const extension = extname(name);
+    const stem = basename(name, extension);
+    const digest = createHash("sha256").update(content).digest("hex").slice(0, 12);
+    return [name, `${stem}.${digest}${extension}`] as const;
+  }),
+);
+const assetHref = (name: string) => {
+  const fingerprinted = ASSETS.get(name);
+  if (!fingerprinted) throw new Error(`no site asset named ${name}`);
+  return `/${fingerprinted}`;
+};
 
 type Page = {
   slug: string;
@@ -307,7 +323,7 @@ function layout(page: Page, nav: Page[], html: string): string {
 <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large">
 <link rel="canonical" href="${ORIGIN}${href(page.slug)}">
 <link rel="alternate" type="text/markdown" href="${ORIGIN}${plainHref(page.slug)}" title="Markdown source">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="${assetHref("style.css")}">
 <meta property="og:title" content="${page.title} · math-research">
 <meta property="og:description" content="${page.summary.replace(/"/g, "&quot;")}">
 <meta property="og:type" content="website">
@@ -358,7 +374,8 @@ const expand = (markdown: string) =>
   markdown
     .replace("{{ledger_snapshot}}", () => ledgerSnapshot(hello, totals))
     .replace("{{accomplishments_snapshot}}", () => accomplishmentsSnapshot)
-    .replace("{{tool_reference}}", () => toolReference(toolList.tools));
+    .replace("{{tool_reference}}", () => toolReference(toolList.tools))
+    .replaceAll("{{live_js}}", assetHref("live.js"));
 
 const guides = loadGuides();
 const pages = [...loadContent(), readmePage(), guidesIndex(guides)]
@@ -370,7 +387,9 @@ const nav = pages.filter((p) => p.nav);
 
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
-cpSync(join(HERE, "assets"), OUT, { recursive: true });
+for (const [source, target] of ASSETS) {
+  write(join(OUT, target), readFileSync(join(ASSET_DIR, source)));
+}
 
 for (const page of pages) {
   const path = page.slug === "." ? "index.html" : `${page.slug}/index.html`;

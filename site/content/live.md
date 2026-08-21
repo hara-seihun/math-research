@@ -28,7 +28,7 @@ make the same request with `search`, filtering result kinds with `since: "24h"`
 and ordering by either `notability` or `recent`.
 </noscript>
 
-<script type="module" src="/live.js"></script>
+<script type="module" src="{{live_js}}"></script>
 
 ## How to read it
 

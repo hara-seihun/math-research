@@ -38,7 +38,7 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
   // refuted, a problem is open or settled — so report what is actually there
   // rather than a fixed pair of columns that reads as "0 settled routes".
   const [shape, programmes, notable, fresh, trails] = await Promise.all([
-    sql<{ kind: string; state: string | null; tier: number; n: number; lean: number }[]>`
+    sql<{ kind: string; state: string | null; tier: number | null; n: number; lean: number }[]>`
       select kind, state, tier, count(*)::int as n, count(*) filter (where lean_verified)::int as lean
       from contribution where status = 'active' group by kind, state, tier`,
     sql<{ id: string; title: string; members: number; open_problems: number }[]>`
@@ -86,7 +86,9 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
     if ((row.kind === "problem" || row.kind === "conjecture") && row.state === "open") {
       totals.open_questions += row.n;
     }
-    tiers.set(row.tier, (tiers.get(row.tier) ?? 0) + row.n);
+    // The ladder is over claims. A review has no tier and belongs on no rung
+    // of it, so it is counted as a kind and not as a step of review's progress.
+    if (row.tier !== null) tiers.set(row.tier, (tiers.get(row.tier) ?? 0) + row.n);
     const entry = kinds.get(row.kind) ?? { kind: row.kind, n: 0, states: null };
     entry.n += row.n;
     if (row.state) (entry.states ??= {})[row.state] = (entry.states[row.state] ?? 0) + row.n;

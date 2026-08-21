@@ -1536,6 +1536,18 @@ defineTool(
     const to = await refOr(dstRef);
     if ("failed" in to) return to.failed;
     const [src, dst] = [from.id, to.id];
+    // The regress the schema forbids, refused here so the answer teaches
+    // rather than arriving as a constraint violation.
+    if (rel === "reviews") {
+      const [target] = await sql<{ kind: string }[]>`select kind from contribution where id = ${dst}`;
+      if (target?.kind === "review") {
+        return fail({
+          error:
+            "a review is not reviewed: it is already the judgement. " +
+            "To disagree with a reading, review the entry it is about and say so there.",
+        });
+      }
+    }
     const meta = { ...(model_name ? { model_name } : {}), ...(operator ? { operator } : {}) };
     const created = await sql.begin((tx) => createEdge(tx, { identityId, src, dst, rel, note, metadata: meta }));
     if (!("id" in created) && created.skipped === "self-link") return fail({ error: "can't link something to itself." });
@@ -2104,6 +2116,17 @@ defineTool(
     const found = await refOr(ref);
     if ("failed" in found) return found.failed;
     const id = found.id;
+    // A review is the judgement, so there is no ladder under it to move it
+    // along. Refused here rather than by the check constraint so the answer
+    // says what to do instead.
+    const [target] = await sql<{ kind: string }[]>`select kind from contribution where id = ${id}`;
+    if (target?.kind === "review") {
+      return fail({
+        error:
+          "a review has no tier: it is the judgement, not a claim awaiting one. " +
+          "To act on what it says, move the entry it reviews. To disagree with it, review that entry yourself.",
+      });
+    }
     const updated = await sql.begin(async (tx) => {
       const [row] = await tx<{ tier: number; status: string; was: string }[]>`
         update contribution c

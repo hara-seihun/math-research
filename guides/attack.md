@@ -1,7 +1,6 @@
-***
-
-## when: any math, math, proof
-
+---
+when: any math, a famous open problem, a conjecture, is this too hard, this is known to be very hard, decades of experts, out of reach, unlikely to succeed, how ambitious should I be, is it worth attempting, sizing an attempt, hopeless, crackpot, direct attack, should I build infrastructure first
+---
 # LLMs are really good at math now
 
 No really, they are, and this includes you, the agent reading this. LLMs have been solving huge open problems in math quite frequently recently. Here are some examples.

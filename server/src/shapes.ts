@@ -12,6 +12,15 @@ import { z } from "zod";
 const iso = z.string().describe("ISO 8601 timestamp");
 const jsonRecord = z.record(z.string(), z.unknown());
 
+/** How far review has got with a claim. Null for exactly one kind: a review
+ *  is the judgement, so there is no ladder underneath it, and it is the null
+ *  here that keeps reviews out of their own worklist (see schema.sql). An
+ *  edge's own tier is a different field and is never null -- an edge is an
+ *  assertion, and asserting one can be reviewed. */
+const tier = z
+  .number().int().nullable()
+  .describe("Review tier: 0 recorded, 1 confirmed, 2 canon, 3 published. Null for a review, which is a judgement rather than a claim awaiting one.");
+
 /** Success and failure results. A failure is isError with the same teaching
  *  JSON in the text block.
  *
@@ -66,7 +75,7 @@ export const ListRow = z
     kind: z.string(),
     title: z.string(),
     state: z.string().optional().describe("Derived work state (open/settled/retired); only work items carry one."),
-    tier: z.number().int().describe("Review tier: 0 recorded, 1 confirmed, 2 canon, 3 published."),
+    tier,
     lean_verified: z.literal(true).optional(),
     has_exposition: z.literal(true).optional().describe("Someone has written this up as a paper; get(<ref>) names it."),
     origin: z.literal("external").optional().describe("Present only when the headline claim was established outside this ledger; ledger origin is the default and is not printed."),
@@ -104,7 +113,7 @@ export const ListRow = z
     answers: z.number().int().optional().describe("How many active entries answer/prove/refute this."),
     settled_by: z
       .array(z.strictObject({
-        id: z.string(), kind: z.string(), title: z.string(), tier: z.number().int(),
+        id: z.string(), kind: z.string(), title: z.string(), tier,
         origin: z.literal("external").optional(),
         origin_source: z.string().optional(),
       }))
@@ -136,7 +145,7 @@ const NeighbourLink = z.strictObject({
   id: z.string(),
   kind: z.string(),
   title: z.string(),
-  tier: z.number().int(),
+  tier,
   notability: z.number(),
   edge_tier: z.number().int(),
   status: z.string(),
@@ -247,7 +256,7 @@ export const FrontsOut = z
     kind: z.string().optional(),
     title: z.string().optional(),
     summary: z.string().optional(),
-    tier: z.number().int().optional(),
+    tier: tier.optional(),
     notability: z.number().optional(),
     metadata: jsonRecord.optional(),
     names: z.array(z.string()).optional(),
@@ -286,7 +295,7 @@ const DictionaryRow = z.strictObject({
 const Transport = z.strictObject({
   reformulation_id: z.string(),
   title: z.string(),
-  tier: z.number().int(),
+  tier,
   notability: z.number(),
   fidelity: z.string().nullable().describe("equivalent | implies | implied-by | heuristic."),
   transports_settlement: z
@@ -321,7 +330,7 @@ export const TheoriesOut = z
     kind: z.string().optional(),
     title: z.string().optional(),
     summary: z.string().optional(),
-    tier: z.number().int().optional(),
+    tier: tier.optional(),
     notability: z.number().optional(),
     names: z.array(z.string()).optional(),
     tags: z.array(z.string()).optional(),
@@ -340,7 +349,7 @@ export const TheoriesOut = z
         z.strictObject({
           id: z.string(),
           title: z.string(),
-          tier: z.number().int(),
+          tier,
           source_side: z.string().nullable(),
           target_side: z.string().nullable(),
           fidelity: z.string().nullable(),
@@ -358,7 +367,7 @@ export const TheoriesOut = z
         z.strictObject({
           id: z.string(),
           title: z.string(),
-          tier: z.number().int(),
+          tier,
           notability: z.number(),
           applies_to: z.string().nullable(),
           similarity: z.number(),
@@ -390,7 +399,7 @@ export const FrontierOut = z.strictObject({
   kind: z.string(),
   title: z.string(),
   summary: z.string(),
-  tier: z.number().int(),
+  tier,
   status: z.string(),
   metadata: jsonRecord,
   names: z.array(z.string()),
@@ -412,14 +421,14 @@ export const FrontierOut = z.strictObject({
           id: z.string(),
           kind: z.string(),
           title: z.string(),
-          tier: z.number().int(),
+          tier,
           hops: z.number().int().describe("Reviewed equivalences between this question and the statement that was answered."),
         }),
         answered_by: z.strictObject({
           id: z.string(),
           kind: z.string(),
           title: z.string(),
-          tier: z.number().int(),
+          tier,
           rel: z.string(),
         }),
       }),
@@ -431,7 +440,7 @@ export const FrontierOut = z.strictObject({
       z.strictObject({
         id: z.string(),
         title: z.string(),
-        tier: z.number().int(),
+        tier,
         fidelity: z.string().nullable(),
         transports_settlement: z.boolean().nullable(),
         via: z.strictObject({ id: z.string(), title: z.string(), kind: z.string() }),
@@ -470,7 +479,7 @@ export const GetOut = z.strictObject({
   kind: z.string(),
   title: z.string(),
   summary: z.string().optional().describe("Omitted when it just repeats the title."),
-  tier: z.number().int(),
+  tier,
   status: z.string(),
   state: z.string().optional(),
   metadata: jsonRecord,
@@ -510,7 +519,7 @@ export const GetOut = z.strictObject({
     .strictObject({
       id: z.string(),
       title: z.string(),
-      tier: z.number().int(),
+      tier,
       author: z.string().nullable(),
       artifact_hash: z.string(),
       media_type: z.string(),
@@ -534,7 +543,7 @@ export const GetOut = z.strictObject({
 export const SubmitOut = z.strictObject({
   ok: z.literal(true),
   id: z.string(),
-  tier: z.number().int(),
+  tier,
   duplicate_of: z.string().optional().describe("An active entry with byte-identical content."),
   lean_queued: z.boolean(),
   receipt: Receipt,
@@ -615,7 +624,7 @@ const LeanMatch = z.strictObject({
   library: z.string().optional(),
   contribution_id: z.string().optional(),
   title: z.string().optional(),
-  tier: z.number().int().optional(),
+  tier: tier.optional(),
 });
 
 const LeanGroup = z.strictObject({
@@ -660,7 +669,7 @@ export const LeanSimilarOut = z.discriminatedUnion("mode", [
 export const LinkOut = z.strictObject({
   ok: z.literal(true),
   edge_id: z.string(),
-  tier: z.number().int().optional(),
+  tier: tier.optional(),
   note: z.string(),
   your_contributor_key: z.string().optional(),
 });
@@ -672,7 +681,7 @@ export const MySubmissionsOut = z.strictObject({
       id: z.string(),
       kind: z.string(),
       title: z.string(),
-      tier: z.number().int(),
+      tier,
       status: z.string(),
       notability: z.number(),
       created_at: iso,
@@ -786,7 +795,7 @@ export const NewsOut = z.strictObject({
     )
     .describe("Questions this window settled, with what settles each and at which tier."),
   promoted: z.array(
-    z.strictObject({ entry: ListRow, tier: z.number().int(), note: z.string().nullable(), at: iso }),
+    z.strictObject({ entry: ListRow, tier, note: z.string().nullable(), at: iso }),
   ).describe("Entries a trusted reviewer moved to canon or above, with the reviewer's verdict."),
   promotions: z.strictObject({
     total: z.number().int(),
@@ -837,7 +846,7 @@ export const ReviewQueueOut = z.strictObject({
       kind: z.string(),
       title: z.string(),
       summary: z.string(),
-      tier: z.number().int(),
+      tier,
       notability: z.number(),
       created_at: iso,
       lean_verified: z.boolean(),
@@ -854,7 +863,7 @@ export const ReviewQueueOut = z.strictObject({
         id: z.string(),
         kind: z.string(),
         title: z.string(),
-        tier: z.number().int(),
+        tier,
         expires_at: iso,
       }),
     )
@@ -876,7 +885,7 @@ export const ReviewQueueOut = z.strictObject({
         id: z.string(),
         kind: z.string(),
         title: z.string(),
-        tier: z.number().int(),
+        tier,
         objection_id: z.string(),
         objection_title: z.string(),
         rel: z.string(),
@@ -891,7 +900,7 @@ export const ReviewQueueOut = z.strictObject({
         id: z.string(),
         title: z.string(),
         summary: z.string(),
-        tier: z.number().int(),
+        tier,
         by: z.string().nullable(),
         submitted_at: iso,
         build: z.string().describe("pending | passed | failed | inconclusive | unavailable: what happened when the patch was applied and its modules rebuilt."),
@@ -973,7 +982,7 @@ export const SetOriginOut = z.strictObject({
 export const SetTierOut = z.strictObject({
   ok: z.literal(true),
   id: z.string(),
-  tier: z.number().int(),
+  tier,
   note: z.string(),
   restored: z
     .boolean()

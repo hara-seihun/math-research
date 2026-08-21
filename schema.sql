@@ -200,6 +200,40 @@ alter table contribution add constraint contribution_origin_check
   check (origin in ('ledger', 'external') and (origin = 'ledger' or origin_source is not null));
 alter table contribution alter column search drop expression if exists;
 
+-- A review is a judgement *about* mathematics, not a claim of its own, so it
+-- is the one kind that carries no tier. The ladder records how far review has
+-- got with a claim; a review has nothing to climb, and reviewing a review is a
+-- regress the queue used to pay for. Reviews were tiered like everything else,
+-- so every review was born at T0 and matched review_queue's `tier <= max_tier`
+-- on the same terms as an unproved theorem -- and, being unreviewed, sorted
+-- ahead of it. The lane's own output became the bulk of its own intake: in one
+-- 92-minute wave on 2026-08-21, 63% of the entries adjudicated were reviews,
+-- one entry was read 127 times, and 829 reviews existed that reviewed nothing
+-- but other reviews. Those are deleted; this is why they cannot come back.
+--
+-- Null is the representation rather than a kind list in each query, so the
+-- queue's own arithmetic excludes reviews: `null <= 1` is null, not true.
+alter table contribution alter column tier drop not null;
+update contribution set tier = null where kind = 'review' and tier is not null;
+alter table contribution drop constraint if exists contribution_tier_check;
+alter table contribution add constraint contribution_tier_check
+  check ((tier is null) = (kind = 'review') and (tier is null or tier between 0 and 3));
+
+-- Submitters do not choose a tier -- it is the column default -- so a review
+-- arrives wanting the default and the default is wrong for exactly one kind.
+-- Normalising it here keeps every insert path (submit, edges, imports, admin)
+-- from having to remember. An *explicit* promotion is a different act: it is
+-- the caller being wrong, and the check constraint above refuses it loudly.
+create or replace function contribution_tier_rule() returns trigger language plpgsql as $$
+begin
+  if new.kind = 'review' then new.tier := null; end if;
+  return new;
+end $$;
+drop trigger if exists contribution_tier_rule_trg on contribution;
+create trigger contribution_tier_rule_trg
+  before insert on contribution
+  for each row execute function contribution_tier_rule();
+
 -- Everything derived from a contribution's own columns, in one place, so the
 -- search document and the folded names cannot drift from the row they
 -- describe. The artifact is content-addressed and immutable, so the body only
@@ -271,6 +305,22 @@ create table if not exists edge (
 );
 create index if not exists edge_src_idx on edge (src, rel);
 create index if not exists edge_dst_idx on edge (dst, rel);
+-- The other half of the same rule, which a check constraint cannot express
+-- because it spans two rows: nothing reviews a review. Deliberately linking
+-- one is still the regress, just typed by hand instead of scheduled.
+create or replace function forbid_review_of_review() returns trigger language plpgsql as $$
+begin
+  if new.rel = 'reviews'
+     and (select kind from contribution where id = new.dst) = 'review' then
+    raise exception 'a review is not reviewed: % already is the judgement', new.dst;
+  end if;
+  return new;
+end $$;
+drop trigger if exists edge_no_review_of_review on edge;
+create trigger edge_no_review_of_review
+  before insert or update of src, dst, rel on edge
+  for each row execute function forbid_review_of_review();
+
 -- The transport relation (see settlement_transport) is asked for by relation
 -- alone, on every write, and the relations that carry it are a few dozen rows
 -- out of a hundred thousand.

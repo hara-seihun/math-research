@@ -36,7 +36,9 @@ export type SubmitResult =
   | {
       ok: true;
       id: string;
-      tier: number;
+      /** Null for a review: it is the judgement, so there is no ladder under
+       *  it and nothing to promote. Every other kind is recorded at T0. */
+      tier: number | null;
       duplicate_of?: string;
       lean_queued: boolean;
       receipt: unknown;
@@ -223,7 +225,7 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
   return {
     ok: true,
     id: result.id,
-    tier: 0,
+    tier: input.kind === "review" ? null : 0,
     duplicate_of: existing?.id,
     lean_queued: leanQueued,
     receipt,

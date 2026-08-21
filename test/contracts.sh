@@ -463,6 +463,22 @@ call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false}" | python3 -
 assert any(f['id'] == '$FLAG_T' and f['objection_id'] == '$FLAG_O' for f in d['flagged']), d['flagged']
 assert d['backlog']['flagged'] >= 1, d['backlog']" || fail "a public refutation never reached the review queue"
 
+# Contract: a review is the judgement, not a claim awaiting one. It carries no
+# tier, so it never enters the worklist it is the output of, and nothing
+# reviews it. Tiering reviews is what made the review lane the largest
+# consumer of its own queue: every review was born at T0, and being unreviewed
+# it sorted ahead of the mathematics.
+RV_SUBJ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"a result somebody reviews\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+RV=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"review\",\"title\":\"a reading of that result\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$RV_SUBJ\",\"rel\":\"reviews\"}]}" | field '.id')
+[[ $(call get "{\"ref\":\"$RV\"}" | jq -r '.tier') == null ]] || fail "a review was born with a tier"
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$RV\",\"tier\":2,\"note\":\"promote the judgement\"}" \
+  | jq -e '.error' > /dev/null || fail "a review was promoted along a ladder it is not on"
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"include_own\":true,\"limit\":100}" \
+  | jq -e '[.unreviewed[].kind] | index("review") | not' > /dev/null \
+  || fail "the review queue offered a review as work"
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RV_SUBJ\",\"dst\":\"$RV\",\"rel\":\"reviews\"}" \
+  | jq -e '.error' > /dev/null || fail "a review was reviewed"
+
 # Contract: a write refreshes what it touched, not the corpus. Promotion and
 # linking used to recompute state and notability over every row, which on a
 # real corpus is both slow and a deadlock (two whole-table updates take row
@@ -1024,11 +1040,15 @@ dated "hello most_notable" "$(call hello '{}')" 'd["most_notable"]'
 # Contract: hello carries the census the live page shows -- the review ladder
 # over entries, and entries and links counted apart, since a link is a
 # contribution on the same ladder but not a thing anyone means by "entries".
+# Reviews are on no rung: a review is the judgement, so it has no tier and the
+# ladder plus the reviews is the whole of the entries.
 call hello '{}' | python3 -c '
 import sys,json
 w=json.load(sys.stdin)["what_is_here"]
 tiers={r["tier"]: r["n"] for r in w["by_tier"]}
-assert sum(tiers.values()) == w["totals"]["entries"], (tiers, w["totals"])
+assert all(t is not None for t in tiers), tiers
+reviews=sum(k["n"] for k in w["kinds"] if k["kind"]=="review")
+assert sum(tiers.values()) + reviews == w["totals"]["entries"], (tiers, reviews, w["totals"])
 assert w["totals"]["links"] > 0
 ' || fail "hello census does not add up"
 

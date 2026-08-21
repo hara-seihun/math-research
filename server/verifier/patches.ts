@@ -286,11 +286,12 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
   };
   for (const module of rebuild) visit(module);
 
-  // Part of this library does not build today: ~1-2% has bit-rotted and the
-  // umbrella module cannot build at all, which every patch that adds a file
-  // touches. Those modules are built anyway — repairing one is exactly the
-  // patch worth writing — but their failure is the library's state rather
-  // than a regression, so it does not condemn the patch.
+  // The library's own build is green, but the tree also carries a quarantine:
+  // modules the kernel has not accepted, listed in unverified.txt. A patch may
+  // touch one — repairing it is exactly the patch worth writing — so those are
+  // built optionally: still failing leaves it quarantined rather than
+  // condemning the patch, and succeeding puts it back in the library when the
+  // patch is published.
   const alreadyBroken = new Set(order.filter((module) => !builtAtBase(module) && !isNew.has(module)));
 
   const src = join(dir, "src-job");
@@ -591,6 +592,25 @@ async function reindexDecls(modules: string[]) {
 }
 
 /**
+ * Put the generated build set back in step with the tree, and stage it.
+ *
+ * `scripts/build_set.py` owns lakefile.toml, unverified.txt, and the marker
+ * comment at the top of every unverified module. A repository without that
+ * script is one that does not curate a build set, which is not a publication
+ * failure.
+ */
+async function refreshBuildSet(verified: string[]): Promise<{ ok: true } | { ok: false; error: string }> {
+  const script = join(REPO_DIR, "scripts", "build_set.py");
+  if (!existsSync(script)) return { ok: true };
+  const generated = Bun.spawnSync(["python3", script, "--verified", ...verified], { cwd: REPO_DIR });
+  if (generated.exitCode !== 0) {
+    return { ok: false, error: `${generated.stdout.toString()}${generated.stderr.toString()}` };
+  }
+  const staged = await git(["add", "-A"]);
+  return staged.code === 0 ? { ok: true } : { ok: false, error: staged.stderr };
+}
+
+/**
  * Publish everything review has promoted. Each patch is re-verified against
  * the current head first: `patch_check` is keyed by (repo, base, diff), so a
  * patch whose base is still head is a cache hit and costs nothing, and one
@@ -676,6 +696,21 @@ export async function publishPatches() {
   if (applied.code !== 0) {
     await git(["reset", "--hard", head]);
     await block(`the patch no longer applies to ${shortId(head)}`, { conflict: `${applied.stdout}${applied.stderr}`.slice(-2000) });
+    return;
+  }
+
+  // The library's build set is generated, not written: lakefile.toml names
+  // every module the kernel has accepted, and a patch that adds a module or
+  // repairs a quarantined one changes that list. Regenerating it inside the
+  // same commit is what keeps `lake build` green, and what keeps a repaired
+  // module from staying quarantined after the build that accepted it.
+  const built = (check.detail?.changed_modules ?? []).filter(
+    (module) => !(check.detail?.still_broken ?? []).includes(module),
+  );
+  const refreshed = await refreshBuildSet(built);
+  if (!refreshed.ok) {
+    await git(["reset", "--hard", head]);
+    await block("the library's build set could not be regenerated", { conflict: refreshed.error.slice(-2000) });
     return;
   }
 

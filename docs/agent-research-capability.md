@@ -130,8 +130,10 @@ Projects Research import. The lane's "recorded trail is productive" exit had
 made the diary sufficient. The MCP and lane contract now distinguish the two:
 tentative chronology stays in a trail, while every established obstruction is
 submitted as `kind: route` with `state`, typed `first_unsupported`, and an
-`attacks` edge before the trail closes. The server enforces that shape, and it
-is the shape consumed by `frontier.where_routes_stall`.
+`attacks` edge before the trail closes. Trail closure now requires an explicit
+outcome; `blocked` and `refuted` are rejected unless the close attaches a
+durable route, while `no-result` explicitly says no claim emerged. This is the
+shape consumed by `frontier.where_routes_stall`.
 
 ## 2. Lean as a server capability
 

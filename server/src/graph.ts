@@ -329,7 +329,13 @@ export async function related(args: RelatedArgs) {
   }
 
   const { any: tsq } = queryParts(queryText);
-  const raw = normalizeText(`${queryText}`).slice(0, 300);
+  // Fuzzy matching is for the caller who passed a phrase and misremembered a
+  // word of it. Against a whole entry's text it can only match everything, and
+  // it costs a sequential scan of the corpus to say so: the trigram index is
+  // over `lower(title)`, and a 300-character probe uses neither the index nor
+  // anyone's intent.
+  const short = normalizeText(`${queryText}`);
+  const probe = short.length <= 100 ? short : null;
   const wantsContent = args.method === "ncd";
   const candidates = await sql.begin(async (tx: Tx) => {
     await tx`select set_config('pg_trgm.similarity_threshold', '0.15', true)`;
@@ -340,7 +346,7 @@ export async function related(args: RelatedArgs) {
       where c.kind <> 'edge' and c.status = 'active'
         and (${selfId}::uuid is null or c.id <> ${selfId})
         and (c.search @@ to_tsquery('english', ${tsq})
-             or lower(c.title || ' ' || c.summary) % ${raw})
+             or (${probe}::text is not null and lower(c.title) % ${probe}))
       order by ts_rank(${RANK_WEIGHTS}::float4[], c.search, to_tsquery('english', ${tsq})) desc,
                c.notability desc
       limit 150`;

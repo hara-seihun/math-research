@@ -231,11 +231,11 @@ you want authorship proofs that don't depend on this server.
   has to answer to.
 - `guides/`, material served through the `guides` tool: attack heuristics, Lean
   notes, tooling suggestions.
-- `tools/`, the deploy script, the tuning defaults, the Projects Research
-  import (`export-projects-research.py` into `load-import.ts`, keyed by
-  `metadata.import_key` so reruns reconcile instead of duplicating — in both
-  directions: what the export stops asserting is retracted, so fixing the
-  exporter corrects work already published), `index-decls.sh` which rebuilds
+- `tools/`, the deploy script, the tuning defaults, `load-import.ts` — bulk
+  import for an identity holding an import key, keyed by `metadata.import_key`
+  so reruns reconcile instead of duplicating, in both directions: what an
+  export stops asserting is retracted, so a corrected export corrects work
+  already published — `index-decls.sh` which rebuilds
   the declaration index on the guest, and `publish-mathlibplus.sh` which
   carries reviewed patches between the guest's library checkout and GitHub.
 - `test/contracts.sh`, the contract suite. Ephemeral Postgres, real server,

@@ -72,9 +72,14 @@ everyone works them, and toward freshly minted shards, which carry none. The
 demand probe then pays six units of funded work per shard, so the loop finances
 its own shallowness.
 
-The decommissioned predecessor solved this and the artifacts survive as
-provenance in [`/home/kenan/projects-research`](../../../projects-research/README.md)
-— worth reading before rewriting anything:
+The decommissioned predecessor solved this. Its artifacts were retired to
+external cold storage on 2026-08-21 and survive as provenance at
+`/mnt/cold-storage/projects-research/source/` (read-only, and never restored to
+the main system without a direct ask from Hara — see
+[`AGENTS.md`](../../../AGENTS.md#external-cold-storage)); the doctrine itself
+lives on in [`guides/attack.md`](../guides/attack.md) and
+[`~/memory/frontier-math-one-shot-record.md`](../../../memory/frontier-math-one-shot-record.md).
+Worth reading before rewriting anything:
 
 - `tasks/frontier.md` — *"Publishing a partial theorem is not terminal: return
   immediately to the exact global blocker and continue"*; single-flight lease;

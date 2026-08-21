@@ -86,9 +86,9 @@ esac
 
 # What ships is a commit, so an edit still sitting in the working tree would
 # deploy silently as its predecessor and be measured as if it were the change.
-if ! git diff --quiet -- server schema.sql tools test; then
-  echo "uncommitted changes under server/, schema.sql, tools/ or test/ — commit them or they will not deploy:" >&2
-  git diff --name-only -- server schema.sql tools test >&2
+if ! git diff --quiet -- server schema.sql tools lean; then
+  echo "uncommitted changes to code the guest runs — commit them or they will not deploy:" >&2
+  git diff --name-only -- server schema.sql tools lean >&2
   exit 1
 fi
 

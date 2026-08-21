@@ -67,7 +67,7 @@ alter table artifact drop column if exists search;
 -- The append-only event ledger.
 create table if not exists event (
   seq             bigserial primary key,
-  kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | refactor-applied | refactor-rejected | amendment-applied | amendment-rejected | flagged | identity-updated | imported | role-granted
+  kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | refactor-applied | refactor-rejected | amendment-applied | amendment-rejected | impact-assessment-applied | impact-assessment-rejected | flagged | identity-updated | imported | role-granted
   contribution_id uuid,
   identity_id     text,
   payload         jsonb not null default '{}'::jsonb,
@@ -159,12 +159,20 @@ create table if not exists contribution (
   -- Derived from `verification`, kept by trigger. As a subquery in the public
   -- view this was re-evaluated per row on every read path, sometimes hoisted
   -- by the planner and sometimes not (5.9 ms vs 96 ms for one count).
-  lean_verified     boolean not null default false
+  lean_verified     boolean not null default false,
+  impact_reach      real,
+  impact_advance    real,
+  impact_closure    real,
+  impact_assessments integer not null default 0
 );
 alter table contribution add column if not exists state text;
 alter table contribution add column if not exists names_norm text[] not null default '{}';
 alter table contribution add column if not exists names_text text not null default '';
 alter table contribution add column if not exists lean_verified boolean not null default false;
+alter table contribution add column if not exists impact_reach real;
+alter table contribution add column if not exists impact_advance real;
+alter table contribution add column if not exists impact_closure real;
+alter table contribution add column if not exists impact_assessments integer not null default 0;
 alter table contribution alter column search drop expression if exists;
 
 -- Everything derived from a contribution's own columns, in one place, so the
@@ -400,7 +408,7 @@ create index if not exists request_log_identity_idx on request_log (identity_id,
 create or replace view contribution_overview as
 select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
        c.artifact_hash, c.metadata, c.notability, c.tags, c.names, c.created_at, c.updated_at, c.search,
-       c.lean_verified, c.state
+       c.lean_verified, c.state, c.impact_reach, c.impact_advance, c.impact_closure, c.impact_assessments
 from contribution c;
 
 -- ——— Tunable policy ————————————————————————————————————————————————————
@@ -547,6 +555,45 @@ begin
    where c.id = b.id;
 end $$;
 
+-- Reviewed impact is deliberately separate from structural notability. The
+-- graph measures how much this corpus builds on an entry; T2 assessments
+-- record reach, advance, and closure on explicit 0..5 rubrics. One current
+-- assessment per author contributes, so repeated submissions cannot amplify
+-- a vote. The current means are materialized for cheap browse ordering while
+-- every assessment and review decision remains an ordinary contribution.
+create or replace function refresh_impact(ids uuid[]) returns void language plpgsql as $$
+begin
+  if ids is null or cardinality(ids) = 0 then return; end if;
+  with targets as (
+    select id from contribution where id = any(ids)
+  ), latest as (
+    select distinct on (e.dst, coalesce(ac.identity_id, ac.id::text))
+           e.dst,
+           (ac.metadata#>>'{impact,reach}')::real as reach,
+           (ac.metadata#>>'{impact,advance}')::real as advance,
+           (ac.metadata#>>'{impact,closure}')::real as closure
+    from edge e
+    join contribution ec on ec.id = e.contribution_id
+    join contribution ac on ac.id = e.src
+    where e.dst = any(ids) and e.rel = 'assesses-impact'
+      and ec.status = 'active' and ec.tier >= 2
+      and ac.status = 'active' and ac.tier >= 2 and ac.kind = 'impact-assessment'
+      and jsonb_typeof(ac.metadata#>'{impact,reach}') = 'number'
+      and jsonb_typeof(ac.metadata#>'{impact,advance}') = 'number'
+      and jsonb_typeof(ac.metadata#>'{impact,closure}') = 'number'
+    order by e.dst, coalesce(ac.identity_id, ac.id::text), e.created_at desc, ac.id desc
+  ), scores as (
+    select dst, avg(reach)::real as reach, avg(advance)::real as advance,
+           avg(closure)::real as closure, count(*)::int as assessments
+    from latest group by dst
+  )
+  update contribution c
+     set impact_reach = s.reach, impact_advance = s.advance,
+         impact_closure = s.closure, impact_assessments = coalesce(s.assessments, 0)
+    from targets t left join scores s on s.dst = t.id
+   where c.id = t.id;
+end $$;
+
 -- ——— Work-item state ———————————————————————————————————————————————————
 -- A question is settled when something active in the graph answers it. That
 -- is a fact about the edges, so it is derived here rather than declared, and
@@ -597,6 +644,7 @@ begin
   perform 1 from contribution where id = any (targets) order by id for no key update;
   perform refresh_state(targets);
   perform refresh_notability(targets);
+  perform refresh_impact(targets);
 end $$;
 
 \ir tools/tuning-defaults.sql
@@ -610,6 +658,7 @@ end $$;
 -- public data.
 create or replace view q_entries as
   select id, kind, title, summary, state, status, tier, notability, lean_verified,
+         impact_reach, impact_advance, impact_closure, impact_assessments,
          tags, names, identity_id, artifact_hash, metadata, created_at, updated_at
   from contribution_overview
   where kind <> 'edge';

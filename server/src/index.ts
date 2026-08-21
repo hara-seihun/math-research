@@ -31,7 +31,7 @@ import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
 import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
 import {
-  ApplyAmendmentOut, ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
+  ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
   RetractOut, ReviewQueueOut, SearchOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
   TrailsOut,
@@ -189,11 +189,28 @@ async function addRankingSignals(rows: Record<string, unknown>[]): Promise<Recor
     list.push({ id: s.sid, kind: s.kind, title: s.title, tier: s.tier });
     settledBy.set(s.id, list);
   }
-  return rows.map((row) => ({
-    ...row,
-    ranking: byId.get(row.id as string) ?? { built_on_by: 0, settles: 0 },
-    ...(settledBy.has(row.id as string) ? { settled_by: settledBy.get(row.id as string) } : {}),
-  }));
+  return rows.map((row) => {
+    const ranking: Record<string, unknown> = byId.get(row.id as string) ?? { built_on_by: 0, settles: 0 };
+    const assessments = Number(row.impact_assessments ?? 0);
+    if (assessments > 0) {
+      const reach = Number(row.impact_reach);
+      const advance = Number(row.impact_advance);
+      const closure = Number(row.impact_closure);
+      ranking.reviewed_impact = {
+        reach,
+        advance,
+        closure,
+        total: reach + advance + closure,
+        assessments,
+        score: Number(row.impact_score),
+      };
+    }
+    return {
+      ...row,
+      ranking,
+      ...(settledBy.has(row.id as string) ? { settled_by: settledBy.get(row.id as string) } : {}),
+    };
+  });
 }
 
 // What each kind means here, so a first-time reader can tell a research
@@ -265,7 +282,7 @@ const TOOLS: ToolDef[] = [];
 const SHAREABLE = new Set(["search", "fronts", "frontier", "related", "get", "query", "trails", "guides", "news"]);
 
 // Tools that move the corpus, and so retire every shared read above.
-const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_tuning", "apply_refactor", "apply_amendment", "retract", "grant_trust"]);
+const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "grant_trust"]);
 
 // Doors that spend more than a page of index lookups: `query` hands over a two
 // second Postgres budget, `related` runs an embedding or a compression sweep,
@@ -416,7 +433,7 @@ defineTool(
     title: "Search and browse the ledger",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on) or recency, so search({kind:'problem', state:'open'}) is the \"what should I work on\" door and plain search({}) is \"show me the most interesting stuff\". Filter by kind, work state, topic, front, creation time, lean_verified, or minimum tier. Returns short list rows; get(<ref>) has the full text.",
+      "One door for finding things. With `query`: full-text + fuzzy search over titles, summaries, and content; entries matching every term (or an exact \"quoted phrase\") come first and each result says how it matched. Dash- and accent-insensitive, and it degrades rather than returning nothing. Without `query`: walks the ledger by notability (importance derived from what the graph builds on), reviewed impact, or recency. Impact strongly damps internal graph density and adds T2-reviewed 0..5 reach, advance, and closure assessments; rows print those dimensions. Filter by kind, work state, topic, front, creation time, lean_verified, or minimum tier. Returns short list rows; get(<ref>) has the full text.",
     inputSchema: z.object({
       query: z.string().optional().describe("What are you looking for? Plain language is fine; \"quote\" a phrase to require it. Leave it out to browse by importance or recency."),
       kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. ['theorem','result']."),
@@ -430,8 +447,8 @@ defineTool(
         .describe("For browse-mode questions: require an active settling link at least this reviewed tier. Use 2 for a canon-grade record of closures."),
       since: z.string().optional().describe("Only entries created since this ISO timestamp or interval such as '30m', '24h', '7d', or '2w'."),
       order_by: z
-        .enum(["notability", "recent", "oldest"]).optional()
-        .describe("Only for browsing without a query (text search orders by relevance). Default 'notability'."),
+        .enum(["notability", "impact", "recent", "oldest"]).optional()
+        .describe("Only for browsing without a query (text search orders by relevance). 'impact' combines damped graph importance with T2 reviewed reach/advance/closure. Default 'notability'."),
       include_inactive: z.boolean().default(false).describe("Also show retracted/superseded entries."),
       ...pageParams(100, 10),
     }),
@@ -487,9 +504,13 @@ defineTool(
     // on the expensive one for no reason.
     const [rows, [{ total }]] = await Promise.all([
       sql`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.tags, c.names, c.created_at
+        select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
+               c.impact_reach, c.impact_advance, c.impact_closure, c.impact_assessments,
+               round((2 * (coalesce(c.impact_reach, 0) + coalesce(c.impact_advance, 0) + coalesce(c.impact_closure, 0))
+                      + 2 * ln(1 + greatest(c.notability, 0)))::numeric, 3)::real as impact_score,
+               c.tags, c.names, c.created_at
         from contribution c ${where}
-        order by ${order_by === "recent" ? sql`c.created_at desc, c.id desc` : order_by === "oldest" ? sql`c.created_at asc, c.id asc` : sql`c.notability desc, c.created_at desc, c.id desc`}
+        order by ${order_by === "recent" ? sql`c.created_at desc, c.id desc` : order_by === "oldest" ? sql`c.created_at asc, c.id asc` : order_by === "impact" ? sql`impact_score desc, c.notability desc, c.created_at desc, c.id desc` : sql`c.notability desc, c.created_at desc, c.id desc`}
         limit ${limit} offset ${offset}`,
       sql<{ total: number }[]>`select count(*)::int as total from contribution c ${where}`,
     ]);
@@ -822,7 +843,7 @@ defineTool(
     outputSchema: QueryOut,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord). Nothing else is visible to it.",
+      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord). Nothing else is visible to it.",
     inputSchema: z.object({
       sql: z
         .string().max(8000)
@@ -925,6 +946,17 @@ defineTool(
         })
         .optional()
         .describe("For an amendment: replacement title, summary/description, and/or canonical names. Mathematical content cannot be changed in place."),
+      assesses_impact: refParam
+        .optional()
+        .describe("For kind='impact-assessment': the entry being assessed. Requires impact and records a T0 assesses-impact edge."),
+      impact: z
+        .object({
+          reach: z.number().int().min(0).max(5).describe("0 = local technical interest; 5 = broad, fundamental, internationally recognizable target."),
+          advance: z.number().int().min(0).max(5).describe("0 = bookkeeping; 5 = major new state-of-the-art mathematical advance."),
+          closure: z.number().int().min(0).max(5).describe("0 = exploratory fragment; 5 = complete resolution or classification at the stated scope."),
+        })
+        .optional()
+        .describe("A reviewable impact assessment. It affects impact ordering only after trusted promotion of both proposal and edge to T2."),
       signature: z
         .string()
         .optional()
@@ -933,7 +965,7 @@ defineTool(
         ),
     }),
   },
-  unmintingOnError(async ({ contributor_key, model_name, thinking_level, operator, metadata, amends, replacement, ...rest }) => {
+  unmintingOnError(async ({ contributor_key, model_name, thinking_level, operator, metadata, amends, replacement, assesses_impact, impact, ...rest }) => {
     const who = await writer(contributor_key);
     if ("error" in who) return fail({ error: who.error });
     const { identityId, freshKey } = who;
@@ -942,6 +974,12 @@ defineTool(
     }
     if (amends && rest.kind !== "amendment") {
       return fail({ error: "presentation changes are contributions of kind='amendment'." });
+    }
+    if ((assesses_impact === undefined) !== (impact === undefined)) {
+      return fail({ error: "assesses_impact and impact are one proposal; pass both or neither." });
+    }
+    if (assesses_impact && rest.kind !== "impact-assessment") {
+      return fail({ error: "reviewable impact scores are contributions of kind='impact-assessment'." });
     }
     const proposed = replacement
       ? {
@@ -966,6 +1004,13 @@ defineTool(
       amendmentTarget = found.id;
       links.push({ id: found.id, rel: "amends", note: "proposed presentation amendment" });
     }
+    let impactTarget: string | undefined;
+    if (assesses_impact) {
+      const found = await refOr(assesses_impact);
+      if ("failed" in found) return found.failed;
+      impactTarget = found.id;
+      links.push({ id: found.id, rel: "assesses-impact", note: "proposed reviewed impact assessment" });
+    }
     const replaced: string[] = [];
     for (const target of rest.supersedes ?? []) {
       const found = await refOr(target);
@@ -978,6 +1023,7 @@ defineTool(
       ...(thinking_level ? { thinking_level } : {}),
       ...(operator ? { operator } : {}),
       ...(amendmentTarget && proposed ? { amendment: { target: amendmentTarget, ...proposed } } : {}),
+      ...(impactTarget && impact ? { impact: { target: impactTarget, ...impact } } : {}),
     };
     logRequest("submit", identityId, { kind: rest.kind, title: rest.title });
     const result = await submit(identityId, {
@@ -1351,7 +1397,7 @@ defineTool(
     title: "Review queue (trusted)",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "The reviewer worklist: entries nobody has reviewed yet (T0/T1), pending refactor and presentation-amendment proposals, and recent verification failures. Two exclusions keep the worklist workable instead of handing every reviewer the same head of the list forever: an entry that already carries a review is out (include_reviewed brings them back), and so is your own work (include_own brings it back). `backlog` counts everything that matches, not just this page. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
+      "The reviewer worklist: entries nobody has reviewed yet (T0/T1), pending refactor, presentation-amendment, and impact-assessment proposals, and recent verification failures. Two exclusions keep the worklist workable instead of handing every reviewer the same head of the list forever: an entry that already carries a review is out (include_reviewed brings them back), and so is your own work (include_own brings it back). `backlog` counts everything that matches, not just this page. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
       kind: z.string().optional().describe("Only queue entries of this kind, for example 'proof' or 'conjecture'."),
@@ -1419,12 +1465,27 @@ defineTool(
       where ${amendmentWhere}
       order by tgt.notability desc, e.created_at asc
       limit 50`;
+    const impactWhere = sql`
+      e.rel = 'assesses-impact' and ec.status = 'active' and ec.tier = 0
+        and ac.status = 'active' and ac.kind = 'impact-assessment' and tgt.status = 'active'`;
+    const impactAssessments = await sql`
+      select e.contribution_id as assessment_edge, e.src as assessment_id, e.dst as target_id,
+             ac.title as assessment_title, tgt.title as target_title,
+             (ac.metadata->'impact') - 'target' as proposed,
+             ac.identity_id as by, e.created_at as proposed_at
+      from edge e
+      join contribution ec on ec.id = e.contribution_id
+      join contribution ac on ac.id = e.src
+      join contribution tgt on tgt.id = e.dst
+      where ${impactWhere}
+      order by tgt.notability desc, e.created_at asc
+      limit 50`;
     const failures = await sql`
       select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
       from verification v join contribution c on c.id = v.contribution_id
       where v.outcome in ('failed', 'inconclusive')
       order by v.updated_at desc limit 20`;
-    const [counts] = await sql<{ unreviewed: number; refactor_proposals: number; amendment_proposals: number }[]>`
+    const [counts] = await sql<{ unreviewed: number; refactor_proposals: number; amendment_proposals: number; impact_assessment_proposals: number }[]>`
       select (select count(*) from contribution_overview c where ${queued})::int as unreviewed,
              (select count(*) from edge e
                 join contribution ec on ec.id = e.contribution_id
@@ -1434,7 +1495,12 @@ defineTool(
                 join contribution ec on ec.id = e.contribution_id
                 join contribution ac on ac.id = e.src
                 join contribution tgt on tgt.id = e.dst
-                where ${amendmentWhere})::int as amendment_proposals`;
+                where ${amendmentWhere})::int as amendment_proposals,
+             (select count(*) from edge e
+                join contribution ec on ec.id = e.contribution_id
+                join contribution ac on ac.id = e.src
+                join contribution tgt on tgt.id = e.dst
+                where ${impactWhere})::int as impact_assessment_proposals`;
     return structured(ReviewQueueOut, {
       unreviewed,
       next: unreviewed.length === limit ? { offset: offset + limit } : null,
@@ -1442,9 +1508,11 @@ defineTool(
         unreviewed: unreviewed.length,
         refactor_proposals: proposals.length,
         amendment_proposals: amendments.length,
+        impact_assessment_proposals: impactAssessments.length,
       },
       refactor_proposals: proposals,
       amendment_proposals: amendments,
+      impact_assessment_proposals: impactAssessments,
       recent_verification_failures: failures,
     });
   },
@@ -1538,6 +1606,72 @@ defineTool(
     await sql`insert into event (kind, identity_id, payload)
               values ('tuning-changed', ${who.identityId}, ${sql.json({ changed, note } as never)})`;
     return structured(SetTuningOut, { ok: true, changed, note });
+  },
+);
+
+defineTool(
+  "apply_impact_assessment",
+  {
+    title: "Apply or reject an impact assessment (trusted)",
+    outputSchema: ApplyImpactAssessmentOut,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    description:
+      "Decide a pending T0 impact assessment. Approval promotes the assessment and its assesses-impact edge to T2; the target's reviewed reach, advance, and closure become the mean of the latest approved assessment from each identity. Rejection retracts the proposal and edge. Requires a trusted key.",
+    inputSchema: z.object({
+      contributor_key: trustedKeyParam,
+      assessment_id: z.string().uuid().describe("The T0 contribution of kind='impact-assessment' to decide."),
+      decision: z.enum(["approve", "reject"]),
+      note: z.string().min(1).describe("Independent review of the three scores and their rationale."),
+    }),
+  },
+  async ({ contributor_key, assessment_id, decision, note }) => {
+    const who = await trustedCheck(contributor_key);
+    if (!who.ok) return fail({ error: who.refusal });
+    logRequest("apply_impact_assessment", who.identityId, { assessment_id, decision });
+    type Impact = { target?: string; reach?: number; advance?: number; closure?: number };
+    const [row] = await sql<{ edge_id: string; target_id: string; proposed: Impact }[]>`
+      select e.contribution_id as edge_id, e.dst as target_id, ac.metadata->'impact' as proposed
+      from edge e
+      join contribution ec on ec.id = e.contribution_id
+      join contribution ac on ac.id = e.src
+      join contribution tgt on tgt.id = e.dst
+      where e.src = ${assessment_id} and e.rel = 'assesses-impact'
+        and ec.status = 'active' and ec.tier = 0
+        and ac.status = 'active' and ac.kind = 'impact-assessment'
+        and tgt.status = 'active'
+      order by e.created_at asc limit 1`;
+    if (!row) return fail({ error: "no pending impact assessment on that contribution" });
+    const proposed = row.proposed ?? {};
+    if (proposed.target !== row.target_id) {
+      return fail({ error: "impact metadata and assesses-impact edge disagree on the target" });
+    }
+    const scores = [proposed.reach, proposed.advance, proposed.closure];
+    if (scores.some((n) => !Number.isInteger(n) || (n as number) < 0 || (n as number) > 5)) {
+      return fail({ error: "reach, advance, and closure must each be integers from 0 to 5" });
+    }
+    await sql.begin(async (tx) => {
+      if (decision === "approve") {
+        await tx`update contribution set tier = 2, updated_at = now()
+                 where id in (${assessment_id}, ${row.edge_id})`;
+        await tx`insert into event (kind, contribution_id, identity_id, payload)
+                 values ('impact-assessment-applied', ${row.target_id}, ${who.identityId},
+                         ${tx.json({ assessment_id, reach: proposed.reach, advance: proposed.advance, closure: proposed.closure, note } as never)})`;
+      } else {
+        await tx`update contribution set status = 'retracted', updated_at = now()
+                 where id in (${assessment_id}, ${row.edge_id})`;
+        await tx`insert into event (kind, contribution_id, identity_id, payload)
+                 values ('impact-assessment-rejected', ${assessment_id}, ${who.identityId},
+                         ${tx.json({ target_id: row.target_id, note } as never)})`;
+      }
+    });
+    await refreshAround([assessment_id, row.edge_id, row.target_id]);
+    return structured(ApplyImpactAssessmentOut, {
+      ok: true,
+      decision,
+      assessment_id,
+      target_id: row.target_id,
+      note,
+    });
   },
 );
 

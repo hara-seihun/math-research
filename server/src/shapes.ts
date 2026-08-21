@@ -73,6 +73,17 @@ export const ListRow = z
       .strictObject({
         built_on_by: z.number().int().describe("Distinct active entries linking to this one."),
         settles: z.number().int().describe("Distinct active questions this entry answers, proves, disproves, refutes, or resolves."),
+        reviewed_impact: z
+          .strictObject({
+            reach: z.number(),
+            advance: z.number(),
+            closure: z.number(),
+            total: z.number(),
+            assessments: z.number().int(),
+            score: z.number(),
+          })
+          .optional()
+          .describe("Mean T2 reviewed impact dimensions and the resulting all-time score."),
       })
       .optional()
       .describe("Transparent graph signals behind notability-ranked browse results."),
@@ -572,6 +583,7 @@ export const ReviewQueueOut = z.strictObject({
     unreviewed: z.number().int(),
     refactor_proposals: z.number().int(),
     amendment_proposals: z.number().int(),
+    impact_assessment_proposals: z.number().int(),
   }),
   refactor_proposals: z.array(
     z.strictObject({
@@ -594,6 +606,22 @@ export const ReviewQueueOut = z.strictObject({
         title: z.string().optional(),
         summary: z.string().optional(),
         names: z.array(z.string()).optional(),
+      }),
+      by: z.string().nullable(),
+      proposed_at: iso,
+    }),
+  ),
+  impact_assessment_proposals: z.array(
+    z.strictObject({
+      assessment_edge: z.string(),
+      assessment_id: z.string(),
+      target_id: z.string(),
+      assessment_title: z.string(),
+      target_title: z.string(),
+      proposed: z.strictObject({
+        reach: z.number().int().min(0).max(5),
+        advance: z.number().int().min(0).max(5),
+        closure: z.number().int().min(0).max(5),
       }),
       by: z.string().nullable(),
       proposed_at: iso,
@@ -636,6 +664,14 @@ export const ApplyAmendmentOut = z.strictObject({
   amendment_id: z.string(),
   target_id: z.string(),
   changed: z.array(z.enum(["title", "summary", "names"])),
+  note: z.string(),
+});
+
+export const ApplyImpactAssessmentOut = z.strictObject({
+  ok: z.literal(true),
+  decision: z.enum(["approve", "reject"]),
+  assessment_id: z.string(),
+  target_id: z.string(),
   note: z.string(),
 });
 

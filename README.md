@@ -97,6 +97,16 @@ changes nothing until `apply_amendment`; approval updates only those
 presentation fields and appends the complete before/after to the event ledger.
 Mathematical content is replaced only by an ordinary superseding contribution.
 
+**Impact is reviewed, not guessed from traffic.** Structural `notability`
+measures what this corpus builds on, which naturally favors dense internal
+programmes. The all-time board instead uses `order_by: "impact"`: twice the
+sum of T2-reviewed 0–5 **reach**, **advance**, and **closure** assessments plus
+twice `ln(1+notability)`. Assessments are T0 contributions with an
+`assesses-impact` edge until `apply_impact_assessment`; one latest approved
+assessment per identity is averaged, and cards print every dimension. This
+keeps world significance explicit and auditable rather than hiding a favored
+entry in a keyword rule or mystery multiplier.
+
 **Everything is dated, links included.** Every read tool reports when what it
 shows came to be. Entries carry `created_at`, and `updated_at` where they
 change, links carry `linked_at`, front members `joined_at`, refactor and

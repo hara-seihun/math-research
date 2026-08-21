@@ -715,6 +715,17 @@ call get "{\"ref\":\"$EDIT_TARGET\"}" | python3 -c 'import sys,json;d=json.load(
 # rejects it and thereby exercises the other terminal decision.
 AMEND_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Unhelpful amendment\",\"summary\":\"Reject me.\",\"content\":\"No improvement.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Thing\"}}" | field '["id"]')
 
+# Contract: world-facing impact is a reviewed, explained signal separate from
+# graph density. A T0 assessment has no ranking effect; approval materializes
+# one vote per identity and impact ordering exposes its dimensions.
+IMPACT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment\",\"title\":\"Impact of the presentation invariant\",\"summary\":\"Rubric calibration.\",\"content\":\"Reach 5, advance 5, closure 5 for this synthetic contract target.\",\"assesses_impact\":\"$EDIT_TARGET\",\"impact\":{\"reach\":5,\"advance\":5,\"closure\":5}}" | field '["id"]')
+[[ $(psql -h "$WORK" -d math -tAc "select impact_assessments from contribution where id='$EDIT_TARGET'") == 0 ]] || fail "T0 impact assessment affected its target"
+call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(a["assessment_id"]=="'"$IMPACT"'" and a["proposed"]=={"reach":5,"advance":5,"closure":5} for a in d["impact_assessment_proposals"]) and d["backlog"]["impact_assessment_proposals"] >= 1' || fail "pending impact assessment missing from review queue"
+call apply_impact_assessment "{\"contributor_key\":\"$OPKEY\",\"assessment_id\":\"$IMPACT\",\"decision\":\"approve\",\"note\":\"Rubric values checked for the contract fixture.\"}" > /dev/null
+call search '{"kind":"problem","order_by":"impact","limit":1}' | python3 -c 'import sys,json;d=json.load(sys.stdin);r=d["results"][0];i=r["ranking"]["reviewed_impact"];assert r["id"]=="'"$EDIT_TARGET"'" and i["total"]==15 and i["assessments"]==1 and i["score"]>30' || fail "reviewed impact did not drive explained impact ordering"
+# One pending rejection lets the every-door census exercise that outcome too.
+IMPACT_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment\",\"title\":\"Bad impact assessment\",\"summary\":\"Reject me.\",\"content\":\"Unsupported scores.\",\"assesses_impact\":\"$EDIT_TARGET\",\"impact\":{\"reach\":0,\"advance\":0,\"closure\":0}}" | field '["id"]')
+
 # Contract: an authorship signature is a proof or it is nothing. A submission
 # carrying one is checked against the identity's registered public key before
 # anything is written, because a signature stored unverified reads as evidence
@@ -784,6 +795,7 @@ declare -A DOORS=(
   [set_tier]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$Q\",\"tier\":1,\"note\":\"n\"}"
   [apply_refactor]="{\"contributor_key\":\"$OPKEY\",\"refactor_id\":\"$PROPOSAL\",\"decision\":\"reject\",\"note\":\"n\"}"
   [apply_amendment]="{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$AMEND_REJECT\",\"decision\":\"reject\",\"note\":\"n\"}"
+  [apply_impact_assessment]="{\"contributor_key\":\"$OPKEY\",\"assessment_id\":\"$IMPACT_REJECT\",\"decision\":\"reject\",\"note\":\"n\"}"
   [grant_trust]="{\"contributor_key\":\"$OPKEY\",\"identity_id\":\"$OPID\",\"role\":\"operator\",\"note\":\"n\"}"
   [retract]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$SQ\",\"note\":\"contract test\"}"
   [register_public_key]="{\"contributor_key\":\"$KEY\",\"public_key\":\"$(openssl genpkey -algorithm ed25519 | openssl pkey -pubout -outform DER | base64 -w0)\"}"

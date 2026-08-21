@@ -28,8 +28,8 @@ const VIEWS = {
     status: (page) => `${page.total ?? 0} result-type entries in the rolling window`,
   },
   top: {
-    request: { kind: ["problem", "conjecture"], state: "settled", settled_by_min_tier: 2, limit: 25, order_by: "notability" },
-    explainer: "The all-time board: questions closed by a T2 reviewed link, ranked by how much the whole graph builds on them. Each card names what settled it.",
+    request: { kind: ["problem", "conjecture"], state: "settled", settled_by_min_tier: 2, limit: 25, order_by: "impact" },
+    explainer: "The all-time board: T2 reviewed closures ranked by reviewed reach, advance, and completeness plus strongly damped graph importance. Every score is explained on its card.",
     reasonLabel: "Why it ranks: ",
     empty: "The ledger has not settled any questions yet.",
     status: (page) => `${page.total ?? 0} questions with T2 reviewed closures, all time`,
@@ -112,6 +112,10 @@ function relativeTime(iso) {
 
 function rankingReasons(entry) {
   const reasons = [];
+  if (entry.ranking?.reviewed_impact) {
+    const impact = entry.ranking.reviewed_impact;
+    reasons.push(`reviewed impact ${impact.total}/15 (reach ${impact.reach}, advance ${impact.advance}, closure ${impact.closure}; ${impact.assessments} ${impact.assessments === 1 ? "assessment" : "assessments"})`);
+  }
   if (entry.state === "settled") reasons.push("settled — an active entry closes this question");
   if (entry.ranking?.settles) {
     reasons.push(`settles ${entry.ranking.settles} active ${entry.ranking.settles === 1 ? "question" : "questions"}`);

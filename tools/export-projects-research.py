@@ -180,14 +180,6 @@ obligations = {r["id"]: dict(r) for r in db.execute("select * from obligation")}
 retired = {
     r["obligation_id"]: dict(r) for r in db.execute("select * from obligation_retirement")
 }
-answered = {
-    r["dst_id"]
-    for r in db.execute(
-        "select distinct e.dst_id from edge e join claim c on c.id = e.src_id"
-        " where e.dst_type = 'obligation' and e.src_type = 'claim' and e.kind = 'answers'"
-        "   and c.status = 'admitted'"
-    )
-}
 obligation_aliases: dict[int, list[str]] = {}
 for r in db.execute("select obligation_id, alias from obligation_alias"):
     obligation_aliases.setdefault(r["obligation_id"], []).append(r["alias"])
@@ -197,6 +189,46 @@ for ob in obligations.values():
     by_program.setdefault(ob["program_handle"], []).append(ob)
 
 root_of = {ob["handle"]: ob for ob in obligations.values()}
+
+# ——— One question is one entry ——————————————————————————————————————
+# `obligation.node_id` is the predecessor's own join between an informal
+# obligation and the Lean `Prop` that states it formally. They are one question
+# in two languages, so they must become one entry: exported separately, the
+# formal copy has no claim answering it and derives `open` while the informal
+# copy derives `settled` from the same mathematics — which is how "Cell X1"
+# read as an open problem while the programme had it closed by five admitted
+# claims. The obligation is the survivor and carries the Lean statement; every
+# edge naming the node is re-keyed onto it.
+nodes = {r["id"]: dict(r) for r in db.execute("select * from node")}
+node_alts: dict[int, list[str]] = {}
+for r in db.execute("select node_id, decl_name from node_alt"):
+    node_alts.setdefault(r["node_id"], []).append(r["decl_name"])
+twin_obligation = {ob["node_id"]: ob["id"] for ob in obligations.values() if ob["node_id"]}
+
+
+def node_key(node_id: int) -> str:
+    twin = twin_obligation.get(node_id)
+    return f"obligation:{twin}" if twin else f"node:{node_id}"
+
+
+def node_names(node_id: int) -> list[str]:
+    decls = [nodes[node_id]["decl_name"], *node_alts.get(node_id, [])]
+    return decls + [d.split(".")[-1] for d in decls]
+
+
+def formal_block(node_id: int) -> str:
+    return (
+        "Formal statement (Lean 4 / Mathlib v4.33.0, kernel-elaborated as an open `Prop`):"
+        f"\n\n```lean\n{nodes[node_id]['statement_src']}\n```"
+    )
+
+
+def named_head(text: str) -> str | None:
+    """The short name in the "Cell X1: full statement" convention both tables use."""
+    head = (text or "").split(": ", 1)[0].strip()
+    if not head or len(head) > 90 or ". " in head or "\n" in head:
+        return None
+    return head[0].upper() + head[1:]
 
 front_key: dict[str, str] = {}
 for program, members in by_program.items():
@@ -234,16 +266,17 @@ for program, members in by_program.items():
 for ob in obligations.values():
     key = f"obligation:{ob['id']}"
     aliases = obligation_aliases.get(ob["id"], [])
+    formal = ob["node_id"] if ob["node_id"] in nodes else None
     emit(
         {
             "import_key": key,
             "kind": "problem",
-            "title": title_of(ob["exact_scope"]),
+            "title": named_head(ob["exact_scope"]) or title_of(ob["exact_scope"]),
             "summary": clean(ob["exact_scope"], 2000),
-            "content": ob["exact_scope"],
+            "content": ob["exact_scope"] + (f"\n\n{formal_block(formal)}" if formal else ""),
             "tier": 2,
             "status": "retracted" if ob["id"] in retired else "active",
-            "names": [ob["handle"]] + aliases,
+            "names": [ob["handle"]] + aliases + (node_names(formal) if formal else []),
             "created_at": ob["created_at"],
             "metadata": {
                 "imported_from": "projects-research",
@@ -252,6 +285,16 @@ for ob in obligations.values():
                 "work_kind": ob["obligation_kind"],
                 **({"program_handle": ob["program_handle"]} if ob["program_handle"] else {}),
                 **({"source_locator": ob["source_locator"]} if ob["source_locator"] else {}),
+                **(
+                    {
+                        "node_id": formal,
+                        "lean_decl": nodes[formal]["decl_name"],
+                        "registry_status": nodes[formal]["status"],
+                        "root_problem": bool(nodes[formal]["is_root"]),
+                    }
+                    if formal
+                    else {}
+                ),
                 **(
                     {"retired_because": retired[ob["id"]]["reason"]}
                     if ob["id"] in retired
@@ -280,11 +323,11 @@ for r in db.execute("select * from obligation_replacement"):
     )
 
 # ——— Formal open registry (Lean Props) —————————————————————————————————
-# The predecessor kept informal obligations and formal Lean `Prop`s in separate
-# tables with nothing joining them, so the same question could appear twice
-# with no way to tell. Where the formal gloss is word-for-word an obligation's
-# scope, they are one question in two languages; say so with an edge rather
-# than silently showing a reader two problems.
+# What `obligation.node_id` does not join, a word-for-word match still might:
+# where a registry gloss reads exactly as an obligation's scope, the two are
+# the same question and the export says so with an edge. A textual match is a
+# guess, though, so it links rather than merges — only the explicit column is
+# trusted to collapse two entries into one.
 def fold(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
@@ -295,37 +338,35 @@ for ob in obligations.values():
     scope_key.setdefault(fold(ob["exact_scope"]), key)
     scope_key.setdefault(fold(title_of(ob["exact_scope"])), key)
 
-for r in db.execute("select * from node"):
-    key = f"node:{r['id']}"
+for r in nodes.values():
+    key = node_key(r["id"])
     gloss = r["informal"] or slug_words(r["decl_name"].split(".")[-1])
-    # Registry glosses are written "short name: full statement"; the short name
-    # is the title the author already chose.
-    head = gloss.split(": ", 1)[0]
-    named = head if len(head) <= 90 and ". " not in head else None
-    lean = f"```lean\n{r['statement_src']}\n```"
-    emit(
-        {
-            "import_key": key,
-            "kind": "problem",
-            "title": (named[0].upper() + named[1:]) if named else title_of(gloss),
-            "summary": clean(gloss, 2000),
-            "content": f"{gloss}\n\nFormal statement (Lean 4 / Mathlib v4.33.0, kernel-elaborated as an open `Prop`):\n\n{lean}",
-            "tier": 2,
-            "names": [r["decl_name"], r["decl_name"].split(".")[-1]],
-            "created_at": r["created_at"],
-            "metadata": {
-                "imported_from": "projects-research",
-                "node_id": r["id"],
-                "lean_decl": r["decl_name"],
-                "registry_status": r["status"],
-                "root_problem": bool(r["is_root"]),
-                **({"resolved_by": r["resolved_by"]} if r["resolved_by"] else {}),
-            },
-        }
-    )
-    twin = scope_key.get(fold(gloss)) or scope_key.get(fold(title_of(gloss)))
-    if twin:
-        link(key, twin, "equivalent-to", "formal Lean statement of the same question")
+    named = named_head(gloss)
+    merged = key.startswith("obligation:")
+    if not merged:
+        emit(
+            {
+                "import_key": key,
+                "kind": "problem",
+                "title": named or title_of(gloss),
+                "summary": clean(gloss, 2000),
+                "content": f"{gloss}\n\n{formal_block(r['id'])}",
+                "tier": 2,
+                "names": node_names(r["id"]),
+                "created_at": r["created_at"],
+                "metadata": {
+                    "imported_from": "projects-research",
+                    "node_id": r["id"],
+                    "lean_decl": r["decl_name"],
+                    "registry_status": r["status"],
+                    "root_problem": bool(r["is_root"]),
+                    **({"resolved_by": r["resolved_by"]} if r["resolved_by"] else {}),
+                },
+            }
+        )
+        twin = scope_key.get(fold(gloss)) or scope_key.get(fold(title_of(gloss)))
+        if twin:
+            link(key, twin, "equivalent-to", "formal Lean statement of the same question")
     # A resolved registry entry names the Lean theorem that settled it. Record
     # that theorem as an entry of its own so the question is settled by
     # something in the graph, the way every other settled question is.
@@ -355,8 +396,9 @@ for r in db.execute("select * from node"):
         )
         link(proof_key, key, verdict, f"kernel-checked as {r['resolved_by']}")
 
-for r in db.execute("select * from node_alt"):
-    link(f"node:{r['node_id']}", f"node:{r['node_id']}", "equivalent-to", r["decl_name"])
+# An alternate Prop for the same node is not a second question — it is another
+# name for this one, kernel-checked iff-equivalent — so it rides along in
+# `names` (see node_names) and never becomes an entry or a self-loop.
 edges = [e for e in edges if e["src"] != e["dst"]]
 
 # ——— Research write-ups -> results, and their claims -> statements ————————
@@ -509,16 +551,20 @@ for r in db.execute("select * from obligation_route"):
 # their own notes, so the note marker names exactly the unrepaired remainder.
 NR2_CONSTANT_DST = "repaired from malformed obligation destination by nr2-link"
 
-TYPE_KEY = {"claim": "claim", "obligation": "obligation", "node": "node"}
+ENDPOINT = {
+    "claim": lambda i: f"claim:{i}",
+    "obligation": lambda i: f"obligation:{i}",
+    "node": node_key,  # follows the merge, so an edge never names a dropped twin
+}
 dropped_nr2 = 0
 for r in db.execute("select src_type, src_id, dst_type, dst_id, kind, note from edge"):
-    src_t, dst_t = TYPE_KEY.get(r["src_type"]), TYPE_KEY.get(r["dst_type"])
+    src_t, dst_t = ENDPOINT.get(r["src_type"]), ENDPOINT.get(r["dst_type"])
     if not src_t or not dst_t:
         continue
     if r["note"] and NR2_CONSTANT_DST in r["note"]:
         dropped_nr2 += 1
         continue
-    src, dst = f"{src_t}:{r['src_id']}", f"{dst_t}:{r['dst_id']}"
+    src, dst = src_t(r["src_id"]), dst_t(r["dst_id"])
     if src in exported and dst in exported and src != dst:
         link(src, dst, r["kind"], r["note"])
 

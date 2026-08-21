@@ -18,7 +18,9 @@ import { sql } from "../server/src/db.ts";
 import { NORM_VERSION, normalizeDecl, type NormalizedDecl } from "../server/src/similarity.ts";
 
 const all = process.argv.includes("--all");
-const BATCH = 5000;
+// Seven VALUES columns per row; 8,000 stays below PostgreSQL's 65,535
+// parameter ceiling while making a full 511k-row backfill finish under a minute.
+const BATCH = 8000;
 const workers = Array.from({ length: Math.min(8, navigator.hardwareConcurrency) }, () =>
   new Worker(new URL("./normalize-lean-worker.ts", import.meta.url).href),
 );

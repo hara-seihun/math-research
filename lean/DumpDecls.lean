@@ -86,6 +86,11 @@ unsafe def main (argv : List String) : IO UInt32 := do
       return 2
   let wanted : Std.HashSet Name := mods.foldl (·.insert ·) {}
   IO.FS.withFile outFile .write fun h => do
+    -- A module with no declarations is still a complete, useful dump: its
+    -- marker tells the loader to remove rows that disappeared since the last
+    -- index. Markers also carry the exact generation covered by this process.
+    for modName in mods do
+      h.putStrLn (Json.mkObj [("module", Json.str modName.toString)]).compress
     let n ← dumpEnv env wanted h
     IO.eprintln s!"wrote {n} declarations from {mods.size} module(s)"
   return 0

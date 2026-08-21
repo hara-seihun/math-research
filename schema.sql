@@ -422,6 +422,17 @@ create index if not exists lean_decl_statement_trgm_idx on lean_decl using gin (
 create index if not exists lean_decl_library_idx on lean_decl (library, is_proof);
 create index if not exists lean_decl_module_idx on lean_decl (module);
 
+-- One generation per module, including a tombstone for a module with no
+-- declarations. A long full dump must not resurrect rows that a newer patch
+-- index or deletion already reconciled while that dump was still running.
+create table if not exists lean_decl_module (
+  module text primary key,
+  indexed_at timestamptz not null default now()
+);
+insert into lean_decl_module (module, indexed_at)
+select module, max(indexed_at) from lean_decl group by module
+on conflict (module) do nothing;
+
 -- The same declaration with every arbitrary name replaced by its position:
 -- what `lean_similar` compares, and what makes "is this already proved?" an
 -- indexed equality rather than a scan. `norm_v` is the normalizer's version,

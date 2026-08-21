@@ -1462,6 +1462,8 @@ STATE=$(psql -h "$WORK" -d math -tAc "select state from patch_publication where 
 [[ $STATE == published ]] || fail "promoting a patch to T2 did not publish it (state: ${STATE:-none}, $(tail -3 "$WORK/verifier.log"))"
 grep -q 'theorem gamma' "$PATCH_REPO_DIR/MathlibPlus/Alpha.lean" || fail "the published patch is not in the library"
 [[ ! -f "$PATCH_REPO_DIR/MathlibPlus/Gamma.lean" ]] || fail "the published patch did not delete the module it folded in"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_decl_module where module = 'MathlibPlus.Gamma'") == 1 ]] \
+  || fail "publication did not leave an index tombstone for the deleted module"
 git -C "$PATCH_REPO_DIR" log -1 --format=%s | grep -q "fold Gamma into Alpha" || fail "publication did not commit with the patch's title"
 git -C "$PATCH_REPO_DIR" status --porcelain | grep -q . && fail "publication left the library checkout dirty"
 [[ -f "$PATCH_BUILD_LIB/MathlibPlus/Alpha.olean" ]] || fail "the verified olean was not installed into the build tree"

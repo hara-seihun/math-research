@@ -760,7 +760,12 @@ export async function publishPatches() {
   const dropped = await invalidateChecks([...changed, ...(check.detail?.rebuilt_modules ?? [])]);
   await reindexDecls(changed);
   if (deleted.length > 0) {
-    await sql`delete from lean_decl where module = any(${deleted}::text[])`;
+    await sql.begin(async (tx) => {
+      await tx`delete from lean_decl where module = any(${deleted}::text[])`;
+      await tx`insert into lean_decl_module (module, indexed_at)
+               select unnest(${deleted}::text[]), now()
+               on conflict (module) do update set indexed_at = excluded.indexed_at`;
+    });
   }
 
   await sql`insert into patch_publication (contribution_id, repo, state, check_id, commit_sha, detail)

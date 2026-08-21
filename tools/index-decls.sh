@@ -41,6 +41,10 @@ export LEAN_PATH="$LEAN_PATH:$PLUS_BUILD"
 export ELAN_HOME=${ELAN_HOME:-/var/lib/math-research/.elan}
 export ELAN_TOOLCHAIN=${ELAN_TOOLCHAIN:-$(cat "$LEAN_DIR/lean-toolchain")}
 export PATH=/run/current-system/sw/bin:$PATH
+# The generation begins before any dump. At load time, a module indexed after
+# this instant wins: a long full pass must not resurrect rows removed by a
+# patch that landed while it was still pretty-printing the corpus.
+RUN_STARTED=${DECL_INDEX_STARTED:-$(psql -d math -Atqc 'select clock_timestamp()')}
 
 # A batch that cannot be imported is bisected in fresh processes: MathlibPlus
 # declares the same name in more than one module, and two of those together are
@@ -79,21 +83,33 @@ load() { # <jsonl…> — replaces exactly the modules the dumps cover
       printf "\\\\copy decl_in (j) from '%s' with (format csv, quote e'\\\\x01', delimiter e'\\\\x02')\n" "$f"
     done
     cat <<'SQL'
-delete from lean_decl d using (select distinct j->>'module' as module from decl_in) m
- where d.module = m.module;
+create temp table incoming_module on commit drop as
+select distinct j->>'module' as module from decl_in;
+create temp table protected_module on commit drop as
+select i.module from incoming_module i join lean_decl_module m using (module)
+ where m.indexed_at > :'run_started'::timestamptz;
+delete from lean_decl d using incoming_module m
+ where d.module = m.module and not exists (
+   select 1 from protected_module p where p.module = m.module);
 insert into lean_decl (module, name, library, kind, statement, is_proof, indexed_at)
 select distinct on (j->>'module', j->>'name')
        j->>'module', j->>'name', split_part(j->>'module', '.', 1),
        j->>'kind', j->>'statement', (j->>'is_proof')::boolean, now()
   from decl_in
+ where j ? 'name' and not exists (
+   select 1 from protected_module p where p.module = j->>'module')
  on conflict (module, name) do update
     set library = excluded.library, kind = excluded.kind, statement = excluded.statement,
         is_proof = excluded.is_proof, indexed_at = excluded.indexed_at;
+insert into lean_decl_module (module, indexed_at)
+select i.module, now() from incoming_module i
+where not exists (select 1 from protected_module p where p.module = i.module)
+on conflict (module) do update set indexed_at = excluded.indexed_at;
 commit;
 analyze lean_decl;
 select library, count(*) from lean_decl group by library order by 2 desc;
 SQL
-  } | psql -q -v ON_ERROR_STOP=1 -d math
+  } | psql -q -v ON_ERROR_STOP=1 -v run_started="$RUN_STARTED" -d math
   # A freshly loaded row has a statement and no normal form, and a row without
   # one is invisible to `lean_similar`. Normalizing is pure CPU over text
   # already in the database, so it belongs to the load rather than to a later
@@ -117,6 +133,9 @@ if [[ -s $QUARANTINE ]]; then
 create temp table quarantined (module text);
 \\copy quarantined from '$QUARANTINE'
 delete from lean_decl d using quarantined q where d.module = q.module;
+insert into lean_decl_module (module, indexed_at)
+select module, now() from quarantined
+on conflict (module) do update set indexed_at = excluded.indexed_at;
 SQL
 fi
 

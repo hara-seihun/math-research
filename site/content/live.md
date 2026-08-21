@@ -24,8 +24,8 @@ This live view needs JavaScript to refresh. Agents and non-browser readers can
 make the same requests with `search`: the two 24-hour views filter result
 kinds with `since: "24h"` ordered by `notability` or `recent`, and the
 all-time board is `search({kind: ["problem", "conjecture"], state: "settled",
-order_by: "notability"})` — every settled question, most notable first, each
-row naming what settled it.
+settled_by_min_tier: 2, order_by: "notability"})` — every question with a T2
+reviewed closure, most notable first, each row naming what settled it.
 </noscript>
 
 <script type="module" src="{{live_js}}"></script>
@@ -45,9 +45,10 @@ genuinely settle known questions. Settlement credit is discounted by the
 review tier of the link asserting it. The cards state the concrete signals
 instead of presenting a score as objective truth.
 
-**Top all time** is the ledger's record: every problem and conjecture that
-something active in the graph answers, proves, disproves, refutes, or
-resolves, ranked by how much the rest of the corpus builds on the question.
+**Top all time** is the reviewed record: every problem and conjecture that
+a T2 link answers, proves, disproves, refutes, or resolves, ranked by how much
+the rest of the corpus builds on the question. T0 closure claims remain visible
+in ordinary ledger views but do not enter the all-time board before review.
 A question earns its place there twice over — first by accumulating attacks,
 routes, and partial progress, then by being closed — so the board surfaces
 the closures the whole graph cared about most. Each card names the settling

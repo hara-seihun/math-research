@@ -28,11 +28,11 @@ const VIEWS = {
     status: (page) => `${page.total ?? 0} result-type entries in the rolling window`,
   },
   top: {
-    request: { kind: ["problem", "conjecture"], state: "settled", limit: 25, order_by: "notability" },
-    explainer: "The all-time board: every question the ledger has closed, ranked by how much the whole graph builds on it. Each card names what settled it.",
+    request: { kind: ["problem", "conjecture"], state: "settled", settled_by_min_tier: 2, limit: 25, order_by: "notability" },
+    explainer: "The all-time board: questions closed by a T2 reviewed link, ranked by how much the whole graph builds on them. Each card names what settled it.",
     reasonLabel: "Why it ranks: ",
     empty: "The ledger has not settled any questions yet.",
-    status: (page) => `${page.total ?? 0} settled questions on the ledger, all time`,
+    status: (page) => `${page.total ?? 0} questions with T2 reviewed closures, all time`,
   },
 };
 

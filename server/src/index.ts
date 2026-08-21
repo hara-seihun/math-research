@@ -171,13 +171,14 @@ async function addRankingSignals(rows: Record<string, unknown>[]): Promise<Recor
     from unnest(${ids}::uuid[]) as w(id)
     join contribution q on q.id = w.id and q.kind in ('problem', 'conjecture')
     cross join lateral (
-      select distinct src.id as sid, src.kind, src.title, src.tier, src.notability
+      select src.id as sid, src.kind, src.title, src.tier, src.notability
       from edge e
       join contribution ec on ec.id = e.contribution_id
       join contribution src on src.id = e.src
       where e.dst = w.id and ec.status = 'active' and src.status = 'active'
         and e.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
-      order by src.notability desc, src.id
+      group by src.id, src.kind, src.title, src.tier, src.notability
+      order by max(ec.tier) desc, src.notability desc, src.id
       limit 3
     ) s`,
   ]);
@@ -424,6 +425,9 @@ defineTool(
       front: refParam.optional().describe("Restrict to members of one research programme."),
       lean_verified: z.boolean().optional().describe("True keeps only entries the Lean kernel checked. False keeps only the rest."),
       min_tier: z.number().int().min(0).max(3).optional().describe("Lowest review tier to include: 0 recorded, 1 confirmed as mathematics, 2 canon, 3 published."),
+      settled_by_min_tier: z
+        .number().int().min(0).max(3).optional()
+        .describe("For browse-mode questions: require an active settling link at least this reviewed tier. Use 2 for a canon-grade record of closures."),
       since: z.string().optional().describe("Only entries created since this ISO timestamp or interval such as '30m', '24h', '7d', or '2w'."),
       order_by: z
         .enum(["notability", "recent", "oldest"]).optional()
@@ -432,7 +436,7 @@ defineTool(
       ...pageParams(100, 10),
     }),
   },
-  async ({ query, kind, state, topic, front, lean_verified, min_tier, since, order_by, include_inactive, limit, offset }) => {
+  async ({ query, kind, state, topic, front, lean_verified, min_tier, settled_by_min_tier, since, order_by, include_inactive, limit, offset }) => {
     const parsedSince = since ? parseSince(since) : undefined;
     if (since && !parsedSince) return fail({ error: `invalid since value ${JSON.stringify(since)}; use an ISO timestamp or an interval such as 24h.` });
     const sinceAt = parsedSince ?? undefined;
@@ -465,6 +469,13 @@ defineTool(
         and (${state ?? null}::text is null or c.state = ${state ?? null})
         and (${topic ?? null}::text is null or c.tags @> array[${topic ?? null}]::text[])
         and (${min_tier ?? null}::int is null or c.tier >= ${min_tier ?? 0})
+        and (${settled_by_min_tier ?? null}::int is null or exists (
+              select 1 from edge se
+              join contribution sec on sec.id = se.contribution_id
+              join contribution setter on setter.id = se.src
+              where se.dst = c.id and se.rel in ('answers', 'proves', 'disproves', 'refutes', 'resolves')
+                and sec.status = 'active' and setter.status = 'active'
+                and sec.tier >= ${settled_by_min_tier ?? 0}))
         and (${sinceAt ?? null}::timestamptz is null or c.created_at >= ${sinceAt ?? null})
         and (${lean_verified ?? null}::bool is null or c.lean_verified = ${lean_verified ?? false})
         and (${frontId ?? null}::uuid is null or exists (

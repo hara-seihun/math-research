@@ -356,22 +356,33 @@ export async function related(args: RelatedArgs) {
   } else {
     // Words, for the caller who asked for words: a title or a typed phrase,
     // and the trigram index over `lower(title)` for the one they misspelled.
+    // Every term is demanded first, because ranking an OR of common terms
+    // means ranking a third of the corpus — 300ms against 2ms — and the loose
+    // query is only worth running when the strict one comes back short.
     const probeText = (args.text ?? aboutText.split("\n")[0] ?? "").slice(0, 300);
-    const { any: tsq } = queryParts(probeText);
+    const { all, any } = queryParts(probeText);
     const probe = normalizeText(probeText).slice(0, 100);
-    candidates = await sql.begin(async (tx: Tx) => {
-      await tx`select set_config('pg_trgm.similarity_threshold', '0.15', true)`;
-      return tx<Candidate[]>`
-        select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source, c.created_at,
-               case when ${wantsContent} then left(a.content, 4000) end as content
-        from contribution c left join artifact a on ${wantsContent} and a.hash = c.artifact_hash
-        where c.kind <> 'edge' and c.status = 'active'
-          and (${selfId}::uuid is null or c.id <> ${selfId})
-          and (c.search @@ to_tsquery('english', ${tsq}) or lower(c.title) % ${probe})
-        order by ts_rank(${RANK_WEIGHTS}::float4[], c.search, to_tsquery('english', ${tsq})) desc,
-                 c.notability desc
-        limit ${wantsContent ? 150 : args.limit}`;
-    });
+    const want = wantsContent ? 150 : args.limit;
+    const nominate = (tsq: string, fuzzy: boolean) =>
+      sql.begin(async (tx: Tx) => {
+        if (fuzzy) await tx`select set_config('pg_trgm.similarity_threshold', '0.15', true)`;
+        return tx<Candidate[]>`
+          select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source, c.created_at,
+                 case when ${wantsContent} then left(a.content, 4000) end as content
+          from contribution c left join artifact a on ${wantsContent} and a.hash = c.artifact_hash
+          where c.kind <> 'edge' and c.status = 'active'
+            and (${selfId}::uuid is null or c.id <> ${selfId})
+            and (c.search @@ to_tsquery('english', ${tsq}) or (${fuzzy} and lower(c.title) % ${probe}))
+          order by ts_rank(${RANK_WEIGHTS}::float4[], c.search, to_tsquery('english', ${tsq})) desc,
+                   c.notability desc
+          limit ${want}`;
+      });
+
+    candidates = await nominate(all, false);
+    if (candidates.length < want) {
+      const seen = new Set(candidates.map((c) => c.id));
+      candidates = [...candidates, ...(await nominate(any, true)).filter((c) => !seen.has(c.id))].slice(0, want);
+    }
   }
 
   let scored: (Record<string, unknown> & { id: string; similarity?: number })[] = candidates.map(

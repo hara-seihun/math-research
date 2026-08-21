@@ -1,10 +1,10 @@
 import { Worker } from "node:worker_threads";
-import type { NcdDone, NcdJob } from "./ncd-worker.ts";
+import type { Mode, NcdDone, NcdJob, Pair, Scored, Unit } from "./ncd-worker.ts";
 
 const WORKERS = Number(process.env.NCD_WORKERS ?? 2);
 const JOB_TIMEOUT_MS = Number(process.env.NCD_TIMEOUT_MS ?? 10_000);
 
-type Pending = { resolve: (scored: NcdDone["scored"]) => void; reject: (error: Error) => void; timer: Timer };
+type Pending = { resolve: (done: NcdDone) => void; reject: (error: Error) => void; timer: Timer };
 
 class NcdPool {
   private readonly workers: Worker[] = [];
@@ -19,7 +19,7 @@ class NcdPool {
       if (!waiter) return;
       this.pending.delete(done.id);
       clearTimeout(waiter.timer);
-      waiter.resolve(done.scored);
+      waiter.resolve(done);
     });
     // A worker that dies takes its in-flight job with it. Fail those callers
     // rather than leaving them hanging, and stand a replacement back up: the
@@ -43,8 +43,7 @@ class NcdPool {
     this.spawn(index);
   }
 
-  score(query: string, candidates: { id: string; content: string }[]): Promise<NcdDone["scored"]> {
-    if (candidates.length === 0) return Promise.resolve([]);
+  run(job: Omit<NcdJob, "id">): Promise<NcdDone> {
     if (this.workers.length < WORKERS) this.spawn(this.workers.length);
     const worker = this.workers[this.next++ % this.workers.length]!;
     const id = ++this.jobId;
@@ -54,12 +53,34 @@ class NcdPool {
         reject(new Error("ncd scoring timed out"));
       }, JOB_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timer });
-      worker.postMessage({ id, query, candidates } satisfies NcdJob);
+      worker.postMessage({ ...job, id } as NcdJob);
     });
   }
 }
 
 const pool = new NcdPool();
 
-export const scoreByCompression = (query: string, candidates: { id: string; content: string }[]) =>
-  pool.score(query, candidates);
+/**
+ * Rank candidates by alpha-normalized compression distance against a query.
+ * `normalized` says the texts are already in normal form — true for anything
+ * read out of `lean_decl.norm` or `lean_unit.norm`, false for text that just
+ * arrived.
+ */
+export async function rankBySimilarity(
+  args: { mode: Mode; query: string; candidates: Unit[]; normalized?: boolean },
+): Promise<Scored[]> {
+  if (args.candidates.length === 0) return [];
+  const done = await pool.run({ kind: "rank", ...args });
+  return done.kind === "rank" ? done.scored : [];
+}
+
+/** Near-duplicate pairs inside one set of units, above a similarity floor. */
+export async function clusterBySimilarity(
+  args: { mode: Mode; units: Unit[]; threshold: number; limit: number; normalized?: boolean },
+): Promise<{ pairs: Pair[]; compared: number }> {
+  if (args.units.length < 2) return { pairs: [], compared: 0 };
+  const done = await pool.run({ kind: "cluster", ...args });
+  return done.kind === "cluster" ? { pairs: done.pairs, compared: done.compared } : { pairs: [], compared: 0 };
+}
+
+export type { Pair, Scored, Unit };

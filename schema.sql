@@ -413,6 +413,51 @@ create index if not exists lean_decl_statement_trgm_idx on lean_decl using gin (
 create index if not exists lean_decl_library_idx on lean_decl (library, is_proof);
 create index if not exists lean_decl_module_idx on lean_decl (module);
 
+-- The same declaration with every arbitrary name replaced by its position:
+-- what `lean_similar` compares, and what makes "is this already proved?" an
+-- indexed equality rather than a scan. `norm_v` is the normalizer's version,
+-- so a change to it is a backfill this table can be asked for (see
+-- tools/normalize-lean.ts) rather than a silent mixture of two conventions.
+alter table lean_decl add column if not exists norm text;
+alter table lean_decl add column if not exists norm_hash text;
+alter table lean_decl add column if not exists norm_v integer;
+alter table lean_decl add column if not exists generated boolean not null default false;
+create index if not exists lean_decl_norm_hash_idx on lean_decl (norm_hash) where not generated;
+create index if not exists lean_decl_norm_trgm_idx on lean_decl using gin (norm gin_trgm_ops);
+create index if not exists lean_decl_norm_stale_idx on lean_decl (norm_v);
+
+-- Every declaration the ledger itself contains, as data: one row per
+-- declaration the kernel reported for a checked source, keyed by that source's
+-- hash so two entries that submitted the same Lean share the rows exactly as
+-- they share the check. This is `lean_decl`'s counterpart for submitted work,
+-- and the two are separate because they have separate lifecycles: one is
+-- rebuilt wholesale from built oleans, the other appears when a check passes.
+create table if not exists lean_unit (
+  check_hash text not null references lean_check (source_hash) on delete cascade,
+  name       text not null,
+  statement  text not null,
+  is_proof   boolean not null,
+  norm       text,
+  norm_hash  text,
+  norm_v     integer,
+  generated  boolean not null default false,
+  created_at timestamptz not null default now(),
+  primary key (check_hash, name)
+);
+create index if not exists lean_unit_norm_hash_idx on lean_unit (norm_hash) where not generated;
+create index if not exists lean_unit_norm_trgm_idx on lean_unit using gin (norm gin_trgm_ops);
+create index if not exists lean_unit_norm_stale_idx on lean_unit (norm_v);
+
+-- Which entries carry which checked declaration. A contribution reaches its
+-- units through the check it waited on, so this stays a view: nothing to keep
+-- in step, and a re-check of the same source is already the same rows.
+create or replace view lean_unit_entry as
+  select u.check_hash, u.name, u.statement, u.is_proof, u.norm, u.norm_hash, u.generated,
+         v.contribution_id, c.title, c.kind, c.tier, c.status, c.notability
+  from lean_unit u
+  join verification v on v.detail->>'check_hash' = u.check_hash
+  join contribution c on c.id = v.contribution_id;
+
 -- A proposed change to the library source, verified the same way a check is:
 -- content-addressed by (repo, base commit, diff) so an identical proposal is
 -- never applied and compiled twice. Rows record what happened when the patch

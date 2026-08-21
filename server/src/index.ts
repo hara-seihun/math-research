@@ -33,11 +33,12 @@ import { searchContributions, related, neighbourhood, createEdge, refreshNotabil
 import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
-  HelloOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
+  HelloOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
   RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetOriginOut, SetTierOut, SetTuningOut, structured, SubmitOut, TrailOut,
   TrailsOut,
 } from "./shapes.ts";
 import { indexSummary, searchDecls } from "./decls.ts";
+import { scanDuplicates, similarDeclarations } from "./lean-similar.ts";
 import { headSeq, newsPacket, seqBefore } from "./news.ts";
 
 const QUERY_ROW_CAP = 500;
@@ -284,7 +285,7 @@ const TOOLS: ToolDef[] = [];
 // question costs what one asking costs. Entries are dropped the moment any
 // write lands, on every instance, so "it is live and searchable right away"
 // stays literally true.
-const SHAREABLE = new Set(["search", "search_decls", "fronts", "frontier", "related", "get", "query", "trails", "guides", "news"]);
+const SHAREABLE = new Set(["search", "search_decls", "lean_similar", "fronts", "frontier", "related", "get", "query", "trails", "guides", "news"]);
 
 // Tools that move the corpus, and so retire every shared read above.
 const WRITES = new Set(["submit", "link", "trail", "set_tier", "set_origin", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "reject", "grant_trust"]);
@@ -746,13 +747,13 @@ defineTool(
     title: "Find related work",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "On-demand relatedness. Nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions three ways: 'semantic' (meaning, via on-box embeddings, which finds related work even when the wording differs), 'ncd' (alpha-normalized compression distance. Shared structure), or 'lexical'. Great for spotting duplicates, prior art, and links worth making. It only shows you candidates; you decide what to link.",
+      "On-demand relatedness. Nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions three ways: 'semantic' (meaning, via on-box embeddings, which finds related work even when the wording differs), 'ncd' (alpha-normalized compression distance: variables, constants and names are replaced by their first-occurrence position and what survives is compared by how much it compresses away, so two entries doing the same thing with different letters rank as what they are), or 'lexical'. Great for spotting duplicates, prior art, and links worth making. For Lean specifically, lean_similar is sharper. It only shows you candidates; you decide what to link.",
     inputSchema: z.object({
       ref: refParam.optional().describe("Find things related to this entry (id, name, or title)."),
       text: z.string().optional().describe("…or to this free text (a statement, an idea)."),
       method: z
         .enum(["semantic", "ncd", "lexical"]).default("semantic")
-        .describe("'semantic' compares meaning through on-box embeddings and is the default. 'ncd' compares by compression distance, which catches shared structure that wording hides. 'lexical' compares words."),
+        .describe("'semantic' compares meaning through on-box embeddings and is the default. 'ncd' compares structure after alpha normalization, which catches shared shape that wording hides. 'lexical' compares words."),
       limit: z.number().int().min(1).max(50).default(10).describe("How many neighbours to return, 1 to 50."),
     }),
   },
@@ -1190,6 +1191,51 @@ defineTool(
         rows.length === 0
           ? "nothing matches every term. Drop a term, try the name fragment alone, or search the statement instead — this indexes what exists, so an empty answer is a real gap and formalizing it is a contribution."
           : "import the module a result names and use it. `is_proof: false` means a definition or a stated proposition, not a proved fact.",
+    });
+  },
+);
+
+defineTool(
+  "lean_similar",
+  {
+    title: "Find Lean that already says this",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: [
+      "Structural duplicate detection over every Lean this ledger can see: the pinned libraries (Mathlib, its dependencies, all of MathlibPlus) and the declarations of every checked submission here.",
+      "Names are not what is compared. A declaration is alpha-normalized first — bound variables, universe parameters, hypothesis names and the declaration's own name become positions, while constants, operators, types and structure stay — and what is left is ranked by compression distance. So `∀ (n : ℕ), n + 0 = n` and `∀ (k : ℕ), k + 0 = k` are one statement, and `exact: true` means the two say the same thing modulo naming.",
+      "Three ways in. Paste `source` to ask 'is this already proved?' before you prove it. Give a declaration `name` to find its twins. Give `scan` a library or module subtree — or `ledger: true` — to sweep a whole namespace for statements that appear more than once, which is where deduplication patches come from.",
+      "Lean's generated declarations (`.injEq`, `.mk`, recursors, match equations) are classified out: they are identical across every structure with the same field types and nobody can deduplicate them. This produces an attention list, not a proof of equivalence — read the statements before you act on them.",
+    ].join(" "),
+    inputSchema: z.object({
+      source: z.string().optional().describe("Lean source to look for: a theorem, a lemma, a bare statement. Fenced blocks are unwrapped."),
+      name: z.string().optional().describe("…or the exact name of a declaration already indexed, e.g. 'Finset.sum_le_card_nsmul'."),
+      scan: z.boolean().default(false).describe("Sweep a namespace instead of asking about one declaration. Needs library, module, or ledger."),
+      library: z.string().optional().describe("Restrict to one library: 'Mathlib', 'MathlibPlus', 'Batteries', 'Init'."),
+      module: z.string().optional().describe("Restrict to one module or its subtree, e.g. 'MathlibPlus.GraphTheory'."),
+      ledger: z.boolean().default(false).describe("With scan: sweep the ledger's own checked Lean rather than a library."),
+      threshold: z.number().min(0.3).max(1).default(0.8).describe("With scan: how similar a pair must be to be worth reporting. 1 is identical modulo names."),
+      limit: z.number().int().min(1).max(50).default(10).describe("How many matches, or how many duplicate groups."),
+    }),
+  },
+  async ({ source, name, scan, library, module, ledger, threshold, limit }) => {
+    logRequest("lean_similar", null, { name, scan, library, module, ledger });
+    if (scan) {
+      const result = await scanDuplicates({ library, module, ledger, threshold, limit });
+      if ("error" in result) return fail(result);
+      return structured(LeanSimilarOut, { mode: "scan", ...result });
+    }
+    const result = await similarDeclarations({ source, name, library, module, limit });
+    if ("error" in result) return fail(result);
+    const { exact, near } = result;
+    return structured(LeanSimilarOut, {
+      mode: "declaration",
+      ...result,
+      note:
+        exact.length > 0
+          ? `${exact.length} declaration${exact.length === 1 ? " says" : "s say"} exactly this modulo names. Use it rather than proving it again — or, if both are yours, that is a deduplication worth submitting as a patch.`
+          : near.length === 0
+            ? "nothing structurally close. That is a real gap: proving it here is a contribution."
+            : "nothing identical. The near list shares structure, which usually means a generalization, a special case, or a lemma you can reuse.",
     });
   },
 );

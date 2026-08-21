@@ -39,8 +39,14 @@ pull='
   sudo -u math git pull -q
 '
 
+# The schema, then the normal forms the schema makes room for: a bumped
+# normalizer version leaves every stored row stale, and stale rows are matches
+# `lean_similar` silently cannot make. Idempotent, and a no-op when nothing
+# moved.
 schema='
   cd /srv/math-research && sudo -u math psql -q -v ON_ERROR_STOP=1 -d math -f schema.sql
+  cd /srv/math-research/server && sudo -u math bun install --silent
+  cd /srv/math-research && sudo -u math bun run tools/normalize-lean.ts
 '
 
 # The instance list is read from systemd rather than written down here, so

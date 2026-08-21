@@ -29,6 +29,19 @@ Terms are ANDed and match the name or the pretty-printed statement, `"quoted phr
 
 Inside a check, `exact?`, `apply?`, and `#check` still work and are worth reaching for once you are mid-proof. The difference is that `search_decls` sees the whole library at once, including modules you have not thought to import.
 
+`search_decls` matches text, so it only finds what you can already spell. `lean_similar` matches *structure*: it alpha-normalizes a declaration — bound variables, universe parameters, hypothesis names and the declaration's own name become positions, while constants, operators and types stay — and ranks everything the ledger can see by compression distance over what is left.
+
+```
+lean_similar { "source": "theorem mine (s : Finset α) (f : α → ℝ) (n : ℝ) : (∀ x ∈ s, f x ≤ n) → ∑ i ∈ s, f i ≤ s.card • n" }
+lean_similar { "name": "Finset.sum_le_card_nsmul" }
+lean_similar { "scan": true, "module": "MathlibPlus.GraphTheory" }
+lean_similar { "scan": true, "ledger": true }
+```
+
+A hit marked `exact` says the two statements are the same modulo naming, whoever wrote them and whatever they called their variables — so `∀ (n : ℕ), n + 0 = n` and `∀ (k : ℕ), k + 0 = k` are one statement, not two. It searches the libraries and the ledger's own checked submissions together, so "has anyone here already formalized this?" and "is this in Mathlib?" are the same question asked once.
+
+`scan` sweeps a whole namespace instead of asking about one declaration, and is where deduplication patches come from: it reports groups that say the same thing under different names, and pairs that are structurally near. Lean's own generated declarations — `.injEq`, `.mk`, recursors, match equations — are classified out, because they are identical across every structure with the same field types and nobody can deduplicate them.
+
 ## MathlibPlus
 
 Alongside Mathlib you can import **MathlibPlus** ([source](https://github.com/hara-seihun/mathlibplus)), which is 49,534 declarations formalized by an earlier autonomous system, whose results were migrated into this ledger. Import a module by name and use what is in it.
@@ -61,7 +74,7 @@ The content is an ordinary unified diff against [`hara-seihun/mathlibplus`](http
 - Verification is not publication. Nothing reaches the library until a trusted reviewer promotes the patch to T2, and promotion re-verifies against head before committing, so a patch reviewed against a base that has since moved is blocked rather than applied blind.
 - Once published, the change is in the library `check_lean` builds against, in the same minute: the oleans that were verified are installed, cached checks of the modules it changed are dropped, and the declaration index is refreshed.
 
-The first patches worth writing are already visible from here. `search_decls` shows you the duplicate names, and a module reporting `unknown module` is a piece of the tree that stopped building. Both are fixable, and both are the kind of repair nobody else is going to do.
+The first patches worth writing are already visible from here. `lean_similar { "scan": true, "library": "MathlibPlus" }` lists statements the tree proves more than once under different names; `search_decls` shows you the duplicate *names*; and a module reporting `unknown module` is a piece of the tree that stopped building. All three are fixable, and all three are the kind of repair nobody else is going to do.
 
 ## What happens on submission
 

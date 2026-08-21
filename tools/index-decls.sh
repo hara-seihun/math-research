@@ -89,6 +89,11 @@ analyze lean_decl;
 select library, count(*) from lean_decl group by library order by 2 desc;
 SQL
   } | psql -q -v ON_ERROR_STOP=1 -d math
+  # A freshly loaded row has a statement and no normal form, and a row without
+  # one is invisible to `lean_similar`. Normalizing is pure CPU over text
+  # already in the database, so it belongs to the load rather than to a later
+  # deploy that may not come.
+  bun run tools/normalize-lean.ts
 }
 
 if [[ $# -gt 0 ]]; then

@@ -954,6 +954,7 @@ declare -A DOORS=(
   [hello]='{}'
   [search]='{"query":"frontier test question"}'
   [search_decls]='{"query":"csSup_le"}'
+  [lean_similar]='{"source":"theorem contract_door (n : Nat) : n + 0 = n := by simp"}'
   [fronts]='{}'
   [query]='{"sql":"select kind, count(*) as n from q_entries group by kind order by n desc"}'
   [frontier]="{\"ref\":\"$Q\"}"
@@ -1058,6 +1059,42 @@ decls '{"query":"widget","proofs_only":true}' | python3 -c 'import sys,json; ass
   || fail "proofs_only returned a definition"
 call search_decls '{}' | python3 -c 'import sys,json; d=json.load(sys.stdin); assert {i["library"] for i in d["index"]} == {"Mathlib","MathlibPlus"}, d' \
   || fail "search_decls did not report what is indexed"
+
+# Contract: alpha-normalized similarity compares what a declaration says, not
+# what anyone called it. These three differ only in binder names and in the
+# name of the declaration itself, so they are one statement; the fourth says
+# something else and must not be swept in with them. The generated one is
+# Lean's own boilerplate and is classified out of every answer.
+psql -q -h "$WORK" -d math -c "insert into lean_decl (module, name, library, kind, statement, is_proof) values
+  ('MathlibPlus.Dup.A', 'MathlibPlus.Dup.A.sum_bound', 'MathlibPlus', 'theorem',
+   '∀ {α : Type u_1} (s : Finset α) (f : α → ℝ) (n : ℝ), (∀ x ∈ s, f x ≤ n) → ∑ i ∈ s, f i ≤ s.card • n', true),
+  ('MathlibPlus.Dup.B', 'MathlibPlus.Dup.B.bounded_sum', 'MathlibPlus', 'theorem',
+   '∀ {β : Type u_7} (t : Finset β) (g : β → ℝ) (c : ℝ), (∀ y ∈ t, g y ≤ c) → ∑ j ∈ t, g j ≤ t.card • c', true),
+  ('MathlibPlus.Dup.C', 'MathlibPlus.Dup.C.other', 'MathlibPlus', 'theorem',
+   '∀ (p q : Prop), p ∧ q → q ∧ p', true),
+  ('MathlibPlus.Dup.A', 'MathlibPlus.Dup.A.Config.mk.injEq', 'MathlibPlus', 'theorem',
+   '∀ {α : Type u_1} (s : Finset α) (f : α → ℝ) (n : ℝ), (∀ x ∈ s, f x ≤ n) → ∑ i ∈ s, f i ≤ s.card • n', true)"
+bun run tools/normalize-lean.ts > "$WORK/normalize.log" 2>&1 || fail "normalize-lean failed: $(tail -3 "$WORK/normalize.log")"
+
+call lean_similar '{"name":"MathlibPlus.Dup.A.sum_bound"}' \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); names=[m["name"] for m in d["exact"]]; assert names==["MathlibPlus.Dup.B.bounded_sum"], d' \
+  || fail "lean_similar did not recognize a renamed copy as the same statement"
+
+# The same question asked with source nobody has ever indexed, in a third set
+# of names: normalization happens on the way in, not only at index time.
+call lean_similar '{"source":"theorem entirely_different_name {γ : Type u_3} (u : Finset γ) (h : γ → ℝ) (b : ℝ) : (∀ z ∈ u, h z ≤ b) → ∑ k ∈ u, h k ≤ u.card • b"}' \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); assert {m["name"] for m in d["exact"]} == {"MathlibPlus.Dup.A.sum_bound","MathlibPlus.Dup.B.bounded_sum"}, d' \
+  || fail "lean_similar did not match pasted source against the indexed twins"
+
+call lean_similar '{"scan":true,"library":"MathlibPlus"}' \
+  | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+groups = [g for g in d["identical"] if len(g["members"]) > 1]
+assert len(groups) == 1, d
+names = {m["name"] for m in groups[0]["members"]}
+assert names == {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum"}, d
+' || fail "a scan did not group the duplicate pair, or swept in generated or unrelated declarations"
 
 # Contract: a patch is a change to the library, verified by applying it and
 # building what it touches. A diff that does not apply is a failure with the

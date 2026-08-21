@@ -1,7 +1,7 @@
 import type { TransactionSql } from "postgres";
 import { sql } from "./db.ts";
 import { sha256hex } from "./identity.ts";
-import { scoreByCompression } from "./ncd.ts";
+import { rankBySimilarity } from "./ncd.ts";
 
 /** The handle a sql.begin callback receives. Spelled out, because
  *  sql.begin is overloaded and inferring it lands on `never`. */
@@ -287,17 +287,16 @@ export async function neighbourhood(id: string, opts?: { rel?: string; offset?: 
 
 // --- Similarity oracle (NCD) ------
 // On-demand relatedness, never a stored backlog. A cheap lexical prefilter
-// nominates candidates; alpha-normalized NCD (compression distance) ranks how
-// much structural information each shares with the query. Agents call this,
-// look, and decide what to link. The tool proposes nothing on its own.
+// nominates candidates; alpha-normalized NCD ranks how much structural
+// information each shares with the query — variables, constants and names
+// replaced by their first-occurrence position, then compression distance over
+// what is left, so two entries doing the same thing with different letters
+// score as what they are. Agents call this, look, and decide what to link.
+// The tool proposes nothing on its own.
 //
-// The compression itself runs in a worker (see ncd.ts): it is the only
-// unbroken stretch of CPU in request handling, and on a single-threaded
-// runtime it was 150 gzips long.
-function normalizeForNcd(s: string): string {
-  return normalizeText(s).replace(/\s+/g, " ").trim().slice(0, 4000);
-}
-
+// Normalization and compression both run in a worker (see ncd.ts): together
+// they are the only unbroken stretch of CPU in request handling, and on a
+// single-threaded runtime that stretch is 150 units long.
 export type RelatedArgs = { id?: string; text?: string; method: "ncd" | "lexical" | "semantic"; limit: number };
 
 export async function related(args: RelatedArgs) {
@@ -351,12 +350,12 @@ export async function related(args: RelatedArgs) {
     ({ content: _content, ...c }) => c as Record<string, unknown> & { id: string },
   );
   if (wantsContent) {
-    const q = normalizeForNcd(queryText);
     const byId = new Map(
-      (await scoreByCompression(
-        q,
-        candidates.map((c) => ({ id: c.id, content: normalizeForNcd(c.content ?? "") })),
-      )).map((s) => [s.id, s.similarity]),
+      (await rankBySimilarity({
+        mode: "prose",
+        query: queryText,
+        candidates: candidates.map((c) => ({ id: c.id, text: c.content ?? "" })),
+      })).map((s) => [s.id, s.similarity]),
     );
     scored = scored.map((c) => ({ ...c, similarity: byId.get(c.id) ?? 0 }));
     scored.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));

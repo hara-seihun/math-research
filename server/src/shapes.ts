@@ -435,6 +435,57 @@ export const SearchDeclsOut = z.strictObject({
   your_contributor_key: z.string().optional(),
 });
 
+const LeanMatch = z.strictObject({
+  origin: z.enum(["library", "ledger"]).describe("'library' is a pinned Lean library; 'ledger' is a checked submission here."),
+  name: z.string(),
+  statement: z.string(),
+  is_proof: z.boolean(),
+  similarity: z.number().describe("1 means the statements are identical once names are normalized away."),
+  exact: z.boolean(),
+  module: z.string().optional().describe("The module to import, for a library hit."),
+  library: z.string().optional(),
+  contribution_id: z.string().optional(),
+  title: z.string().optional(),
+  tier: z.number().int().optional(),
+});
+
+const LeanGroup = z.strictObject({
+  similarity: z.number(),
+  statement: z.string(),
+  members: z.array(
+    z.strictObject({
+      name: z.string(),
+      module: z.string().optional(),
+      library: z.string().optional(),
+      contribution_id: z.string().optional(),
+      title: z.string().optional(),
+    }),
+  ),
+});
+
+export const LeanSimilarOut = z.discriminatedUnion("mode", [
+  z.strictObject({
+    mode: z.literal("declaration"),
+    asked: z.strictObject({
+      name: z.string(),
+      statement: z.string(),
+      normalized: z.string().describe("What was actually compared: the statement with every arbitrary name replaced by its position."),
+    }),
+    exact: z.array(LeanMatch).describe("Declarations whose statement is this one modulo naming."),
+    near: z.array(LeanMatch),
+    searched: z.strictObject({ library: z.number().int(), ledger: z.number().int() }).describe("How many candidates the structural prefilter nominated."),
+    note: z.string(),
+  }),
+  z.strictObject({
+    mode: z.literal("scan"),
+    scanned: z.number().int(),
+    identical: z.array(LeanGroup).describe("Groups saying the same thing modulo names; one member of each is redundant."),
+    near: z.array(LeanGroup),
+    compared: z.number().int().describe("Pairs the scan actually scored, after bucketing."),
+    note: z.string(),
+  }),
+]);
+
 export const LinkOut = z.strictObject({
   ok: z.literal(true),
   edge_id: z.string(),

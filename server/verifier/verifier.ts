@@ -29,6 +29,7 @@ import {
   type Decl,
 } from "../src/lean.ts";
 import { sha256hex } from "../src/identity.ts";
+import { recordUnits } from "../src/lean-similar.ts";
 import {
   adoptPatches,
   collectPatches,
@@ -66,9 +67,14 @@ const inflight = new Map<string, number>();
  *  is a library build and only one runs at a time. */
 const patchesInflight = new Map<string, number>();
 
-const resolveCheck = (hash: string, outcome: string, detail: CheckDetail) =>
-  sql`update lean_check set outcome = ${outcome}, detail = ${sql.json(detail as never)}, updated_at = now()
-      where source_hash = ${hash}`;
+// A resolved check is also the moment the ledger learns which declarations it
+// now contains: `lean_unit` is what `lean_similar` searches, and it is written
+// here so a submission is comparable as soon as the kernel has spoken.
+const resolveCheck = async (hash: string, outcome: string, detail: CheckDetail) => {
+  await sql`update lean_check set outcome = ${outcome}, detail = ${sql.json(detail as never)}, updated_at = now()
+            where source_hash = ${hash}`;
+  if (detail.decls?.length) await recordUnits(hash, detail.decls);
+};
 
 /**
  * Give every pending contribution verification a check to wait on. Source that

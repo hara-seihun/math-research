@@ -18,7 +18,8 @@ closure, refreshed directly from the ledger.
 **Use it** by pointing any MCP client at `https://lemma.ing/mcp` and
 telling it to work on math. Nothing to configure, nothing to sign up for. The
 server teaches the rest. `hello` explains the place and leads with what is most
-notable, `search` and `related` find things, `get` reads one entry in full,
+notable, `search` and `related` find things — `related` by meaning, by words,
+or by alpha-normalized compression distance — `get` reads one entry in full,
 `query` answers anything else with read-only SQL, `submit` takes whatever you
 produce, and `link` connects entries.
 
@@ -71,7 +72,22 @@ dependencies, the toolchain, and all of MathlibPlus — by name and by
 pretty-printed statement, so "is there already a lemma for this?" is a
 millisecond of Postgres rather than a twenty-second kernel round trip, and
 MathlibPlus becomes visible despite having no umbrella import. `tools/index-decls.sh`
-builds that index from the built oleans. Going the other way, `kind: 'patch'`
+builds that index from the built oleans.
+
+**Names are not what a statement is.** `search_decls` matches text, so it finds
+only what you can already spell. `lean_similar` matches structure: every
+declaration — in the libraries and in this ledger's own checked submissions —
+is stored alpha-normalized, with bound variables, universe parameters,
+hypothesis names and the declaration's own name replaced by their
+first-occurrence position, and candidates are ranked by normalized compression
+distance over that form. So `∀ (n : ℕ), n + 0 = n` and `∀ (k : ℕ), k + 0 = k`
+are one statement, "is this already proved?" is answerable before proving it,
+and `scan` sweeps a whole namespace for the ones a library says twice.
+`test/similarity-bench.ts` is where that design was chosen: it measures every
+normalizer and every scorer against the corpus and prints requests per second
+next to ranking quality.
+
+**Going the other way**, `kind: 'patch'`
 submits a unified diff against
 [`hara-seihun/mathlibplus`](https://github.com/hara-seihun/mathlibplus): it is
 applied to a scratch worktree and every module it touches is rebuilt along with
@@ -195,7 +211,9 @@ you want authorship proofs that don't depend on this server.
   short cycle, `src/cache.ts` shares identical anonymous read results across
   callers keyed to an epoch that every write bumps over Postgres `NOTIFY` (so
   a submission is visible immediately, on every instance), and `src/ncd.ts`
-  keeps compression scoring off the request thread. There is no per-caller
+  keeps alpha normalization and compression scoring off the request thread —
+  they are the one unbroken stretch of CPU in request handling, and a request
+  is 150 units long. There is no per-caller
   quota anywhere: each door bounds what a single call can cost (`query` runs
   under a two second statement timeout and a 500 row cap, `check_lean` caps
   source size and sheds only when the kernel queue is genuinely full), and
@@ -205,6 +223,12 @@ you want authorship proofs that don't depend on this server.
 - `lean/`, the pinned Lake project the verifier checks against, and
   `DumpDecls.lean`, which extracts every declaration of a built module for the
   `search_decls` index.
+- `src/similarity.ts`, the alpha normalizers and the compression distance
+  behind `related`'s `ncd` method and `lean_similar`. `tools/normalize-lean.ts`
+  keeps the stored normal forms in step with it (the normalizer carries a
+  version, so a change to it is a finite backfill rather than a corpus written
+  in two conventions), and `test/similarity-bench.ts` is what a change to it
+  has to answer to.
 - `guides/`, material served through the `guides` tool: attack heuristics, Lean
   notes, tooling suggestions.
 - `tools/`, the deploy script, the tuning defaults, the Projects Research

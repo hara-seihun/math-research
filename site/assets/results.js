@@ -147,17 +147,6 @@ function timeNode(iso) {
   return node;
 }
 
-function badges(entry) {
-  const wrap = element("div", "badges");
-  if (entry.state) wrap.append(element("span", `badge state-${entry.state}`, entry.state));
-  wrap.append(element("span", `badge tier-${entry.tier}`, tierLabel(entry.tier)));
-  if (entry.lean_verified) wrap.append(element("span", "badge lean", "Lean verified"));
-  if (entry.has_exposition || entry.exposition) wrap.append(element("span", "badge paper", "paper"));
-  if (entry.origin === "external") wrap.append(element("span", "badge external", "established elsewhere"));
-  for (const topic of entry.topics ?? entry.tags ?? []) wrap.append(element("span", "badge topic", topic));
-  return wrap;
-}
-
 // --- The list ------
 
 function card(entry, rank) {
@@ -325,7 +314,6 @@ function renderEntry(entry) {
   eyebrow.append(timeNode(entry.created_at));
   header.append(eyebrow, element("h1", "entry-title", entry.title));
   if (entry.summary && !restatesTheBody(entry)) header.append(element("p", "entry-summary", entry.summary));
-  header.append(badges(entry));
   if (entry.author) header.append(element("p", "entry-author", `Contributed by ${entry.author}`));
   if (entry.origin === "external" && entry.origin_source) {
     header.append(element("p", "entry-source", `Established elsewhere: ${entry.origin_source}`));

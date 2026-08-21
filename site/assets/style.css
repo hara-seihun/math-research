@@ -324,13 +324,6 @@ td:nth-child(2) { color: var(--muted); white-space: nowrap; }
   line-height: 1.55;
 }
 
-.badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  margin: 0.65rem 0;
-}
-
 .badge {
   border: 1px solid var(--rule);
   border-radius: 999px;

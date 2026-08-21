@@ -87,9 +87,12 @@ esac
 # What ships is a commit, so an edit still sitting in the working tree would
 # deploy silently as its predecessor and be measured as if it were the change.
 if ! git diff --quiet -- server schema.sql tools lean; then
-  echo "uncommitted changes to code the guest runs — commit them or they will not deploy:" >&2
-  git diff --name-only -- server schema.sql tools lean >&2
-  exit 1
+  echo "these will deploy as their committed version, not as they are here:" >&2
+  git diff --name-only -- server schema.sql tools lean | sed 's/^/  /' >&2
+  # Another agent editing the same checkout is normal, and their half-written
+  # file is not a reason nobody can deploy. Yours is: set this when the dirty
+  # files are not the change you are deploying.
+  [[ -n "${DEPLOY_DIRTY_OK:-}" ]] || { echo "commit them, or set DEPLOY_DIRTY_OK=1 if they are someone else's" >&2; exit 1; }
 fi
 
 git push

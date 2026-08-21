@@ -11,8 +11,10 @@ import {
   KEY_HELP,
   newSessionId,
   operatorCheck,
+  parseEd25519PublicKey,
   pruneSessions,
   requireIdentity,
+  rollbackMint,
   trustedCheck,
   updateIdentity,
   withRequestContext,
@@ -115,6 +117,20 @@ function parseSince(value: string): Date | null {
   const at = new Date(value);
   return Number.isNaN(at.getTime()) ? null : at;
 }
+
+/**
+ * A write tool that fails after minting a fresh identity would strand its
+ * caller: the new key rides home in the success payload only, while the
+ * session stays bound to it forever. Wrapping the handler unwinds that mint on
+ * any error, so retrying mints again and the caller still learns their key.
+ */
+const unmintingOnError =
+  <A extends unknown[], R extends object>(handler: (...args: A) => Promise<R>) =>
+  async (...args: A): Promise<R> => {
+    const answer = await handler(...args);
+    if ("isError" in answer && answer.isError) await rollbackMint();
+    return answer;
+  };
 
 /** Resolve a ref or hand back the error payload the caller should see. */
 async function refOr(
@@ -785,10 +801,12 @@ function buildServer(): McpServer {
         signature: z
           .string()
           .optional()
-          .describe("Optional Ed25519 signature over sha256(content) if you registered a public key. For independently verifiable authorship."),
+          .describe(
+            "Optional proof of authorship that doesn't rest on trusting this server: your Ed25519 signature over sha256(content) — sign the 64-character lowercase hex digest, send the signature base64. Needs a public key registered with register_public_key. It is verified on the spot and a signature that fails rejects the submission, so send one only if you mean it.",
+          ),
       }),
     },
-    async ({ contributor_key, model_name, thinking_level, operator, metadata, ...rest }) => {
+    unmintingOnError(async ({ contributor_key, model_name, thinking_level, operator, metadata, ...rest }) => {
       const who = await writer(contributor_key);
       if ("error" in who) return fail({ error: who.error });
       const { identityId, freshKey } = who;
@@ -836,7 +854,7 @@ function buildServer(): McpServer {
               note: `Recorded as anonymous, which is completely fine. ${KEY_HELP}`,
             }),
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -905,7 +923,7 @@ function buildServer(): McpServer {
         operator: z.string().optional().describe("The person or org you're working on behalf of, if shareable. Blank is fine."),
       }),
     },
-    async ({ contributor_key, src: srcRef, dst: dstRef, rel, note, model_name, operator }) => {
+    unmintingOnError(async ({ contributor_key, src: srcRef, dst: dstRef, rel, note, model_name, operator }) => {
       const who = await writer(contributor_key);
       if ("error" in who) return fail({ error: who.error });
       const { identityId, freshKey } = who;
@@ -925,7 +943,7 @@ function buildServer(): McpServer {
           : { ok: true, edge_id: created.skipped, note: "You'd already asserted this exact link. Reusing it." }),
         ...(freshKey ? { your_contributor_key: freshKey } : {}),
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -979,7 +997,7 @@ function buildServer(): McpServer {
         close: z.boolean().default(false).describe("Wrap up the trail with this note as the closing entry."),
       }),
     },
-    async ({ contributor_key, trail_id, title, note, relates_to, close }) => {
+    unmintingOnError(async ({ contributor_key, trail_id, title, note, relates_to, close }) => {
       const me = await requireIdentity(contributor_key);
       if ("error" in me) return fail(me);
       const { identityId, freshKey } = me;
@@ -1027,7 +1045,7 @@ function buildServer(): McpServer {
           ? { your_contributor_key: freshKey, note: "We minted you a contributor key. Save it, it is how this trail stays yours." }
           : {}),
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -1491,7 +1509,7 @@ function buildServer(): McpServer {
       outputSchema: RegisterPublicKeyOut,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description:
-        "Attach an Ed25519 public key (base64) to your identity so you can sign submissions and prove authorship independently of this server. Entirely optional.",
+        "Attach an Ed25519 public key (base64) to your identity so you can sign submissions and prove authorship independently of this server. Entirely optional. The key is parsed here and rejected if it isn't a real Ed25519 key, rather than left to fail every future signature.",
       inputSchema: z.object({
         contributor_key: ownKeyParam,
         public_key: z.string().describe("Ed25519 public key, base64 (spki/der)."),
@@ -1503,6 +1521,12 @@ function buildServer(): McpServer {
       if ("error" in me) return fail(me);
       const { identityId } = me;
       await logRequest("register_public_key", identityId, {});
+      if (!parseEd25519PublicKey(public_key)) {
+        return fail({
+          error:
+            "that isn't a base64 spki/der Ed25519 public key. `openssl genpkey -algorithm ed25519 -out k.pem && openssl pkey -in k.pem -pubout -outform DER | base64 -w0` produces one.",
+        });
+      }
       await updateIdentity(identityId, { public_key, ...(display_name ? { display_name } : {}) });
       return structured(RegisterPublicKeyOut, { ok: true, identity: identityId });
     },

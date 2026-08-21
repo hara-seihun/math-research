@@ -2,7 +2,8 @@
 # Contract tests against an ephemeral Postgres and a real server process.
 # Covers the invariants that matter: submission shape, the verification
 # pipeline's tier neutrality, the axiom policy, the operator gate, trails,
-# and the three ways a caller can be someone (session, key, OAuth).
+# the three ways a caller can be someone (session, key, OAuth), and that a
+# bulk import reconciles in both directions.
 # Runs in well under a minute; needs bun on PATH. Postgres comes from nixpkgs
 # when it is absent, and must carry pgvector because the schema stores
 # semantic embeddings.
@@ -564,6 +565,50 @@ call search '{"kind":"theorem","limit":1}' | python3 -c 'import sys,json;d=json.
 
 PROPOSAL=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"title\":\"proposal\",\"summary\":\"s\",\"content\":\"c.\",\"supersedes\":[\"$SQ\"]}" | field '["id"]')
 
+# Contract: an authorship signature is a proof or it is nothing. A submission
+# carrying one is checked against the identity's registered public key before
+# anything is written, because a signature stored unverified reads as evidence
+# while being a claim. A bad one takes the whole submission down with it.
+SIGKEY="$WORK/authorship.pem"
+openssl genpkey -algorithm ed25519 -out "$SIGKEY" 2> /dev/null
+PUBKEY=$(openssl pkey -in "$SIGKEY" -pubout -outform DER | base64 -w0)
+sign() { # <message> -> base64 Ed25519 signature (pkeyutl needs a real file)
+  printf '%s' "$1" > "$WORK/msg"
+  openssl pkeyutl -sign -inkey "$SIGKEY" -rawin -in "$WORK/msg" | base64 -w0
+}
+SIGNED_BODY="signed authorship."
+GOODSIG=$(sign "$(printf '%s' "$SIGNED_BODY" | sha256sum | cut -d' ' -f1)")
+
+call register_public_key "{\"contributor_key\":\"$KEY\",\"public_key\":\"bm90IGEga2V5\"}" \
+  | field '["error"]' | grep -qi ed25519 || fail "a public key that is not an Ed25519 key was accepted"
+call register_public_key "{\"contributor_key\":\"$KEY\",\"public_key\":\"$PUBKEY\"}" \
+  | field '["ok"]' > /dev/null || fail "a real Ed25519 public key was rejected"
+
+SIGNED=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"signed work\",\"summary\":\"s\",\"content\":\"$SIGNED_BODY\",\"signature\":\"$GOODSIG\"}")
+SIGNED_ID=$(echo "$SIGNED" | field '["id"]') || fail "a correctly signed submission was refused: $(echo "$SIGNED" | head -c 300)"
+[[ $(psql -h "$WORK" -d math -tAc "select outcome from verification where contribution_id = '$SIGNED_ID' and method = 'authorship-signature'") == passed ]] \
+  || fail "a verified signature was not recorded as an authorship verification"
+
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"forged authorship\",\"summary\":\"s\",\"content\":\"$SIGNED_BODY\",\"signature\":\"$(sign 'not the digest')\"}" \
+  | field '["error"]' | grep -qi signature || fail "a signature that does not check out was accepted"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from contribution where title = 'forged authorship'") == 0 ]] \
+  || fail "a submission whose signature failed was recorded anyway"
+
+# ... including a signature from an identity that registered no key at all,
+# which is the case where nobody could ever check it.
+UNREG=$(new_session)
+SESSION=$UNREG call submit "{\"kind\":\"result\",\"title\":\"unregistered signer\",\"summary\":\"s\",\"content\":\"$SIGNED_BODY\",\"signature\":\"$GOODSIG\"}" \
+  | field '["error"]' | grep -q register_public_key || fail "a signature was accepted from an identity with no public key"
+
+# Contract: a failed first contribution does not consume the session's one
+# identity. The minted key rides home in the success payload only, so binding
+# it to a call that failed would leave the caller unable to ever be it again.
+[[ $(psql -h "$WORK" -d math -tAc "select identity_id is null from mcp_session where id = '$UNREG'") == t ]] \
+  || fail "a failed first contribution bound the session to an identity whose key nobody was told"
+RETRY=$(SESSION=$UNREG call submit '{"kind":"result","title":"unregistered signer, retried","summary":"s","content":"c."}')
+[[ $(echo "$RETRY" | field '["your_contributor_key"]') == mrk_* ]] \
+  || fail "the session never got a contributor key after its first attempt failed"
+
 # Contract: every door answers. A tool that no contract above calls can still
 # be broken by a refactor of a shared read path, so each one is called once
 # with plausible arguments and must not come back an error. A new tool means a
@@ -590,7 +635,7 @@ declare -A DOORS=(
   [apply_refactor]="{\"contributor_key\":\"$OPKEY\",\"refactor_id\":\"$PROPOSAL\",\"decision\":\"reject\",\"note\":\"n\"}"
   [grant_trust]="{\"contributor_key\":\"$OPKEY\",\"identity_id\":\"$OPID\",\"role\":\"operator\",\"note\":\"n\"}"
   [retract]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$SQ\",\"note\":\"contract test\"}"
-  [register_public_key]="{\"contributor_key\":\"$KEY\",\"public_key\":\"$(python3 -c 'import base64,os; print(base64.b64encode(os.urandom(32)).decode())')\"}"
+  [register_public_key]="{\"contributor_key\":\"$KEY\",\"public_key\":\"$(openssl genpkey -algorithm ed25519 | openssl pkey -pubout -outform DER | base64 -w0)\"}"
 )
 REGISTERED=$(curl -sf --max-time 10 -X POST "$MCP" -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
@@ -601,6 +646,51 @@ for tool in $REGISTERED; do
   ANSWER=$(call "$tool" "${DOORS[$tool]}") || fail "$tool did not answer"
   echo "$ANSWER" | grep -q '"error"' && fail "$tool answered with an error: $(echo "$ANSWER" | head -c 300)"
 done
+
+# ——— The import reconciles in both directions ————————————————————————————
+# A bad edge in a bulk import is not fixed by fixing the exporter unless a
+# reload can also take the published copy out. Load a question plus a claim
+# that falsely resolves it, then reload the same export with that link gone:
+# the link must end up retracted with an event to show for it, and the
+# question must go back to open.
+IMP="$WORK/import"
+mkdir -p "$IMP"
+export_corpus() { # export_corpus <claim count>
+  python3 - "$IMP" "$1" <<'PY'
+import json, sys
+out, n = sys.argv[1], int(sys.argv[2])
+meta = {"imported_from": "projects-research"}
+rows = [{"import_key": "node:1", "kind": "problem", "title": "Imported question", "summary": "s",
+         "content": "Is it so?", "tier": 2, "created_at": "2026-01-01T00:00:00Z", "metadata": meta}]
+rows += [{"import_key": f"claim:{i}", "kind": "statement", "title": f"Imported answer {i}", "summary": "s",
+          "content": f"It is so, {i}.", "tier": 2, "created_at": "2026-01-01T00:00:00Z", "metadata": meta}
+         for i in range(1, n + 1)]
+with open(f"{out}/contributions.jsonl", "w") as f:
+    f.write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+}
+export_corpus 300
+echo '{"src":"claim:1","dst":"node:1","rel":"resolves","note":null,"tier":2}' > "$IMP/edges.jsonl"
+bun run tools/load-import.ts "$IMP" "$WORK/import.key" "import contract" > "$WORK/import.log" 2>&1 \
+  || fail "load-import failed: $(tail -3 "$WORK/import.log")"
+state_of() { psql -X -tAq -h "$WORK" -d math -c "select state from contribution where metadata->>'import_key' = 'node:1'"; }
+[[ $(state_of) == settled ]] || fail "an imported 'resolves' edge did not settle the question it answers"
+
+: > "$IMP/edges.jsonl"
+bun run tools/load-import.ts "$IMP" "$WORK/import.key" "import contract" > "$WORK/import2.log" 2>&1 \
+  || fail "reload failed: $(tail -3 "$WORK/import2.log")"
+WITHDRAWN=$(psql -X -tAq -h "$WORK" -d math -c "select count(*) from contribution c join event e on e.contribution_id = c.id and e.kind = 'retracted' where c.kind = 'edge' and c.status = 'retracted'")
+[[ $WITHDRAWN == 1 ]] || fail "an edge the export stopped asserting was not retracted (got $WITHDRAWN)"
+[[ $(state_of) == open ]] || fail "withdrawing the only 'resolves' edge left the question settled"
+
+# The same reload must not be able to empty the corpus when the export is
+# truncated: withdrawing entries past the ceiling aborts instead.
+export_corpus 10
+bun run tools/load-import.ts "$IMP" "$WORK/import.key" "import contract" > "$WORK/import3.log" 2>&1 \
+  && fail "a truncated export was allowed to withdraw half the imported entries"
+grep -q 'refusing to withdraw' "$WORK/import3.log" || fail "the withdrawal ceiling did not explain itself: $(tail -3 "$WORK/import3.log")"
+STILL=$(psql -X -tAq -h "$WORK" -d math -c "select count(*) from contribution where metadata->>'import_key' = 'claim:1' and status = 'active'")
+[[ $STILL == 1 ]] || fail "the aborted load withdrew entries anyway"
 
 echo "all contracts hold"
 

@@ -32,8 +32,11 @@ const flags = new Map(
 const [dir, keyFile, displayName] = argv.filter((a) => !a.startsWith("--"));
 // A truncated or mis-generated export must not be able to empty the corpus, so
 // a withdrawal bigger than this fraction of what is currently imported aborts
-// the load and says so instead.
+// the load and says so instead. The accident this catches is always large, so
+// small withdrawals are never gated: needing a flag to drop a handful of bad
+// links would only teach everyone to pass the flag.
 const withdrawLimit = Number(flags.get("withdraw-limit") ?? 0.1);
+const WITHDRAW_FLOOR = 100;
 if (!dir || !keyFile || !(withdrawLimit >= 0 && withdrawLimit <= 1)) {
   console.error(
     'usage: load-import.ts [--withdraw-limit=FRACTION] EXPORTDIR IDENTITY_KEY_FILE "Display Name"',
@@ -268,7 +271,8 @@ const [{ edges_gone, links_live, entries_gone, entries_live }] = await db<
          count(*) filter (where not is_edge)::int           as entries_live
     from mine`;
 
-const overLimit = (gone: number, live: number) => live > 0 && gone > live * withdrawLimit;
+const overLimit = (gone: number, live: number) =>
+  gone > WITHDRAW_FLOOR && gone > live * withdrawLimit;
 if (overLimit(edges_gone, links_live) || overLimit(entries_gone, entries_live)) {
   console.error(
     `refusing to withdraw ${entries_gone}/${entries_live} entries and ${edges_gone}/${links_live} links: ` +

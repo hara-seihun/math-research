@@ -115,7 +115,9 @@ you want authorship proofs that don't depend on this server.
   notes, tooling suggestions.
 - `tools/`, the deploy script, the tuning defaults, and the Projects Research
   import (`export-projects-research.py` into `load-import.ts`, keyed by
-  `metadata.import_key` so reruns reconcile instead of duplicating).
+  `metadata.import_key` so reruns reconcile instead of duplicating — in both
+  directions: what the export stops asserting is retracted, so fixing the
+  exporter corrects work already published).
 - `test/contracts.sh`, the contract suite. Ephemeral Postgres, real server,
   about 20 seconds. Run it before deploying.
 - `admin/`, the content editor at <https://math.seihun.com/admin>. It takes a

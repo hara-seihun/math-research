@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createPublicKey, verify as verifyEd25519, type KeyObject } from "node:crypto";
 import { sql } from "./db.ts";
 
 export function sha256hex(text: string): string {
@@ -19,7 +20,7 @@ export const KEY_HELP =
  * What the transport knows about this request. Both fields are optional: an
  * unidentified caller is a first-class caller here.
  */
-export type RequestContext = { bearer?: string; sessionId?: string };
+export type RequestContext = { bearer?: string; sessionId?: string; minted?: string };
 
 const context = new AsyncLocalStorage<RequestContext>();
 
@@ -98,13 +99,38 @@ export async function writer(argumentKey?: string): Promise<Writer> {
     update mcp_session set identity_id = ${identityId}
     where id = ${who.sessionId} and identity_id is null
     returning identity_id`;
-  if (bound) return { identityId, freshKey };
+  if (bound) {
+    const store = context.getStore();
+    if (store) store.minted = identityId;
+    return { identityId, freshKey };
+  }
 
   await sql`delete from identity i where i.id = ${identityId}
             and not exists (select 1 from contribution where identity_id = i.id)`;
   const [session] = await sql<{ identity_id: string }[]>`
     select identity_id from mcp_session where id = ${who.sessionId}`;
   return { identityId: session!.identity_id };
+}
+
+/**
+ * Undo an identity minted during a call that then failed. The fresh key is
+ * only ever handed back in a success payload, so without this a failed first
+ * contribution would bind the session to an identity whose key nobody was ever
+ * told, and the caller could never be that identity again. Nothing is lost:
+ * only an identity that owns no work is removed, and the next attempt mints.
+ */
+export async function rollbackMint(): Promise<void> {
+  const store = context.getStore();
+  const identityId = store?.minted;
+  if (!store || !identityId) return;
+  store.minted = undefined;
+  if (store.sessionId) {
+    await sql`update mcp_session set identity_id = null
+              where id = ${store.sessionId} and identity_id = ${identityId}`;
+  }
+  await sql`delete from identity i where i.id = ${identityId}
+            and not exists (select 1 from contribution where identity_id = i.id)
+            and not exists (select 1 from trail where identity_id = i.id)`;
 }
 
 export type Identified = { identityId: string; freshKey?: string } | { error: string };
@@ -145,6 +171,80 @@ export async function operatorCheck(contributorKey: string | undefined): Promise
   const refusal = "this one's for the operator. It administers who is trusted.";
   const who = await roleOf(contributorKey);
   return who && who.role === "operator" ? { ok: true, ...who } : { ok: false, refusal };
+}
+
+const decodeBase64 = (text: string): Buffer | null => {
+  const cleaned = text.trim().replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  if (!cleaned || !/^[A-Za-z0-9+/]+={0,2}$/.test(cleaned)) return null;
+  return Buffer.from(cleaned, "base64");
+};
+
+/** An Ed25519 public key as base64 spki/der, or null if it is not one. */
+export function parseEd25519PublicKey(base64: string): KeyObject | null {
+  const der = decodeBase64(base64);
+  if (!der) return null;
+  try {
+    const key = createPublicKey({ key: der, format: "der", type: "spki" });
+    return key.asymmetricKeyType === "ed25519" ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+export type AuthorshipCheck = { ok: true } | { ok: false; error: string };
+
+/**
+ * A submission may carry an Ed25519 signature over the artifact's SHA-256
+ * digest, proving authorship to anyone holding the identity's registered
+ * public key rather than to this server alone. The canonical message is the
+ * 64-character lowercase hex digest; the raw 32 digest bytes are accepted too,
+ * since both prove the same thing and clients differ on which they sign.
+ *
+ * A signature that does not check out is refused rather than recorded: stored
+ * unverified, it would read as proof while being none.
+ */
+export async function verifyAuthorship(
+  identityId: string | null,
+  contentHash: string,
+  signature: string,
+): Promise<AuthorshipCheck> {
+  if (!identityId) {
+    return { ok: false, error: `a signature says who wrote this, so it needs an identity. ${KEY_HELP}` };
+  }
+  const [row] = await sql<{ public_key: string | null }[]>`
+    select public_key from identity where id = ${identityId}`;
+  if (!row?.public_key) {
+    return {
+      ok: false,
+      error:
+        "this identity has no signing key registered, so nobody could check that signature. Call register_public_key with your Ed25519 public key first, or submit without the signature field — authorship is already recorded from your contributor key either way.",
+    };
+  }
+  const key = parseEd25519PublicKey(row.public_key);
+  if (!key) {
+    return {
+      ok: false,
+      error:
+        "the public key registered for this identity isn't a base64 spki/der Ed25519 key, so no signature can ever verify against it. Register a good one with register_public_key.",
+    };
+  }
+  const sig = decodeBase64(signature);
+  if (!sig || sig.length !== 64) {
+    return {
+      ok: false,
+      error: "an Ed25519 signature is 64 bytes, base64-encoded. That one isn't.",
+    };
+  }
+  const verified =
+    verifyEd25519(null, Buffer.from(contentHash, "utf8"), key, sig) ||
+    verifyEd25519(null, Buffer.from(contentHash, "hex"), key, sig);
+  return verified
+    ? { ok: true }
+    : {
+        ok: false,
+        error:
+          "that signature doesn't check out against the public key registered for this identity. Sign sha256(content) — the 64-character lowercase hex digest — with your Ed25519 private key and send the signature base64-encoded, or leave the field out.",
+      };
 }
 
 export async function updateIdentity(

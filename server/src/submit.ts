@@ -1,5 +1,5 @@
 import { sql } from "./db.ts";
-import { sha256hex } from "./identity.ts";
+import { sha256hex, verifyAuthorship } from "./identity.ts";
 import { issueReceipt } from "./receipts.ts";
 import { createEdge, refreshAround } from "./graph.ts";
 
@@ -40,6 +40,15 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
 
   const hash = sha256hex(content);
   const mediaType = input.media_type ?? "text/markdown";
+
+  // An authorship signature is checked before anything is written, and a bad
+  // one fails the whole submission: recording a signature nobody verified
+  // would publish a proof that isn't one.
+  if (input.signature !== undefined) {
+    const authorship = await verifyAuthorship(identityId, hash, input.signature);
+    if (!authorship.ok) return { ok: false, error: authorship.error };
+    notes.push("your signature checks out against your registered public key, and is recorded as an authorship verification anyone can re-check.");
+  }
 
   // Exact duplicates attach as a new contribution over the same artifact
   // only if titled differently by a different identity; the common case
@@ -89,6 +98,12 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
     notes.push(
       "supersedes recorded as a proposal. The targets stay active until the refactor is reviewed and applied.",
     );
+  }
+
+  if (input.signature !== undefined) {
+    await sql`insert into verification (contribution_id, method, outcome, detail)
+              values (${result.id}, 'authorship-signature', 'passed',
+                      ${sql.json({ signature: input.signature, signed: "sha256(content)" } as never)})`;
   }
 
   let leanQueued = false;

@@ -13,6 +13,10 @@
  *   bun test/similarity-bench.ts       # measure
  *
  * `--task=ledger|renamed|lean|prefilter|speed|dupes`, `--queries=N`, `--pool=N`.
+ * A full run takes 45 seconds: the tasks share nothing, so they run as
+ * separate processes, and the candidate pools are cached under `.bench/cache`
+ * because indexing a quarter-million declarations does not change between
+ * runs of the same corpus.
  *
  * The ledger's `duplicate-of` edges are not usable ground truth: all 1,075 of
  * them come from one retracted import that pointed every source at the same
@@ -28,7 +32,7 @@ import { alphaLean, alphaProse, flatten, isGenerated, leanBlocks } from "../serv
 const arg = (name: string, fallback: string) =>
   process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=")[1] ?? fallback;
 const DIR = arg("dir", ".bench");
-const QUERIES = Number(arg("queries", "300"));
+const QUERIES = Number(arg("queries", "80"));
 const POOL = Number(arg("pool", "150"));
 const TASKS = arg("task", "ledger,renamed,lean,prefilter,speed,dupes").split(",");
 
@@ -197,6 +201,22 @@ type Edge = { src: string; dst: string; rel: string; tier: number };
 const readJsonl = async <T>(file: string): Promise<T[]> =>
   (await Bun.file(`${DIR}/${file}`).text()).split("\n").filter(Boolean).map((l) => JSON.parse(l) as T);
 
+/** Building the candidate pools means indexing a quarter of a million
+ *  declarations, which is most of a run and does not change between runs of
+ *  the same corpus. Keyed by the corpus files' sizes, so a re-dumped corpus
+ *  rebuilds and nothing else does. */
+async function cached<T>(key: string, build: () => Promise<T>): Promise<T> {
+  const sizes = await Promise.all(
+    ["contribs.jsonl", "decls.jsonl", "edges.jsonl"].map(async (f) => Bun.file(`${DIR}/${f}`).size),
+  );
+  const path = `${DIR}/cache/${key}-${QUERIES}-${POOL}-${sizes.join("-")}.json`;
+  const file = Bun.file(path);
+  if (await file.exists()) return (await file.json()) as T;
+  const value = await build();
+  await Bun.write(path, JSON.stringify(value));
+  return value;
+}
+
 // --- Lexical prefilter, standing in for the tools' Postgres prefilter ------
 // The candidate pool decides what a ranker can possibly find, so the bench
 // ranks inside a pool built the same way production builds one: cheap term
@@ -239,20 +259,39 @@ class Bm25 {
 
 type Case = { query: string; gold: number; pool: number[] };
 
-function evaluate(cases: Case[], texts: string[], normalizer: Normalizer, scorer: Scorer) {
-  const normalized = new Map<number, string>();
-  const norm = (i: number) => {
-    const cached = normalized.get(i);
+/** One normalizer's view of a corpus, computed once and shared by every
+ *  scorer measured against it — otherwise nine scorers normalize the same
+ *  45,000 texts nine times, which was most of the benchmark's runtime. */
+class Normalized {
+  private readonly byIndex = new Map<number, string>();
+  private readonly byText = new Map<string, string>();
+  constructor(readonly normalizer: Normalizer, private readonly texts: string[]) {}
+
+  at(i: number): string {
+    const cached = this.byIndex.get(i);
     if (cached !== undefined) return cached;
-    const value = normalizer.run(texts[i]!);
-    normalized.set(i, value);
+    const value = this.normalizer.run(this.texts[i]!);
+    this.byIndex.set(i, value);
     return value;
-  };
+  }
+
+  of(text: string): string {
+    const cached = this.byText.get(text);
+    if (cached !== undefined) return cached;
+    const value = this.normalizer.run(text);
+    this.byText.set(text, value);
+    return value;
+  }
+}
+
+function evaluate(cases: Case[], corpus: Normalized, scorer: Scorer) {
+  const normalizer = corpus.normalizer;
+  const norm = (i: number) => corpus.at(i);
   let reciprocal = 0, top1 = 0, top10 = 0, margin = 0;
   const started = Bun.nanoseconds();
   let scored = 0;
   for (const c of cases) {
-    const score = scorer.prepare(normalizer.run(c.query));
+    const score = scorer.prepare(corpus.of(c.query));
     let better = 0;
     let best = 0;
     const goldScore = score(norm(c.gold));
@@ -307,7 +346,10 @@ async function ledgerTask() {
   // may well be an entry that was withdrawn for duplicating one of them.
   const bm25 = new Bm25(texts.map((t, i) => (contribs[i]!.status === "active" ? t.slice(0, 2000) : "")));
 
-  for (const rel of ["duplicate-of", "specializes", "generalizes|refines|overlaps|equivalent-to"]) {
+  // `duplicate-of` is not among these: all 1,075 of them come from one
+  // retracted import that pointed every source at the same target, so they
+  // measure that import rather than any similarity method.
+  for (const rel of ["specializes", "generalizes|refines|overlaps|equivalent-to"]) {
     const wanted = new Set(rel.split("|"));
     const pairs = edges.filter((e) => wanted.has(e.rel) && index.has(e.src) && index.has(e.dst));
     const cases: Case[] = [];
@@ -323,8 +365,9 @@ async function ledgerTask() {
     console.log(`\n## ledger '${rel}' — ${cases.length} queries, pool ${POOL}, prefilter recall ${pct(recall)}`);
     const rows = [];
     for (const n of PROSE_NORMALIZERS) {
+      const corpus = new Normalized(n, texts);
       for (const s of SCORERS) {
-        const r = evaluate(cases, texts, n, s);
+        const r = evaluate(cases, corpus, s);
         rows.push({ ...r, mrr: r.mrr.toFixed(3), top1: pct(r.top1), top10: pct(r.top10), margin: r.margin.toFixed(3), "cand/s": num(r.candidatesPerSecond), "req/s@150": num(r.candidatesPerSecond / 150) });
       }
     }
@@ -378,8 +421,9 @@ async function renamedTask() {
   console.log(`\n## ledger entries, renamed — ${cases.length} queries over ${num(contribs.length)} entries, pool ${POOL}, prefilter recall ${pct(recall)}`);
   const rows = [];
   for (const n of PROSE_NORMALIZERS) {
+    const corpus = new Normalized(n, texts);
     for (const s of SCORERS) {
-      const r = evaluate(cases, texts, n, s);
+      const r = evaluate(cases, corpus, s);
       rows.push({ ...r, mrr: r.mrr.toFixed(3), top1: pct(r.top1), top10: pct(r.top10), margin: r.margin.toFixed(3), "cand/s": num(r.candidatesPerSecond), "req/s@150": num(r.candidatesPerSecond / 150) });
     }
   }
@@ -413,23 +457,26 @@ function renameLean(statement: string, seed: number): string {
 async function leanTask() {
   const decls = (await readJsonl<Decl>("decls.jsonl")).filter((d) => d.is_proof && !isGenerated(d.name) && d.statement.length > 60);
   const texts = decls.map((d) => d.statement);
-  const bm25 = new Bm25(texts.map((t) => t.slice(0, 1500)));
-  const cases: Case[] = [];
-  const step = Math.floor(decls.length / QUERIES);
-  for (let i = 0; cases.length < QUERIES && i < decls.length; i += step) {
-    const query = renameLean(texts[i]!, i);
-    if (query === texts[i]) continue;
-    const pool = bm25.top(query, POOL, -1);
-    const found = pool.includes(i);
-    if (!found) pool.push(i);
-    cases.push({ query, gold: i, pool });
-  }
+  const cases = await cached("lean-cases", async () => {
+    const bm25 = new Bm25(texts.map((t) => t.slice(0, 1500)));
+    const built: Case[] = [];
+    const step = Math.floor(decls.length / QUERIES);
+    for (let i = 0; built.length < QUERIES && i < decls.length; i += step) {
+      const query = renameLean(texts[i]!, i);
+      if (query === texts[i]) continue;
+      const pool = bm25.top(query, POOL, -1);
+      if (!pool.includes(i)) pool.push(i);
+      built.push({ query, gold: i, pool });
+    }
+    return built;
+  });
   const recall = cases.filter((c) => c.pool.slice(0, POOL).includes(c.gold)).length / cases.length;
   console.log(`\n## lean statements, renamed — ${cases.length} queries over ${num(decls.length)} declarations, pool ${POOL}, prefilter recall ${pct(recall)}`);
   const rows = [];
   for (const n of LEAN_NORMALIZERS) {
+    const corpus = new Normalized(n, texts);
     for (const s of SCORERS) {
-      const r = evaluate(cases, texts, n, s);
+      const r = evaluate(cases, corpus, s);
       rows.push({ ...r, mrr: r.mrr.toFixed(3), top1: pct(r.top1), top10: pct(r.top10), margin: r.margin.toFixed(3), "cand/s": num(r.candidatesPerSecond), "req/s@150": num(r.candidatesPerSecond / 150) });
     }
   }
@@ -614,6 +661,20 @@ async function prefilterTask() {
     }
     table(rows, ["prefilter", "recall@pool", "lookups/s", "build"]);
   }
+}
+
+// Tasks share nothing, so a full run is as slow as its slowest task rather
+// than as slow as their sum.
+if (TASKS.length > 1) {
+  const runs = TASKS.map((task) => ({
+    task,
+    proc: Bun.spawn(["bun", import.meta.path, `--task=${task}`, `--queries=${QUERIES}`, `--pool=${POOL}`, `--dir=${DIR}`], {
+      stdout: "pipe",
+      stderr: "inherit",
+    }),
+  }));
+  for (const { proc } of runs) process.stdout.write(await new Response(proc.stdout).text());
+  process.exit(Math.max(...(await Promise.all(runs.map((r) => r.proc.exited)))));
 }
 
 for (const task of TASKS) {

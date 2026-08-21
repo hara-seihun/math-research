@@ -128,20 +128,24 @@ async function accomplishments(): Promise<string> {
   if (!fraction) throw new Error(`${DBN_BOUND}: no \\Lambda\\le\\frac{a}{b} in the content`);
   const lambda = Number(fraction[1]) / Number(fraction[2]);
 
-  const cells = open.results
-    .map((entry: any) => /^Cell ([A-Z]\d+)/.exec(entry.title)?.[1])
-    .filter(Boolean)
-    .sort();
-  if (cells.length !== open.results.length) throw new Error(`${CI_FRONT}: an open member is not a named cell`);
+  // The open members are whatever the ledger says they are. They were once
+  // uniformly "Cell A3"-style names and this page insisted on that shape; an
+  // amendment gave them mathematical titles instead, which is an improvement
+  // that must not be able to break the build. Count them, name a few.
+  const openCells = open.results.map((entry: any) => String(entry.title));
+  if (openCells.length === 0) throw new Error(`${CI_FRONT}: no open members, so the classification page would lie`);
   const settled = ci.progress.settled;
+  const cellName = (title: string) => /^Cell ([A-Z]\d+)/.exec(title)?.[1] ?? title.replace(/[.?]$/, "");
+  const named = openCells.slice(0, 3).map(cellName);
+  const rest = openCells.length - named.length;
 
   return [
     `**The de Bruijn\u2013Newman constant satisfies \u039b \u2264 ${lambda}.**`,
     "",
     `\`get({ref: ${JSON.stringify(bound.title)}})\``,
     "",
-    `**${settled} of ${settled + cells.length} cells in the finite undirected CI-group classification are settled.**`,
-    `The open cells are ${cells.slice(0, -1).join(", ")} and ${cells.at(-1)}.`,
+    `**${settled} of ${settled + openCells.length} cells in the finite undirected CI-group classification are settled.**`,
+    `Still open: ${named.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}.`,
     "",
     `\`fronts({ref: ${JSON.stringify(ci.title)}})\``,
   ].join("\n");

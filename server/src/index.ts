@@ -3143,7 +3143,15 @@ app.get("/render/:hash", async (req: import("express").Request, res: import("exp
 // so cached forever everywhere. The MCP carries inventories and hashes; this
 // is the pipe the bytes themselves ride, in both directions, because a JSON
 // tool call is the wrong vehicle for a hundred-megabyte pinned input.
-app.get("/files/:hash", async (req: import("express").Request, res: import("express").Response) => {
+//
+// These routes live on an outer app that runs before the MCP app, because
+// createMcpExpressApp installs a global express.json() whose parser would
+// otherwise consume the body of any application/json upload — and a
+// certificate tree is full of receipts and manifests that are exactly that —
+// leaving the raw handler an empty buffer where the bytes should be.
+const outer = express();
+
+outer.get("/files/:hash", async (req: import("express").Request, res: import("express").Response) => {
   const found = await storedFile(String(req.params.hash));
   if (!found) {
     res.status(404).json({ error: "no file with that sha256. q_files lists every attached file with its hash." });
@@ -3155,7 +3163,7 @@ app.get("/files/:hash", async (req: import("express").Request, res: import("expr
   res.sendFile(found.path);
 });
 
-app.put(
+outer.put(
   "/files/:hash",
   (req, res, next) => {
     void (async () => {
@@ -3210,6 +3218,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
   });
 }
 
-app.listen(PORT, "127.0.0.1", () => {
+outer.use(app);
+outer.listen(PORT, "127.0.0.1", () => {
   console.log(`math-research MCP listening on 127.0.0.1:${PORT}`);
 });

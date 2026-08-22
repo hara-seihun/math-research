@@ -191,6 +191,17 @@ R2=$(curl -s -X PUT -H "Authorization: Bearer $KEY" --data-binary @"$WORK/chunk1
 R3=$(curl -sf -X PUT -H "Authorization: Bearer $KEY" -H 'Content-Type: application/octet-stream' \
   --data-binary @"$WORK/chunk2" "$FILES/$FHASH?offset=100000&total=$FTOTAL")
 [[ $(echo "$R3" | field '.stored') == true ]] || fail "assembled upload was not stored: $R3"
+# A certificate tree is full of receipts and manifests uploaded as
+# application/json — the one content type the MCP app's global body parser
+# would eat before the raw route ran. This byte-for-byte round trip is what
+# keeps the /files routes mounted ahead of that parser.
+printf '{"receipt": true}' > "$WORK/receipt.json"
+JHASH=$(sha256sum "$WORK/receipt.json" | cut -d' ' -f1)
+RJ=$(curl -sf -X PUT -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  --data-binary @"$WORK/receipt.json" "$FILES/$JHASH")
+[[ $(echo "$RJ" | field '.stored') == true ]] || fail "a JSON-typed upload lost its body to the MCP body parser: $RJ"
+[[ $(curl -sf "$FILES/$JHASH") == '{"receipt": true}' ]] || fail "JSON-typed upload did not round-trip byte-for-byte"
+
 LIAR=${FHASH:0:63}0; [[ $LIAR == "$FHASH" ]] && LIAR=${FHASH:0:63}1
 code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $KEY" --data-binary @"$WORK/chunk1" "$FILES/$LIAR")
 [[ $code == 422 ]] || fail "bytes that miss their declared hash were kept (HTTP $code)"

@@ -107,7 +107,6 @@ export const ListRow = z
     board_at: iso.optional().describe("When this entry reached the all-time board, meaning when review certified it. Present only for rows on it, and what `since` windows when `board: true`."),
     rel: z.string().optional().describe("The relation this row arrived through, when listed via a link."),
     edge_tier: z.number().int().optional().describe("The linking edge's own review tier."),
-    linked_at: iso.optional().describe("When the link was asserted."),
     joined_at: iso.optional().describe("When this member joined the front."),
     matched: z.string().optional().describe("How search matched it: 'every term', 'some terms', or 'fuzzy'."),
     similarity: z.number().optional(),
@@ -147,10 +146,8 @@ const NeighbourLink = z.strictObject({
   kind: z.string(),
   title: z.string(),
   tier,
-  notability: z.number(),
   edge_tier: z.number().int(),
-  status: z.string(),
-  linked_at: iso,
+  status: z.string().optional().describe("Only when not 'active'."),
 });
 export const Neighbourhood = z
   .strictObject({
@@ -164,7 +161,7 @@ export const Neighbourhood = z
       .optional()
       .describe("How many rows per relation are not shown. Page one relation with get's rel/links_offset, or use query."),
   })
-  .describe("The typed neighbourhood, capped per relation, each link carrying its own review tier and assertion time.");
+  .describe("The typed neighbourhood, capped per relation, each link carrying its own review tier. q_links has assertion times and asserting identities.");
 
 const Receipt = z
   .strictObject({ payload: jsonRecord, server_signature: z.string() })
@@ -516,7 +513,7 @@ export const GetOut = z.strictObject({
   receipt: Receipt.optional(),
   events: z
     .array(z.strictObject({ seq: z.number().int(), kind: z.string(), payload: jsonRecord, created_at: iso }))
-    .describe("The most recent events for this entry, oldest first."),
+    .describe("The most recent events for this entry, oldest first, payloads distilled (no before/after bodies); q_events has them verbatim."),
   more_events: z.number().int().optional().describe("How many earlier events exist beyond the ones shown; q_events has them all."),
   exposition: z
     .strictObject({

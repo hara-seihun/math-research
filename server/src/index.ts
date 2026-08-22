@@ -974,7 +974,20 @@ defineTool(
     const recent = await sql`
       select seq::int, kind, payload, created_at from event
       where contribution_id = ${id} order by seq desc limit 10`;
-    const events = recent.reverse();
+    // Event payloads carry full before/after bodies (an amendment embeds the
+    // summary twice over). A get is a read, not an audit: keep the verdict
+    // and the note, and point the audit at q_events, which has it verbatim.
+    const slimPayload = (payload: Record<string, unknown>) =>
+      Object.fromEntries(
+        Object.entries(payload).flatMap(([k, v]): [string, unknown][] => {
+          if (k === "before" || k === "after") return [];
+          if (typeof v === "string") return [[k, v.length > 300 ? `${v.slice(0, 300)} …` : v]];
+          if (v === null || typeof v === "number" || typeof v === "boolean") return [[k, v]];
+          if (Array.isArray(v) && v.length <= 12 && v.every((x) => typeof x === "string")) return [[k, v]];
+          return [];
+        }),
+      );
+    const events = recent.reverse().map((e) => ({ ...e, payload: slimPayload(e.payload as Record<string, unknown>) }));
     const [{ n: eventTotal }] = await sql<{ n: number }[]>`
       select count(*)::int as n from event where contribution_id = ${id}`;
     const activeTrails = await trailsTouching([id]);

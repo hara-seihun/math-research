@@ -1127,9 +1127,10 @@ assert len(r["summary"]) <= 281, len(r["summary"])
 [[ $(call get '{"ref":"long summary entry"}' | field '.content' | wc -c) -gt 1000 ]] || fail "get did not return the full content"
 
 # Contract: every read door says when. A reader must be able to date anything
-# it is shown without a second round trip, including a *link*, whose
-# assertion time exists nowhere else, so "is this connection fresh?" stays
-# answerable from the same payload that shows the connection.
+# it is shown without a second round trip. Link rows are the one deliberate
+# exception since 2026-08-22: a get's neighbourhood is the bulk of the
+# payload every reading agent carries in context, so its rows stay minimal
+# (id, kind, title, tier, edge_tier) and q_links keeps assertion times.
 dated() { # dated <label> <json> <python-expression yielding objects>
   echo "$2" | python3 -c '
 import sys, json, datetime
@@ -1145,7 +1146,15 @@ for o in objs:
 }
 GOTQ=$(call get "{\"ref\":\"$Q\"}")
 dated "get" "$GOTQ" '[d]'
-dated "get links" "$GOTQ" '(x for xs in list(d["links"]["in"].values()) + list(d["links"]["out"].values()) for x in xs)'
+echo "$GOTQ" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+rows = [x for xs in list(d["links"]["in"].values()) + list(d["links"]["out"].values()) for x in xs]
+assert rows, "get returned no link rows to check"
+for r in rows:
+    assert set(r) <= {"id", "kind", "title", "tier", "edge_tier", "status"}, sorted(r)
+    assert "status" not in r or r["status"] != "active", r
+' || fail "get link rows are not minimal (id, kind, title, tier, edge_tier, status-when-inactive)"
 dated "get events" "$GOTQ" 'd["events"]'
 FRO=$(call frontier "{\"ref\":\"$Q\"}")
 dated "frontier" "$FRO" '[d]'
@@ -1278,6 +1287,17 @@ call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,js
 call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$AMENDMENT\",\"decision\":\"approve\",\"note\":\"Clearer and faithful to the unchanged body.\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert set(d["changed"])=={"title","summary","names"}' || fail "amendment approval did not report changed fields"
 call get "{\"ref\":\"$EDIT_TARGET\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["title"].startswith("A presentation amendment preserves") and d["artifact_hash"]=="'"$EDIT_HASH"'"' || fail "approved amendment did not update presentation or changed its artifact"
 [[ $(psql -h "$WORK" -d math -tAc "select (payload->'before'->>'title') || ' -> ' || (payload->'after'->>'title') from event where kind='amendment-applied' and contribution_id='$EDIT_TARGET'") == "opaque task title -> A presentation amendment preserves content" ]] || fail "amendment event did not preserve before and after"
+# ... and get's event view distills that payload: verdict and note stay, the
+# before/after bodies (the summary, twice over) live only in q_events.
+call get "{\"ref\":\"$EDIT_TARGET\"}" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+ev = [e for e in d["events"] if e["kind"] == "amendment-applied"]
+assert ev, "amendment-applied event missing from get"
+for e in ev:
+    assert "before" not in e["payload"] and "after" not in e["payload"], sorted(e["payload"])
+    assert e["payload"].get("note"), "distilled event lost its note"
+' || fail "get did not distill the amendment event payload"
 # A second proposal remains pending for the every-door contract below, which
 # rejects it and thereby exercises the other terminal decision.
 AMEND_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Unhelpful amendment\",\"summary\":\"Reject me.\",\"content\":\"No improvement.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Thing\"}}" | field '.id')

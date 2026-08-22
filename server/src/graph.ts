@@ -271,8 +271,8 @@ export async function neighbourhood(id: string, opts?: { rel?: string; offset?: 
   const group = (rows: typeof out) =>
     rows.reduce<Record<string, unknown[]>>((acc, r) => {
       (acc[r.rel] ??= []).push({
-        id: r.id, kind: r.kind, title: r.title, tier: r.tier, notability: r.notability,
-        edge_tier: r.edge_tier, status: r.status, linked_at: r.linked_at,
+        id: r.id, kind: r.kind, title: r.title, tier: r.tier, edge_tier: r.edge_tier,
+        ...(r.status === "active" ? {} : { status: r.status }),
       });
       return acc;
     }, {});

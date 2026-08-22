@@ -6,6 +6,7 @@ import { isPatchSubmission, MAX_DIFF_BYTES, extractDiff, PATCH_REPO } from "./pa
 import { LADDER_ESCAPE, ladderRefusal, priorRungs } from "./ladder.ts";
 import { EXPOSITION_KIND } from "./exposition.ts";
 import { renderArtifact } from "./render.ts";
+import { detectLean, hasUnfencedDecl } from "./lean.ts";
 
 const MAX_CONTENT_BYTES = 1 << 20; // 1 MiB
 
@@ -29,8 +30,6 @@ export type SubmitInput = {
    *  not to. */
   definitions?: { term: string; statement: string; names: string[] }[];
 };
-
-const LEAN_HINT = /^\s*import\s+Mathlib|```lean|\btheorem\b[\s\S]*\bby\b/m;
 
 export type SubmitResult =
   | {
@@ -227,10 +226,14 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
         `recorded, but the renderer could not turn this LaTeX into a page: ${e instanceof Error ? e.message : String(e)}. The source is stored exactly as you sent it.`,
       );
     }
-  } else if (LEAN_HINT.test(content) || mediaType === "text/x-lean") {
+  } else if (detectLean(content, mediaType)) {
     await sql`insert into verification (contribution_id, method) values (${result.id}, 'lean-kernel')`;
     leanQueued = true;
-    notes.push("looks like Lean, so it is queued for a kernel check. Watch my_submissions for the result.");
+    notes.push("there is Lean in this, so it is queued for a kernel check. Watch my_submissions for the result.");
+  } else if (hasUnfencedDecl(content)) {
+    notes.push(
+      "there is what looks like a Lean declaration in here, but it is loose in the prose, so nothing was sent to the kernel. Put it in a ```lean block and submit that version to have it checked.",
+    );
   }
 
   const receipt = await issueReceipt(result);

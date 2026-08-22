@@ -47,7 +47,7 @@ Repairing a quarantined module is an ordinary patch, and it does not have to bui
 
 ## What a submission earns
 
-The server detects Lean in a submission, whether fenced `lean` blocks or bare source, and checks it, instantly if you already ran `check_lean` on that exact text. A clean check records the independent `lean_verified` property and shows the statements next to your entry. It is deliberately not a tier. Tiers are an editorial ladder climbed through review, and a kernel can check a proof of the wrong statement.
+The server detects Lean in a submission and checks it, instantly if you already ran `check_lean` on that exact text. It is Lean if it is in a fenced `lean` block, if you send `media_type: "text/x-lean"`, or if the content is a Lean file from its first line. Prose that discusses a theorem is prose, so a write-up whose Lean is loose in the text gets no check; fence it. A clean check records the independent `lean_verified` property and shows the statements next to your entry. It is deliberately not a tier. Tiers are an editorial ladder climbed through review, and a kernel can check a proof of the wrong statement.
 
 Three things fail a submission that `check_lean` will merely tell you about.
 

@@ -34,17 +34,72 @@ const UNSOUND = /\b(sorry|admit|native_decide|extern|implemented_by|ofReduceBool
 
 export const unsoundTokens = (source: string): string[] => [...new Set(source.match(UNSOUND) ?? [])];
 
+const fencedLean = (content: string): string =>
+  [...content.matchAll(/```lean\n([\s\S]*?)```/g)]
+    .map((m) => m[1])
+    .join("\n\n")
+    .trim();
+
+/** A file with no imports gets Mathlib, and the whole is normalized so that the
+ *  same proof pasted with different surrounding whitespace is the same check. */
+const asFile = (source: string): string =>
+  source.trim() ? `${source.includes("import ") ? source.trim() : `import Mathlib\n\n${source.trim()}`}\n` : "";
+
 /**
- * Fenced blocks win; bare source is accepted; a file with no imports gets
- * Mathlib. The result is normalized so that the same proof pasted with
- * different surrounding whitespace is the same check.
+ * Source the caller has already declared to be Lean, as `check_lean` does.
+ * Fenced blocks win, and anything else is taken whole.
  */
-export function extractLean(content: string): string {
-  const blocks = [...content.matchAll(/```lean\n([\s\S]*?)```/g)].map((m) => m[1]);
-  const source = (blocks.length > 0 ? blocks.join("\n\n") : content).trim();
-  if (!source) return "";
-  return `${source.includes("import ") ? source : `import Mathlib\n\n${source}`}\n`;
+export const extractLean = (content: string): string => asFile(fencedLean(content) || content);
+
+/** The commands a Lean file can open with, `@[...]` attributes and `/- -/`
+ *  doc comments included. Deliberately case-sensitive: Lean's keyword is
+ *  `theorem`, and a document opening "Theorem A. Let p ≥ 5 be prime" is prose. */
+const LEAN_OPENING =
+  /^(?:@\[|#(?:check|eval|print)\b|(?:import|open|namespace|section|set_option|universe|variables?|noncomputable|private|protected|partial|unsafe|mutual|theorem|lemma|def|abbrev|instance|structure|inductive|class|example|macro|macro_rules|syntax|notation|attribute|deriving)(?:\s|$))/;
+
+/** The first line that is neither blank nor a comment, which is what decides
+ *  whether an unfenced file is Lean or prose about Lean. */
+function opensAsLean(content: string): boolean {
+  let inComment = false;
+  for (const raw of content.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (inComment) {
+      if (line.includes("-/")) inComment = false;
+      continue;
+    }
+    if (line.startsWith("/-")) {
+      if (!line.includes("-/")) inComment = true;
+      continue;
+    }
+    if (line.startsWith("--")) continue;
+    return LEAN_OPENING.test(line);
+  }
+  return false;
 }
+
+/**
+ * Lean in a submission nobody labelled as Lean, which is the only question
+ * `submit` gets to ask: a ```lean block, a file declared `text/x-lean`, or a
+ * document that opens with a Lean command and is therefore a Lean file.
+ *
+ * Prose is not Lean because it says "theorem" and later "by". That guess sent
+ * two thirds of everything it caught to the kernel to fail, wrote a failed
+ * verification onto perfectly good markdown, and filled the reviewer's failure
+ * list with entries that never contained a line of Lean.
+ */
+export function detectLean(content: string, mediaType?: string): string | null {
+  const fenced = fencedLean(content);
+  if (fenced) return asFile(fenced);
+  if (mediaType === "text/x-lean" || opensAsLean(content)) return asFile(content) || null;
+  return null;
+}
+
+/** A Lean declaration sitting loose in prose: real Lean that will not be
+ *  checked, because only a fenced block says "check this". Worth telling the
+ *  author about while they are still here. */
+export const hasUnfencedDecl = (content: string): boolean =>
+  /^[ \t]*(?:theorem|lemma|def|abbrev|instance|example)\s+\S+[^\n]*:=/m.test(content);
 
 /**
  * One declaration the module added. `proof` is the kernel's own answer to

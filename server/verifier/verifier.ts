@@ -20,7 +20,7 @@ import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, renameSync,
 import { join } from "node:path";
 import { sql } from "../src/db.ts";
 import {
-  extractLean,
+  detectLean,
   foreignAxioms,
   provesNothing,
   statedDecls,
@@ -92,8 +92,8 @@ const resolveCheck = async (hash: string, outcome: string, detail: CheckDetail) 
  * cannot pass is refused here rather than spending a kernel slot on it.
  */
 async function adopt() {
-  const rows = await sql<{ id: number; contribution_id: string; content: string }[]>`
-    select v.id, v.contribution_id, a.content
+  const rows = await sql<{ id: number; contribution_id: string; content: string; media_type: string }[]>`
+    select v.id, v.contribution_id, a.content, a.media_type
     from verification v
     join contribution c on c.id = v.contribution_id
     join artifact a on a.hash = c.artifact_hash
@@ -101,7 +101,17 @@ async function adopt() {
     order by v.id limit 20`;
 
   for (const row of rows) {
-    const source = extractLean(row.content);
+    // The same question `submit` asked to queue this, asked of the same text.
+    // A no here means something queued a check for a submission with no Lean
+    // in it, and the honest answer is to say so rather than spend ten minutes
+    // of kernel time proving that markdown does not elaborate.
+    const source = detectLean(row.content, row.media_type);
+    if (!source) {
+      await record(row.id, row.contribution_id, "inconclusive", {
+        reason: "there is no Lean in this submission, so there was nothing to check",
+      });
+      continue;
+    }
     const unsound = unsoundTokens(source);
     if (unsound.length > 0) {
       await record(row.id, row.contribution_id, "failed", {

@@ -177,6 +177,16 @@ CID=$(echo "$SUB" | field '.id')
 [[ $(echo "$SUB" | field '.tier') == 0 ]] || fail "submission did not land at T0"
 [[ $(echo "$SUB" | field '.lean_queued') == true ]] || fail "lean content not queued"
 echo "$SUB" | field '.receipt.server_signature' > /dev/null || fail "no signed receipt"
+
+# Contract: prose about a theorem is prose. A write-up that says "theorem" and
+# later "by" is most of the mathematics written here, and guessing it was Lean
+# spent kernel time to write a failed verification onto a good markdown entry.
+PROSE='# Theorem A\n\n**Theorem.** Every finite group of prime order is cyclic.\n\n*Proof.* The theorem follows by Lagrange: the order of an element divides p, so anything but the identity generates. \u25a1\n'
+SUBP=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"prose is not lean\",\"summary\":\"contract test\",\"content\":\"$PROSE\"}")
+[[ $(echo "$SUBP" | field '.lean_queued') == false ]] || fail "prose about a theorem was queued for a kernel check"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from verification where contribution_id = '$(echo "$SUBP" | field '.id')'") == 0 ]] \
+  || fail "prose about a theorem got a verification row"
+
 EV=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$EV" | field '.events[0].kind') == submitted ]] || fail "no submitted event"
 
@@ -279,6 +289,16 @@ runner_says "$HASH" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"
 GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '.lean_verified') == true ]] || fail "pass did not set lean_verified"
 [[ $(echo "$GOT" | field '.tier') == 0 ]] || fail "verification changed the tier, and it must not"
+
+# Contract: a file that is Lean from its first line is Lean without a fence.
+BARE_SRC='import Mathlib\n\ntheorem bare_one : 2 + 2 = 4 := rfl\n'
+SUBB=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"bare lean file\",\"summary\":\"contract test\",\"content\":\"$BARE_SRC\"}")
+[[ $(echo "$SUBB" | field '.lean_queued') == true ]] || fail "a bare Lean file was not queued: $SUBB"
+HASHB=$(printf 'import Mathlib\n\ntheorem bare_one : 2 + 2 = 4 := rfl\n' | lean_hash)
+VIDB=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$(echo "$SUBB" | field '.id')'")
+await_spool "$HASHB"
+runner_says "$HASHB" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"bare_one","type":"2 + 2 = 4","axioms":[],"proof":true}]}'
+[[ $(await_verification "$VIDB") == passed ]] || fail "the bare Lean file did not reach the kernel"
 
 # Contract: check_lean is a throwaway check. It runs the same kernel, reports
 # the exact statements proven, and creates no contribution.

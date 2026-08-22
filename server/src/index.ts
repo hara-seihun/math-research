@@ -32,7 +32,7 @@ import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
-import { beyondTitle, deref, listRow, sameText, settlement, slimDetail, slimVerifierText, trim, type Ref } from "./read.ts";
+import { beyondTitle, deref, LIST_NOTE, LIST_SUMMARY, listRow, sameText, settlement, slimDetail, slimVerifierText, trim, type Ref } from "./read.ts";
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LeanGrepOut, LeanInfoOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
@@ -2334,7 +2334,7 @@ defineTool(
         from verification v join contribution c on c.id = v.contribution_id
         where v.outcome in ('failed', 'inconclusive')
         order by v.updated_at desc limit 20`
-    ).map((f) => ({ ...f, reason: slimVerifierText(f.reason) }));
+    ).map((f) => ({ ...f, reason: trim(f.reason, LIST_NOTE) }));
     // Public contradiction as a review signal. Anyone at all can say "this is
     // wrong" by linking a refutes/disputes edge, and it lands in front of a
     // trusted reviewer here instead of sitting in the graph unread. Questions
@@ -2377,11 +2377,15 @@ defineTool(
     // what commits a change to the Lean library, so the build result and the
     // publication state travel with the row a reviewer is deciding on.
     const patchWhere = sql`c.kind = 'patch' and c.status = 'active'`;
+    // `publication_detail` repeated the module list the row already carries,
+    // twice over on a wide patch. What it adds is the installed count and the
+    // head commit; the rest is the same fact wearing a second hat.
     const patches = await sql`
       select c.id, c.title, c.summary, c.tier, c.identity_id as by, c.created_at as submitted_at,
              v.outcome as build, v.detail->>'base_commit' as base_commit, v.detail->>'reason' as reason,
              v.detail->'changed_modules' as changed_modules, v.detail->'deleted_modules' as deleted_modules,
-             p.state as publication, p.commit_sha, p.detail as publication_detail
+             p.state as publication, p.commit_sha,
+             (p.detail - 'changed_modules' - 'deleted_modules') as publication_detail
       from contribution c
       left join lateral (select outcome, detail from verification
                          where contribution_id = c.id and method = 'patch-build'
@@ -2429,7 +2433,10 @@ defineTool(
       ? `${counts!.claimed_by_others} more matching entries are held by other reviewers right now and were left off your page. They come back if their reviewer does not decide them.`
       : undefined;
     return structured(ReviewQueueOut, {
-      unreviewed: unreviewed.map((r) => ({ ...r, reviews: r.reviews ?? 0 })),
+      // The same list row every other read door returns, plus what only a
+      // reviewer needs. A bespoke shape here is what let 2000-character
+      // summaries into a page of twenty.
+      unreviewed: unreviewed.map((r) => ({ ...listRow(r), reviews: r.reviews ?? 0, claimed_until: r.claimed_until })),
       next: unreviewed.length === limit ? { offset: offset + limit } : null,
       your_claims: held,
       ...(tip ? { tip } : {}),
@@ -2446,7 +2453,7 @@ defineTool(
       },
       flagged,
       asking_closures: askingClosures,
-      patches,
+      patches: patches.map((p) => ({ ...p, summary: trim(p.summary as string | null, LIST_SUMMARY) })),
       refactor_proposals: proposals,
       amendment_proposals: amendments,
       impact_assessment_proposals: impactAssessments,

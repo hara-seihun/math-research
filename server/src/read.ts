@@ -109,6 +109,12 @@ export async function deref(
 
 export const LIST_SUMMARY = 160;
 
+/** A note written by a person is prose with no length limit: a promotion note
+ *  runs to five thousand characters when the reviewer had that much to say. In
+ *  a list it is there to tell a reader which row to open, so it is a headline
+ *  too. Ten untrimmed promotion notes were 31 KB of a 96 KB `news` packet. */
+export const LIST_NOTE = 240;
+
 export const trim = (text: string | null, limit = LIST_SUMMARY): string | null => {
   if (!text) return text;
   const line = text.replace(/\s+/g, " ").trim();

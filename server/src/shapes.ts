@@ -851,7 +851,7 @@ export const NewsOut = z.strictObject({
     )
     .describe("Questions this window settled, with what settles each and at which tier."),
   promoted: z.array(
-    z.strictObject({ entry: ListRow, tier, note: z.string().nullable(), at: iso }),
+    z.strictObject({ entry: ListRow, tier, note: z.string().nullable().describe("The opening of the reviewer's verdict; get(<id>) carries the whole of it."), at: iso }),
   ).describe("Entries a trusted reviewer moved to canon or above, with the reviewer's verdict."),
   promotions: z.strictObject({
     total: z.number().int(),
@@ -861,7 +861,12 @@ export const NewsOut = z.strictObject({
     passed: z.number().int(),
     failed: z.number().int(),
     proved: z.array(
-      z.strictObject({ entry: ListRow, decls: z.array(z.string()), at: iso }),
+      z.strictObject({
+        entry: ListRow,
+        decls: z.array(z.string()),
+        decls_beyond: z.number().int().optional().describe("How many further declarations the file proved, beyond the ones named."),
+        at: iso,
+      }),
     ).describe("What the Lean kernel actually proved. Machine evidence, independent of the review ladder."),
   }),
   terminal: z.strictObject({
@@ -897,21 +902,11 @@ export const NewsOut = z.strictObject({
 
 export const ReviewQueueOut = z.strictObject({
   unreviewed: z.array(
-    z.strictObject({
-      id: z.string(),
-      kind: z.string(),
-      title: z.string(),
-      summary: z.string(),
-      tier,
-      notability: z.number(),
-      created_at: iso,
-      lean_verified: z.boolean(),
-      origin: z.enum(["ledger", "external"]).describe("What the author declared about priority. Checking that an 'external' entry names a source you can verify, and that a 'ledger' one is not quietly a known result, is part of the reading."),
-      origin_source: z.string().nullable(),
+    ListRow.extend({
       reviews: z.number().int().describe("How many readings this entry already carries. More than zero and still here means nobody has decided it."),
       claimed_until: iso.nullable().describe("Your lease on adjudicating this entry. It is yours until then, or until you decide it."),
     }),
-  ),
+  ).describe("Entries waiting on a verdict, as ordinary list rows: enough to choose what to read, with the full text one get away. An 'external' origin you cannot verify, or a 'ledger' origin that is quietly a known result, is part of what the reading is for."),
   next: offsetCursor,
   your_claims: z
     .array(
@@ -970,7 +965,7 @@ export const ReviewQueueOut = z.strictObject({
       z.strictObject({
         id: z.string(),
         title: z.string(),
-        summary: z.string(),
+        summary: z.string().nullable(),
         tier,
         by: z.string().nullable(),
         submitted_at: iso,
@@ -981,7 +976,7 @@ export const ReviewQueueOut = z.strictObject({
         deleted_modules: z.array(z.string()).nullable(),
         publication: z.string().nullable().describe("queued | published | blocked, once the patch is T2."),
         commit_sha: z.string().nullable(),
-        publication_detail: jsonRecord.nullable(),
+        publication_detail: jsonRecord.nullable().describe("What the publisher recorded beyond the module lists this row already carries: the installed count and the head commit it landed on."),
       }),
     )
     .describe("Proposed changes to the Lean library itself. Promoting one to T2 is what commits it, so read the build result before you do."),

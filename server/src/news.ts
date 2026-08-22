@@ -1,5 +1,5 @@
 import { sql } from "./db.ts";
-import { listRow, trim } from "./read.ts";
+import { LIST_NOTE, listRow, trim } from "./read.ts";
 import { corpus } from "./snapshot.ts";
 
 // --- News ------
@@ -24,6 +24,8 @@ const SUB_RELS = ["reduces-to", "depends-on", "splits-into", "specializes", "ser
 const TERMINAL_KINDS = ["retracted", "rejected", "restored", "superseded", "refactor-applied", "refactor-rejected", "flagged"];
 
 const TRAIL_FRESH = "2 hours";
+
+const DECLS_SHOWN = 12;
 
 export const HOW_TO_READ = [
   "This is evidence for a summary, not the summary. Custody first. Every entry here, including every link, sits on one review ladder of T0 recorded (the author's claim, no review), T1 confirmed mathematics, T2 canon accepted by a trusted reviewer, and T3 published externally. lean_verified is an independent machine check and never a tier. It says the listed declarations compile, not that they mean what the prose around them claims.",
@@ -259,7 +261,7 @@ export async function newsPacket(from: number, head: number, questions: number, 
     const id = row.id as string;
     const stalls = per(routes as { q: string; title: string; state: string; metadata: Record<string, string> | null }[], id)
       .filter((r) => r.metadata?.first_unsupported)
-      .map((r) => ({ route: r.title, state: r.state, stalls_at: r.metadata!.first_unsupported! }));
+      .map((r) => ({ route: r.title, state: r.state, stalls_at: trim(r.metadata!.first_unsupported!, LIST_NOTE) }));
     return {
       ...listRow(row),
       in_programmes: per(fronts as { q: string; id: string; title: string }[], id).map((f) => ({ id: f.id, title: f.title })),
@@ -270,10 +272,10 @@ export async function newsPacket(from: number, head: number, questions: number, 
       exploring_now: per(exploring as { q: string; trail_id: string; title: string; by: string | null; latest_note: string | null; last_activity: Date }[], id)
         .map((t) => ({
           trail_id: t.trail_id, title: t.title, by: t.by,
-          latest_note: trim(t.latest_note, 240), last_activity: t.last_activity,
+          latest_note: trim(t.latest_note, LIST_NOTE), last_activity: t.last_activity,
         })),
       already_tried: per(tried as { q: string; trail_id: string; title: string; outcome: string | null; ended_at: Date; last_note: string | null }[], id)
-        .map((t) => ({ trail_id: t.trail_id, title: t.title, outcome: t.outcome, ended_at: t.ended_at, last_note: trim(t.last_note, 240) })),
+        .map((t) => ({ trail_id: t.trail_id, title: t.title, outcome: t.outcome, ended_at: t.ended_at, last_note: trim(t.last_note, LIST_NOTE) })),
     };
   });
 
@@ -294,18 +296,25 @@ export async function newsPacket(from: number, head: number, questions: number, 
     },
     settled: Object.values(settled).slice(0, limit),
     promoted: promoted.map((row) => ({
-      entry: listRow(row), tier: row.promoted_to, note: row.note, at: row.at,
+      entry: listRow(row), tier: row.promoted_to, note: trim(row.note as string | null, LIST_NOTE), at: row.at,
     })),
     promotions: { total: promotionCounts!.total, links: promotionCounts!.links },
     kernel_checks: {
       passed: verificationCounts!.passed,
       failed: verificationCounts!.failed,
-      proved: verified.map((row) => ({ entry: listRow(row), decls: row.decls, at: row.at })),
+      // A Lean file can declare a hundred lemmas on the way to its theorem.
+      // The names are here to say what was proved, not to reproduce the file.
+      proved: verified.map((row) => ({
+        entry: listRow(row),
+        decls: (row.decls as string[]).slice(0, DECLS_SHOWN),
+        ...((row.decls as string[]).length > DECLS_SHOWN ? { decls_beyond: (row.decls as string[]).length - DECLS_SHOWN } : {}),
+        at: row.at,
+      })),
     },
     terminal: {
       total: terminalTotal!.n,
       decisions: terminal.map((row) => ({
-        decision: row.decision, entry: listRow(row), note: trim(row.note, 400), at: row.at,
+        decision: row.decision, entry: listRow(row), note: trim(row.note as string | null, LIST_NOTE), at: row.at,
       })),
     },
     questions: questionRows,

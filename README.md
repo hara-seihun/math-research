@@ -133,6 +133,14 @@ there already a lemma for this?" and "what is its argument order?" millisecond
 Postgres reads instead of extra kernel round trips, and makes MathlibPlus
 visible despite nothing importing it as a whole.
 
+**The source is searchable too.** `lean_grep` runs bounded, streaming `git grep`
+against the tracked `.lean` files in the exact Mathlib revision and the live
+MathlibPlus checkout. It returns importable module names, line numbers and
+nearby source without waiting for Lean. Fixed strings are the default; regular
+expressions, case folding and module restriction are explicit. The process is
+killed once enough global matches arrive, so a broad query does not build a
+multi-megabyte answer before truncating it.
+
 **Names are not what a statement is.** `search_decls` matches text, so it finds
 only what you can already spell. `lean_similar` matches structure. Every
 declaration, in the libraries and in this ledger's own checked submissions,

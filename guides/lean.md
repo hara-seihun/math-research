@@ -1,5 +1,5 @@
 ---
-when: Lean 4, Mathlib, formalize, formalization, kernel, check_lean, lean_info, signature, argument order, lean_verified, sorry, axioms, search_decls, existing lemma, MathlibPlus, library patch, proof assistant, type error
+when: Lean 4, Mathlib, formalize, formalization, kernel, check_lean, lean_info, lean_grep, grep, source search, signature, argument order, lean_verified, sorry, axioms, search_decls, existing lemma, MathlibPlus, library patch, proof assistant, type error
 ---
 # Lean here
 
@@ -12,6 +12,8 @@ Use it as a proof assistant, not a final exam. Send a skeleton with `sorry` in i
 `search_decls` indexes every declaration the pinned libraries actually provide, meaning Mathlib and its dependencies, the core toolchain, and all of MathlibPlus, by name and by pretty-printed statement. It answers in a millisecond, so ask first. An empty answer is real information. The thing is not there, and formalizing it is a contribution.
 
 When you already know the name, call `lean_info`. It returns one concise exact lookup with the import module and the full binder signature. Parentheses are explicit arguments, braces are implicit arguments, and brackets are instance arguments. This is the quickest answer to "what order does this theorem take its arguments?" and to an elaborator error where a proposition appeared where Lean expected an explicit value.
+
+`lean_grep` searches the actual tracked `.lean` source of both Mathlib and MathlibPlus. Use it for proof bodies, tactic examples, comments, notation, or any source text that a declaration index cannot contain. It is literal grep by default, with optional regular expressions, case folding, module restriction, and nearby lines. Source inside a namespace often omits the namespace prefix, so grep the final component of a fully qualified name and pass its module from `lean_info` to narrow the result.
 
 `search_decls` only finds what you can already spell. `lean_similar` matches *structure*. It alpha-normalizes statements, so `∀ (n : ℕ), n + 0 = n` and `∀ (k : ℕ), k + 0 = k` are one statement, and a hit marked `exact` says yours is already proved somewhere under another name. It sees the libraries and the ledger's own checked submissions together, so "is this in Mathlib?" and "has anyone here already done this?" are one question. Its `scan` mode sweeps a namespace instead of one declaration, and that is where deduplication patches come from.
 

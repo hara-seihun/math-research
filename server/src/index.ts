@@ -35,7 +35,7 @@ import { searchContributions, related, neighbourhood, createEdge, refreshNotabil
 import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
-  HelloOut, LeanInfoOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
+  HelloOut, LeanGrepOut, LeanInfoOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
   RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetOriginOut, SetTierOut, SetTuningOut, structured, SubmitOut, TheoriesOut, TrailOut,
   TrailsOut,
 } from "./shapes.ts";
@@ -49,6 +49,7 @@ import {
 import { renderArtifact } from "./render.ts";
 import { attachFiles, badPath, FILE_HASH, filesOf, MAX_CHUNK_BYTES, receiveChunk, storedFile } from "./files.ts";
 import { declarationNamesIn, exactDecls, indexSummary, searchDecls } from "./decls.ts";
+import { grepLean, type LeanLibrary } from "./lean-grep.ts";
 import { scanDuplicates, similarDeclarations } from "./lean-similar.ts";
 import { headSeq, newsPacket, seqBefore } from "./news.ts";
 
@@ -1466,6 +1467,63 @@ defineTool(
           ? "No exact declaration has that name. These are the nearest indexed name matches."
           : "No indexed declaration has that name. Use search_decls with name or statement fragments, or check_lean for a local declaration.",
     });
+  },
+);
+
+defineTool(
+  "lean_grep",
+  {
+    title: "Grep the actual Mathlib and MathlibPlus source",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: [
+      "Fast grep over every tracked .lean source file in the pinned Mathlib and the live MathlibPlus checkout. This searches proof bodies, tactic calls, comments, notation and declaration text, not only the names and signatures indexed by search_decls. Results carry the file, line, importable module and nearby source lines.",
+      "The query is a literal fixed string by default. Set regex=true for an extended regular expression, case_sensitive=false for a case-insensitive search, library to narrow the tree, or module to search one module or namespace subtree. A fully qualified declaration name may not occur literally inside its namespace; grep its final component and use module to narrow it. Results from both libraries are interleaved so one large tree cannot hide the other.",
+    ].join(" "),
+    inputSchema: z.object({
+      query: z.string().min(1).max(300).describe("Source text to find. Literal unless regex=true."),
+      regex: z.boolean().default(false).describe("Treat query as an extended regular expression instead of a literal string."),
+      case_sensitive: z.boolean().default(true).describe("Match case exactly. Set false for case-insensitive grep."),
+      library: z.enum(["all", "Mathlib", "MathlibPlus"]).default("all").describe("Which source tree to search."),
+      module: z
+        .string().max(300).optional()
+        .describe("Optional module or subtree, e.g. `Mathlib.Data.Nat.ModEq` or `MathlibPlus.GraphTheory`."),
+      context: z.number().int().min(0).max(5).default(2).describe("Nearby source lines to return on each side of a match."),
+      limit: z.number().int().min(1).max(100).default(20).describe("Maximum matching lines to return."),
+    }),
+  },
+  async ({ query, regex, case_sensitive, library, module, context, limit }) => {
+    const libraries: LeanLibrary[] = library === "all" ? ["Mathlib", "MathlibPlus"] : [library];
+    logRequest("lean_grep", null, { query, regex, case_sensitive, library, module, context, limit });
+    try {
+      const result = await shared(
+        cacheKey("lean_grep", { query, regex, case_sensitive, libraries, module, context, limit }),
+        () => grepLean({
+          query,
+          regex,
+          caseSensitive: case_sensitive,
+          libraries,
+          module,
+          context,
+          limit,
+        }),
+      );
+      return structured(LeanGrepOut, {
+        query,
+        regex,
+        case_sensitive,
+        libraries,
+        ...(module ? { module } : {}),
+        ...result,
+        note:
+          result.matches.length === 0
+            ? "No source line matched. Drop the namespace prefix, try a shorter literal, enable regex, or remove the module filter."
+            : result.more
+              ? "More source lines match. Narrow the query or module rather than paging through a broad grep."
+              : "These are source matches from the exact library revisions check_lean uses.",
+      });
+    } catch (error) {
+      return fail({ error: error instanceof Error ? error.message : String(error) });
+    }
   },
 );
 

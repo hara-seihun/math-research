@@ -82,6 +82,14 @@ git -C "$PATCH_REPO_DIR" init -q -b main
 git -C "$PATCH_REPO_DIR" add -A
 git -C "$PATCH_REPO_DIR" -c user.name=contracts -c user.email=c@example.invalid commit -qm "library"
 
+export LEAN_GREP_MATHLIB_ROOT="$WORK/grep-mathlib" LEAN_GREP_MATHLIBPLUS_ROOT="$PATCH_REPO_DIR"
+mkdir -p "$LEAN_GREP_MATHLIB_ROOT/Mathlib/Data/Nat"
+printf 'namespace Nat\n\nprotected theorem ModEq.mul_left'\'' (c : ℕ) : True := by trivial\n\nend Nat\n' \
+  > "$LEAN_GREP_MATHLIB_ROOT/Mathlib/Data/Nat/ModEq.lean"
+git -C "$LEAN_GREP_MATHLIB_ROOT" init -q -b main
+git -C "$LEAN_GREP_MATHLIB_ROOT" add -A
+git -C "$LEAN_GREP_MATHLIB_ROOT" -c user.name=contracts -c user.email=c@example.invalid commit -qm "library"
+
 (cd server && bun src/index.ts) > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 (cd server && bun verifier/verifier.ts) > "$WORK/verifier.log" 2>&1 &
@@ -1365,6 +1373,7 @@ declare -A DOORS=(
   [hello]='{}'
   [search]='{"query":"frontier test question"}'
   [search_decls]='{"query":"csSup_le"}'
+  [lean_grep]='{"query":"theorem","limit":2}'
   [lean_info]='{"name":"Nat.ModEq.mul_left'\''"}'
   [lean_similar]='{"source":"theorem contract_door (n : Nat) : n + 0 = n := by simp"}'
   [fronts]='{}'
@@ -1528,6 +1537,17 @@ bun run tools/load-import.ts "$IMP" "$WORK/import.key" "import contract" > "$WOR
 grep -q 'refusing to withdraw' "$WORK/import3.log" || fail "the withdrawal ceiling did not explain itself: $(tail -3 "$WORK/import3.log")"
 STILL=$(psql -X -tAq -h "$WORK" -d math -c "select count(*) from contribution where metadata->>'import_key' = 'claim:1' and status = 'active'")
 [[ $STILL == 1 ]] || fail "the aborted load withdrew entries anyway"
+
+# Contract: source grep reads proof text from both pinned library trees without
+# compiling anything, and a module filter turns a declaration-name fragment
+# into the exact source around it.
+GREP=$(call lean_grep '{"query":"mul_left'\''","library":"Mathlib","module":"Mathlib.Data.Nat.ModEq","context":1}')
+[[ $(echo "$GREP" | field '.matches[0].module') == "Mathlib.Data.Nat.ModEq" ]] \
+  || fail "lean_grep did not map the source path back to its module: $GREP"
+[[ $(echo "$GREP" | field '.matches[0].text') == *"protected theorem"* ]] \
+  || fail "lean_grep did not return the matching source line: $GREP"
+[[ $(echo "$GREP" | field '.matches[0].before[0].line') == 2 ]] \
+  || fail "lean_grep did not return source context: $GREP"
 
 # Contract: the declaration index is what "is there already a lemma for this?"
 # reads. Terms are ANDed across name and statement, the filters restrict, and

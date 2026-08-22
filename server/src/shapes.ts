@@ -638,6 +638,29 @@ export const LeanInfoOut = z.strictObject({
   note: z.string(),
 });
 
+const LeanSourceLine = z.strictObject({ line: z.number().int(), text: z.string() });
+export const LeanGrepOut = z.strictObject({
+  query: z.string(),
+  regex: z.boolean(),
+  case_sensitive: z.boolean(),
+  libraries: z.array(z.enum(["Mathlib", "MathlibPlus"])),
+  module: z.string().optional(),
+  matches: z.array(
+    z.strictObject({
+      library: z.enum(["Mathlib", "MathlibPlus"]),
+      module: z.string(),
+      path: z.string(),
+      line: z.number().int(),
+      text: z.string(),
+      before: z.array(LeanSourceLine),
+      after: z.array(LeanSourceLine),
+    }),
+  ),
+  more: z.boolean(),
+  elapsed_ms: z.number(),
+  note: z.string(),
+});
+
 export const SearchDeclsOut = z.strictObject({
   query: z.string().optional(),
   matches: z.number().int().optional().describe("How many declarations match; a count that hit the cap says so in `more`."),

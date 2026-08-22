@@ -4,6 +4,7 @@ import { issueReceipt } from "./receipts.ts";
 import { createEdge, refreshAround } from "./graph.ts";
 import { isPatchSubmission, MAX_DIFF_BYTES, extractDiff, PATCH_REPO } from "./patch.ts";
 import { wakeVerifier } from "./lean.ts";
+import { LADDER_ESCAPE, ladderRefusal, priorRungs } from "./ladder.ts";
 import { EXPOSITION_KIND } from "./exposition.ts";
 import { renderArtifact } from "./render.ts";
 
@@ -58,6 +59,20 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
       ok: false,
       error: "content is over 1 MiB. Split it into parts and link them with relates_to, or trim it down.",
     };
+  }
+
+  // A third title that differs from two of your own only in its constants is
+  // a ladder, and the guide is binding about not climbing one. Checked before
+  // anything is written, and answered with the two ways out rather than a
+  // verdict on the mathematics.
+  const climbed = String(input.metadata?.[LADDER_ESCAPE] ?? "").trim();
+  if (!climbed) {
+    const { rungs } = await priorRungs(identityId, input.kind, input.title);
+    if (rungs.length >= 2) return { ok: false, error: ladderRefusal(rungs) };
+  } else {
+    notes.push(
+      `recorded as a deliberate next case, unlocking: ${climbed}. Review reads that claim, so the general statement it unlocks is what is expected from you next.`,
+    );
   }
 
   const hash = sha256hex(content);

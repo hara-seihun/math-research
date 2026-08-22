@@ -1759,6 +1759,31 @@ mv "$SPOOL_DIR/out/patch-$BROKEN_CHECK.staging" "$SPOOL_DIR/out/patch-$BROKEN_CH
 psql -h "$WORK" -d math -tAc "select detail->>'reason' from verification where id = $BROKEN_V" | grep -q "does not build at this commit" \
   || fail "a patch that built nothing did not explain why"
 
+# A ladder is counted per author, so this one gets its own identity and runs
+# last, where six extra entries cannot move a count another contract asserts.
+LKEY=$(SESSION=$(new_session) call hello '{"display_name":"ladder climber"}' | field '.you.contributor_key')
+
+# Contract: the ladder gate. Two cases of the same sentence are how you find a
+# pattern and both land; the third is constant chasing and is refused with the
+# rungs named, unless the author says what the next case unlocks. Kinds that
+# are not claims, and titles that differ in more than a numeral, are untouched.
+rung() { call submit "{\"contributor_key\":\"$LKEY\",\"kind\":\"$1\",\"title\":\"$2\",\"summary\":\"s\",\"content\":\"rung $2.\"${3-}}"; }
+rung theorem "Every valency-six Cayley graph on Q8 times C23 is CI" | field '.id' > /dev/null \
+  || fail "the first case of a pattern was refused"
+rung theorem "Every valency-seven Cayley graph on Q8 times C29 is CI" | field '.id' > /dev/null \
+  || fail "the second case of a pattern was refused"
+LADDER=$(rung theorem "Every valency-eight Cayley graph on Q8 times C31 is CI")
+echo "$LADDER" | field '.error' | grep -qi "rung 3 of a ladder" || fail "a third rung was recorded instead of refused: $LADDER"
+echo "$LADDER" | field '.error' | grep -q "Q8 times C23" || fail "the ladder refusal did not name the rungs it counted"
+rung problem "Every valency-nine Cayley graph on Q8 times C37 is CI" | field '.id' > /dev/null \
+  || fail "a non-claim kind was caught by the ladder gate"
+rung theorem "Q8 times C41 has a Cayley graph that is not CI" | field '.id' > /dev/null \
+  || fail "a genuinely different statement was caught by the ladder gate"
+ESCAPED=$(rung theorem "Every valency-ten Cayley graph on Q8 times C43 is CI" \
+  ',"metadata":{"rung_unlocks":"the p=43 residue is the last obstruction to the general odd-order induction"}')
+echo "$ESCAPED" | field '.id' > /dev/null || fail "a justified next case was refused: $ESCAPED"
+echo "$ESCAPED" | field '.notes[]' | grep -qi "deliberate next case" || fail "a justified next case was recorded without its justification"
+
 echo "all contracts hold"
 
 

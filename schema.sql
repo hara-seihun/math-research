@@ -1115,7 +1115,7 @@ create or replace view q_patches as
 -- Who is adjudicating what right now, so contention is answerable with a
 -- query instead of guessed at. Live rows only; expired leases are history.
 create or replace view q_review_claims as
-  select contribution_id, identity_id, claimant, claimed_at, expires_at from review_claim
+  select contribution_id, identity_id, claimed_at, expires_at, claimant from review_claim
   where expires_at > now();
 
 create or replace view q_config as select key, value, updated_at from config;

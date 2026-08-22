@@ -1736,6 +1736,27 @@ git -C "$PATCH_REPO_DIR" status --porcelain | grep -q . && fail "publication lef
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_decl where module = 'MathlibPlus.GroupTheory.Claim1'") == 1 ]] \
   || fail "publication disturbed the index of modules it did not touch"
 
+# Publication moved the library's HEAD, so the verifier re-checks every patch
+# that was answered against the old one. A real runner answers every job it is
+# handed, and this stand-in has to as well: one patch builds at a time, so a
+# revalidation nobody replied to would hold the slot against everything below.
+drain_patch_jobs() {
+  local deadline=$((SECONDS + 20)) job id
+  while [[ $(psql -h "$WORK" -d math -tAc "select count(*) from patch_check where outcome = 'pending'") != 0 ]]; do
+    (( SECONDS < deadline )) || fail "the verifier never finished re-checking the patches publication invalidated"
+    for job in "$SPOOL_DIR"/in/patch-*; do
+      [[ -d $job ]] || continue
+      id=${job##*/patch-}
+      rm -rf "$job"
+      mkdir -p "$SPOOL_DIR/out/patch-$id.staging"
+      echo '{"ok":true,"built":[],"still_broken":[],"elapsed_ms":1}' > "$SPOOL_DIR/out/patch-$id.staging/result.json"
+      mv "$SPOOL_DIR/out/patch-$id.staging" "$SPOOL_DIR/out/patch-$id"
+    done
+    sleep 0.05
+  done
+}
+drain_patch_jobs
+
 # Contract: a module that does not build at the base commit is the library's
 # state, not the patch's doing. Touching one must not condemn the patch, and a
 # patch that could build nothing at all verified nothing.

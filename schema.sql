@@ -626,6 +626,34 @@ create table if not exists patch_publication (
 );
 create index if not exists patch_publication_state_idx on patch_publication (state, updated_at);
 
+-- The verifier is woken by the database, not by whoever remembered to call a
+-- helper. Every row that gives it work lives in one of these tables, and a
+-- promotion to canon is work too, so publishing a reviewed patch does not have
+-- to wait for the reconciler. NOTIFY with a constant payload is collapsed to
+-- one delivery per transaction by Postgres, so a bulk write wakes it once.
+create or replace function notify_verifier() returns trigger language plpgsql as $$
+begin
+  perform pg_notify('verifier_work', 'work');
+  return null;
+end $$;
+
+do $$ begin
+  perform 1 from pg_trigger where tgname = 'verification_wakes_verifier';
+  if not found then
+    create trigger verification_wakes_verifier after insert or update of outcome on verification
+      for each statement execute function notify_verifier();
+    create trigger lean_check_wakes_verifier after insert or update of outcome on lean_check
+      for each statement execute function notify_verifier();
+    create trigger patch_check_wakes_verifier after insert or update of outcome on patch_check
+      for each statement execute function notify_verifier();
+    create trigger patch_publication_wakes_verifier after insert or update of state on patch_publication
+      for each statement execute function notify_verifier();
+    create trigger patch_promotion_wakes_verifier after update of tier on contribution
+      for each row when (new.kind = 'patch' and new.tier >= 2 and coalesce(old.tier, 0) < 2)
+      execute function notify_verifier();
+  end if;
+end $$;
+
 -- Rendered artifact bodies, content-addressed. Turning a body into HTML is a
 -- pure function of (content, media type, renderer version), so the same paper
 -- read by a thousand people costs one pandoc run, exactly the bargain

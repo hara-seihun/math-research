@@ -45,7 +45,18 @@ const SPOOL_IN = join(SPOOL, "in");
 const SPOOL_OUT = join(SPOOL, "out");
 const TIMEOUT_MS = Number(process.env.LEAN_TIMEOUT_MS ?? 600_000);
 const GRACE_MS = 120_000; // runner queueing + audit slack on top of the compile timeout
-const RECONCILE_MS = 5_000;
+// The reconciler covers what the two wakeups cannot: a NOTIFY that arrived
+// while the connection was down, and a spool event the watcher lost. Bun's
+// directory watcher drops one of the two renames a runner makes when it moves
+// a finished result into place, so that second case is not hypothetical, and
+// a five second reconcile made it a five second stall on every patch.
+//
+// So the interval follows the work. Idle, nothing is waiting and a slow sweep
+// costs nothing to be late for. With a check or a build in flight, the answer
+// can land at any moment and the cost of asking is three indexed existence
+// probes, so ask often enough that a lost event is invisible.
+const RECONCILE_IDLE_MS = 5_000;
+const RECONCILE_BUSY_MS = 100;
 const CLAIM_LIMIT = 4;
 
 type RunnerResult = {
@@ -292,7 +303,33 @@ async function tick() {
     } while (woken);
   } finally {
     ticking = false;
+    void rearm();
   }
+}
+
+/** Anything whose answer this loop is waiting for: a kernel check or a build
+ *  out with the runner, or a promoted patch not yet published. */
+async function workIsInFlight(): Promise<boolean> {
+  const [row] = await sql<{ busy: boolean }[]>`
+    select exists (select 1 from lean_check where outcome = 'pending')
+        or exists (select 1 from patch_check where outcome = 'pending')
+        or exists (select 1 from patch_publication where state = 'queued') as busy`;
+  return row?.busy ?? false;
+}
+
+let reconcile: ReturnType<typeof setTimeout> | undefined;
+
+/** Set the next reconcile from what the last pass left behind. */
+async function rearm(): Promise<void> {
+  let busy = false;
+  try {
+    busy = await workIsInFlight();
+  } catch {
+    // A database that cannot say whether it is busy gets the slow interval.
+    // Polling a broken connection ten times a second helps nobody.
+  }
+  clearTimeout(reconcile);
+  reconcile = setTimeout(() => void tick(), busy ? RECONCILE_BUSY_MS : RECONCILE_IDLE_MS);
 }
 
 async function pass() {
@@ -322,5 +359,4 @@ watch(SPOOL_OUT, () => void tick());
 console.log(
   `lean verifier (orchestrator): spool=${SPOOL} timeout=${TIMEOUT_MS}ms patches=${repoPresent() ? "on" : "no library checkout"}`,
 );
-setInterval(() => void tick(), RECONCILE_MS);
 void tick();

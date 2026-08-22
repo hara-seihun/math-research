@@ -1148,6 +1148,38 @@ assert "news contract" in (promoted[os.environ["NQ"]]["note"] or ""), "news drop
 assert d["promotions"]["total"] >= len(d["promoted"])
 ' || fail "news cursor did not advance cleanly: $(echo "$NEWS2" | head -c 400)"
 
+# Contract: a list row is a headline, not a document. Every one of these fields
+# was once shipped whole, and `news` answered a default call with 96 KB — 24k
+# tokens of a reader's context for one call. The bound is per row and per field,
+# not on the packet, so adding a panel is free and inflating a row is not.
+BIGNOTE=$(python3 -c 'print("Promotion verdicts run long when the reviewer has something to say. " * 90, end="")')
+BIGSUM=$(python3 -c 'print("An imported statement carries a summary of up to two thousand characters. " * 26, end="")')
+BQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"conjecture\",\"title\":\"headline bound subject\",\"summary\":\"$BIGSUM\",\"content\":\"c.\"}" | field '.id')
+CUR3=$(call news '{"since":"1h"}' | field '.next.after_seq')
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BQ\",\"tier\":2,\"note\":\"$BIGNOTE\"}" > /dev/null
+call news "{\"after_seq\":$CUR3}" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+long = []
+def walk(node, path):
+    if isinstance(node, dict):
+        for k, v in node.items(): walk(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for v in node: walk(v, path)
+    elif isinstance(node, str) and len(node) > 400 and not path.endswith("how_to_read"):
+        long.append((path, len(node)))
+walk(d, "news")
+assert not long, f"news shipped whole documents in list rows: {long[:4]}"
+' || fail "news list rows are not headlines"
+
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"limit\":20}" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+long = [(k, len(json.dumps(r))) for k in ("unreviewed", "patches") for r in d[k] if len(json.dumps(r)) > 1500]
+assert not long, f"review_queue rows carry documents: {long[:4]}"
+assert all(len(p["changed_modules"] or []) <= 9 for p in d["patches"]), "a patch row listed every module it touched"
+' || fail "review_queue rows are not headlines"
+
 # Contract: every read door takes a name, not just a uuid. A reader who has
 # only seen an entry's name in a summary can ask about it directly.
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"named cell\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"cell-q4n-residual\"]}" > /dev/null

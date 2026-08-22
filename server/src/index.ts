@@ -122,6 +122,13 @@ const refParam = z
   .string()
   .describe("An entry: its id, a name or handle it is known by, or its exact title. Names come back from search and get.");
 
+const MODULES_SHOWN = 8;
+
+const capModules = (modules: string[] | null): string[] | null =>
+  modules === null || modules.length <= MODULES_SHOWN
+    ? modules
+    : [...modules.slice(0, MODULES_SHOWN), `+${modules.length - MODULES_SHOWN} more`];
+
 /** `news({since})` takes either an ISO timestamp or a plain interval, because
  *  "the last two days" is how people actually ask. */
 function parseSince(value: string): Date | null {
@@ -2297,7 +2304,7 @@ defineTool(
       join contribution ec on ec.id = e.contribution_id
       join contribution rc on rc.id = e.src
       where ${proposalWhere}
-      limit 50`;
+      limit ${limit}`;
     const amendmentWhere = sql`
       e.rel = 'amends' and ec.status = 'active' and ec.tier = 0
         and ac.status = 'active' and ac.kind = 'amendment' and tgt.status = 'active'`;
@@ -2312,7 +2319,7 @@ defineTool(
       join contribution tgt on tgt.id = e.dst
       where ${amendmentWhere}
       order by tgt.notability desc, e.created_at asc
-      limit 50`;
+      limit ${limit}`;
     const impactWhere = sql`
       e.rel = 'assesses-impact' and ec.status = 'active' and ec.tier = 0
         and ac.status = 'active' and ac.kind = 'impact-assessment' and tgt.status = 'active'`;
@@ -2327,7 +2334,7 @@ defineTool(
       join contribution tgt on tgt.id = e.dst
       where ${impactWhere}
       order by tgt.notability desc, e.created_at asc
-      limit 50`;
+      limit ${limit}`;
     const failures = (
       await sql<{ contribution_id: string; title: string; outcome: string; reason: string | null; updated_at: Date }[]>`
         select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
@@ -2353,7 +2360,7 @@ defineTool(
       join contribution c on c.id = e.dst
       where ${flaggedWhere}
       order by c.notability desc, e.created_at asc
-      limit 25`;
+      limit ${limit}`;
     // Certified mathematics whose headline is still the interrogative it was
     // filed as. The board will not print a question as a finding, so these
     // are off it until someone amends the headline to say what was found.
@@ -2372,7 +2379,7 @@ defineTool(
           and ec.status = 'active' and src.status = 'active' and ec.tier >= 2
         order by src.notability desc limit 1) s on true
       where ${askingWhere}
-      order by impact_score desc, c.notability desc limit 25`;
+      order by impact_score desc, c.notability desc limit ${limit}`;
     // Patches are the one thing here whose promotion leaves the ledger: T2 is
     // what commits a change to the Lean library, so the build result and the
     // publication state travel with the row a reviewer is deciding on.
@@ -2393,7 +2400,7 @@ defineTool(
       left join patch_publication p on p.contribution_id = c.id
       where ${patchWhere}
       order by c.tier desc, c.created_at asc
-      limit 50`;
+      limit ${limit}`;
     const [counts] = await sql<{
       unreviewed: number; awaiting_decision: number; claimed_by_others: number; flagged: number;
       refactor_proposals: number; amendment_proposals: number; impact_assessment_proposals: number; patches: number;
@@ -2453,7 +2460,15 @@ defineTool(
       },
       flagged,
       asking_closures: askingClosures,
-      patches: patches.map((p) => ({ ...p, summary: trim(p.summary as string | null, LIST_SUMMARY) })),
+      // A refactor across a library names every module it touches, and the
+      // list has no bound. Enough of it to see what the patch is about; the
+      // patch itself has the whole list.
+      patches: patches.map((p) => ({
+        ...p,
+        summary: trim(p.summary as string | null, LIST_SUMMARY),
+        changed_modules: capModules(p.changed_modules as string[] | null),
+        deleted_modules: capModules(p.deleted_modules as string[] | null),
+      })),
       refactor_proposals: proposals,
       amendment_proposals: amendments,
       impact_assessment_proposals: impactAssessments,

@@ -1245,6 +1245,7 @@ echo "$QR" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["column
 call query '{"sql":"delete from q_entries"}' | grep -qi "reads only" || fail "query accepted a write"
 call query '{"sql":"select count(*) from contribution"}' | grep -qi "permission denied" || fail "query reached a base table"
 call query '{"sql":"select * from generate_series(1,1000)"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["row_count"]==500 and d["truncated"], d.get("row_count")' || fail "query row cap did not hold"
+call query '{"sql":"select '\''a;b'\'' as literal, $$c;d$$ as dollar_quoted"}' | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["rows"]==[["a;b","c;d"]], d' || fail "query mistook data semicolons for statements"
 call query '{"sql":"select 1; select 2"}' | grep -q "one statement" || fail "query accepted two statements"
 
 # Contract: a hub entry's neighbourhood is capped per relation and the cap
@@ -1257,6 +1258,8 @@ for i in $(seq 1 10); do
 done
 call get "{\"ref\":\"$HUB\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["links"]["in"]["uses"])==8 and d["links"]["more"]["in"]["uses"]==2, json.dumps(d["links"].get("more"))' || fail "neighbourhood cap did not hold"
 call get "{\"ref\":\"$HUB\",\"rel\":\"uses\",\"links_offset\":8}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["links"]["in"]["uses"])==2 and "more" not in d["links"], json.dumps(d["links"])' || fail "rel paging did not reach the hidden rows"
+HUB_PREFIX=${HUB:0:8}
+[[ $(call get "{\"ref\":\"$HUB_PREFIX\"}" | field '.id') == "$HUB" ]] || fail "get did not resolve a unique short id"
 
 # Contract: filter-only search (no query) lists by importance and reports the
 # total beyond the page.

@@ -202,6 +202,45 @@ warm environment and per-worker RSS caps, and a comment recording that 6 lanes
 × 8 GiB OOM-killed itself at a 38 GiB ceiling) is the technique to carry over
 if the queue starts backing up.
 
+## Follow-up audit: the workbench, 2026-08-22
+
+The resumed wave no longer quits after one result: 120 recent runs contained
+108,430 events and many live sessions had already crossed a thousand events.
+That exposed a different class of waste. Agents were doing sustained research,
+but repeatedly paid for a workbench that looked complete and was not.
+
+Across retained transcripts, direct Python use of the published kernel failed
+with `No module named fast_math` 72 times. The conventional `/usr/bin/time`
+path failed throughout benchmark scripts, Boost headers were absent, and
+installed FLINT and GMP headers or libraries were not discoverable by a bare
+compiler or `pkg-config`. One provenance session also had to abandon its
+asynchronous fetcher because `aiohttp` was absent. The host environment now
+makes these ordinary operations work directly: every system Python entry point
+imports the live `/srv/pi/fast-math/current/python`, the global compiler and
+`pkg-config` wrappers see the declared headers and libraries, Boost and
+`aiohttp` are installed, and the observed `time` path is a declarative link.
+The fix is in `/etc/nixos/configuration.nix`, not in a session-local shell.
+
+The same audit found server friction rather than mathematical difficulty:
+
+- agents shortened UUIDs to the eight-character handles used in prose, then
+  had to search again because read doors required all 36 characters;
+- `query` mistook semicolons inside SQL strings and regular expressions for a
+  second statement;
+- every rolling server deployment reset a small burst of live MCP calls. The
+  failures clustered exactly at deployment timestamps and appeared to agents
+  only as `fetch failed`;
+- Lean work stalled to recover argument order or source examples from a broad
+  declaration search.
+
+Read doors now resolve unique UUID prefixes, SQL statement detection follows
+Postgres quoting, and each HTTP instance drains in-flight requests before a
+rolling restart. Lean has three distinct fast paths: `lean_info` for one exact
+signature, `lean_grep` for actual Mathlib and MathlibPlus source, and
+`check_lean.declaration_info` for signatures named by a failed elaboration.
+These are workbench repairs, not prompt advice: the successful route is now the
+obvious route an agent was already trying to take.
+
 ## 3. Literature review
 
 **Owner:** this server (a `source` contribution kind), plus whichever lane owns

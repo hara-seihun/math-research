@@ -10,6 +10,7 @@ import { normalizeText } from "./graph.ts";
 export type Ref = { id: string; matched: "id" | "name" | "title" | "fuzzy"; title: string; kind: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_PREFIX = /^[0-9a-f]{8,32}$/i;
 
 /** `kind` hard-filters; `prefer` only breaks a tie, so "cell A3" asked of
  *  frontier lands on the question rather than the write-up about it. */
@@ -24,6 +25,20 @@ export async function deref(
     const [row] = await sql<{ id: string; title: string; kind: string }[]>`
       select id, title, kind from contribution where id = ${raw}`;
     return row ? { ...row, matched: "id" } : { error: `no entry with id ${raw}. Try search.` };
+  }
+  // Agents and people naturally quote the eight-character handles shown in
+  // prose and summaries. A unique UUID prefix is just as unambiguous as the
+  // full id; making callers recover 28 characters adds no safety.
+  if (UUID_PREFIX.test(raw)) {
+    const rows = await sql<{ id: string; title: string; kind: string }[]>`
+      select id, title, kind from contribution
+      where replace(id::text, '-', '') like ${raw.toLowerCase() + "%"}
+      order by notability desc limit 6`;
+    if (rows.length === 1) return { ...rows[0]!, matched: "id" };
+    if (rows.length > 1) {
+      return { error: `id prefix ${raw} is ambiguous. Pass one of these full ids.`, candidates: rows.slice(0, 5) };
+    }
+    return { error: `no entry with id prefix ${raw}. Try search.` };
   }
   const norm = normalizeText(raw);
   // Two indexable lookups unioned, never one predicate that ORs them: an OR

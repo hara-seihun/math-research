@@ -1042,6 +1042,50 @@ defineTool(
   },
 );
 
+// A semicolon inside a string or regex is data, not a second statement.
+// Postgres has no cheap public parser API, but finding top-level separators
+// only needs its quoting rules. This deliberately accepts nested block
+// comments and tagged dollar strings, both of which occur in real queries.
+function hasSqlStatementSeparator(source: string): boolean {
+  let quote: "single" | "double" | "line" | "block" | "dollar" | null = null;
+  let dollar = "";
+  let blockDepth = 0;
+  for (let i = 0; i < source.length; i++) {
+    const pair = source.slice(i, i + 2);
+    if (quote === "line") {
+      if (source[i] === "\n") quote = null;
+      continue;
+    }
+    if (quote === "block") {
+      if (pair === "/*") { blockDepth++; i++; }
+      else if (pair === "*/") { if (--blockDepth === 0) quote = null; i++; }
+      continue;
+    }
+    if (quote === "single" || quote === "double") {
+      const mark = quote === "single" ? "'" : '"';
+      if (source[i] === mark) {
+        if (source[i + 1] === mark) i++;
+        else quote = null;
+      }
+      continue;
+    }
+    if (quote === "dollar") {
+      if (source.startsWith(dollar, i)) { i += dollar.length - 1; quote = null; }
+      continue;
+    }
+    if (pair === "--") { quote = "line"; i++; continue; }
+    if (pair === "/*") { quote = "block"; blockDepth = 1; i++; continue; }
+    if (source[i] === "'") { quote = "single"; continue; }
+    if (source[i] === '"') { quote = "double"; continue; }
+    if (source[i] === "$") {
+      const match = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(source.slice(i));
+      if (match) { quote = "dollar"; dollar = match[0]; i += dollar.length - 1; continue; }
+    }
+    if (source[i] === ";") return true;
+  }
+  return false;
+}
+
 defineTool(
   "query",
   {
@@ -1059,7 +1103,7 @@ defineTool(
   async ({ sql: q }) => {
     logRequest("query", null, { sql: q.slice(0, 2000) });
     const statement = q.trim().replace(/;\s*$/, "");
-    if (statement.includes(";")) return fail({ error: "one statement only; drop the semicolons." });
+    if (hasSqlStatementSeparator(statement)) return fail({ error: "one statement only; drop the statement-separating semicolon." });
     if (!/^(select|with)\b/i.test(statement)) return fail({ error: "reads only: start with SELECT or WITH." });
     try {
       const result = await sql.begin(async (tx) => {
@@ -3314,13 +3358,23 @@ await listenForWrites();
 // wait for it: this is the whole of hello and the totals block of news.
 void corpus.get();
 
-for (const signal of ["SIGTERM", "SIGINT"] as const) {
-  process.on(signal, () => {
-    void drainRequestLog().finally(() => process.exit(0));
-  });
-}
-
 outer.use(app);
-outer.listen(PORT, "127.0.0.1", () => {
+const httpServer = outer.listen(PORT, "127.0.0.1", () => {
   console.log(`math-research MCP listening on 127.0.0.1:${PORT}`);
 });
+
+// Deploys replace one instance at a time. Stop accepting first, finish every
+// request already in flight, then flush the request log and exit. Exiting
+// directly on SIGTERM used to reset live MCP POSTs during that otherwise
+// rolling restart; agents saw bursts of opaque `fetch failed` errors.
+let shuttingDown = false;
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.on(signal, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    httpServer.close(() => {
+      void drainRequestLog().finally(() => process.exit(0));
+    });
+    httpServer.closeIdleConnections?.();
+  });
+}

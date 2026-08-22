@@ -109,10 +109,25 @@ async function trailsTouching(ids: string[]) {
   }));
 }
 
+/** A bounded count that clamps rather than refuses.
+ *
+ *  Asking for more rows than a page holds is a reasonable thing to want, and
+ *  a caller that wants 200 wants the first 50 more than it wants an error: it
+ *  gets them, plus the cursor to page on. Rejecting cost callers a whole
+ *  round trip and taught nothing — `limit: Too big` was the single most
+ *  common tool error on this server. The ceiling stays in the description so
+ *  the number is still knowable before the call. */
+const boundedInt = (min: number, max: number, dflt: number, describe: string) =>
+  z.preprocess(
+    (v) => (typeof v === "number" && Number.isFinite(v) ? Math.min(Math.max(Math.round(v), min), max) : v),
+    z.number().int().min(min).max(max).default(dflt),
+  ).describe(describe);
+
 const pageParams = (maxLimit: number, defaultLimit: number) => ({
-  limit: z
-    .number().int().min(1).max(maxLimit).default(defaultLimit)
-    .describe(`How many rows to return, 1 to ${maxLimit}. Defaults to ${defaultLimit}.`),
+  limit: boundedInt(
+    1, maxLimit, defaultLimit,
+    `How many rows to return, 1 to ${maxLimit} (more is clamped to ${maxLimit}; page with offset). Defaults to ${defaultLimit}.`,
+  ),
   offset: z
     .number().int().min(0).default(0)
     .describe("How many rows to skip, for paging through more than one page of results."),
@@ -377,12 +392,37 @@ function guard(name: string, handler: ToolHandler): ToolHandler {
 
 /** Generic in the input schema so each handler's arguments are inferred from
  *  its own declaration, exactly as registerTool infers them. */
+/** Keys callers reach for when they mean `ref`. Every tool that takes a `ref`
+ *  takes one entry named however the caller happens to hold it, and a caller
+ *  holding a uuid under `id` or `problem_id` has the right value under the
+ *  wrong name — which is a naming accident, not an ambiguity. Only id-shaped
+ *  names are here: `title` and `name` are real parameters of other tools. */
+const REF_ALIASES = ["id", "entry", "entry_id", "contribution_id", "problem_id", "conjecture_id", "ref_id"] as const;
+
+function acceptRefAliases<S extends z.ZodType>(schema: S): z.ZodType {
+  const shape = (schema as unknown as { shape?: Record<string, unknown> }).shape;
+  if (!shape || !("ref" in shape)) return schema;
+  return z.preprocess((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const args = value as Record<string, unknown>;
+    if (args.ref !== undefined) return args;
+    for (const alias of REF_ALIASES) {
+      if (typeof args[alias] === "string") {
+        const { [alias]: ref, ...rest } = args;
+        return { ...rest, ref };
+      }
+    }
+    return args;
+  }, schema);
+}
+
 function defineTool<S extends z.ZodType>(
   name: string,
   config: ToolConfig<S>,
   handler: (args: z.infer<S>, extra: never) => Promise<unknown>,
 ): void {
-  TOOLS.push({ name, config, handler: guard(name, handler as ToolHandler) });
+  const inputSchema = acceptRefAliases(config.inputSchema) as S;
+  TOOLS.push({ name, config: { ...config, inputSchema }, handler: guard(name, handler as ToolHandler) });
 }
 
 function buildServer(): McpServer {
@@ -930,7 +970,7 @@ defineTool(
       method: z
         .enum(["semantic", "ncd", "lexical"]).default("semantic")
         .describe("'semantic' compares meaning through on-box embeddings and is the default. 'ncd' compares structure after alpha normalization, which catches shared shape that wording hides. 'lexical' compares words."),
-      limit: z.number().int().min(1).max(50).default(10).describe("How many neighbours to return, 1 to 50."),
+      limit: boundedInt(1, 50, 10, "How many neighbours to return, 1 to 50 (more is clamped to 50)."),
     }),
   },
   async ({ ref, text: qtext, method, limit }) => {
@@ -1103,6 +1143,30 @@ function hasSqlStatementSeparator(source: string): boolean {
   return false;
 }
 
+/** What a failed query gets told about the schema.
+ *
+ *  A bare list of view names answers `relation "q_fronts" does not exist` and
+ *  says nothing at all to `column "summary" does not exist`, which is the
+ *  mistake callers actually make: the right view, a column that lives on a
+ *  different one. So the views the statement named come back with their
+ *  columns, read from the catalog rather than from a list here that would
+ *  drift the first time a view gains a column. When the statement named no
+ *  view this server has, the names alone are the answer to the question that
+ *  was really asked. */
+async function visibleColumns(statement: string): Promise<string> {
+  const rows = await sql<{ view: string; columns: string[] }[]>`
+    select table_name as view, array_agg(column_name order by ordinal_position) as columns
+      from information_schema.columns
+     where table_schema = 'public' and table_name like 'q\_%'
+     group by table_name
+     order by table_name`;
+  const named = new Set(statement.toLowerCase().match(/\bq_[a-z_]+/g) ?? []);
+  const hit = rows.filter((r) => named.has(r.view));
+  return hit.length
+    ? hit.map((r) => `${r.view}(${r.columns.join(", ")})`).join("; ")
+    : rows.map((r) => r.view).join(", ");
+}
+
 defineTool(
   "query",
   {
@@ -1145,8 +1209,7 @@ defineTool(
         error: /statement timeout/i.test(message)
           ? "that query exceeded the 2 second budget. Filter earlier, aggregate instead of scanning, or add a limit."
           : message,
-        views:
-          "q_entries, q_links, q_front_members, q_dictionary, q_transports, q_events, q_verifications, q_artifacts, q_trails, q_trail_entries, q_identities, q_config, q_topic_rules, q_review_claims, q_problems",
+        views: await visibleColumns(statement),
       });
     }
   },
@@ -1548,8 +1611,8 @@ defineTool(
       module: z
         .string().max(300).optional()
         .describe("Optional module or subtree, e.g. `Mathlib.Data.Nat.ModEq` or `MathlibPlus.GraphTheory`."),
-      context: z.number().int().min(0).max(5).default(2).describe("Nearby source lines to return on each side of a match."),
-      limit: z.number().int().min(1).max(100).default(20).describe("Maximum matching lines to return."),
+      context: boundedInt(0, 5, 2, "Nearby source lines to return on each side of a match, 0 to 5 (more is clamped to 5)."),
+      limit: boundedInt(1, 100, 20, "Maximum matching lines to return, 1 to 100 (more is clamped to 100)."),
     }),
   },
   async ({ query, regex, case_sensitive, library, module, context, limit }) => {
@@ -1667,7 +1730,7 @@ defineTool(
       against_library: z.string().optional().describe("With exact_only: find source declarations repeated by this library, e.g. scan MathlibPlus against Mathlib."),
       offset: z.number().int().min(0).default(0).describe("With exact_only: page past this many duplicate groups."),
       threshold: z.number().min(0.3).max(1).default(0.8).describe("With scan: how similar a pair must be to be worth reporting. 1 is identical modulo names."),
-      limit: z.number().int().min(1).max(200).default(10).describe("How many matches, or how many duplicate groups."),
+      limit: boundedInt(1, 200, 10, "How many matches, or how many duplicate groups, 1 to 200 (more is clamped to 200)."),
     }),
   },
   async ({ source, name, scan, library, module, ledger, proofs_only, exact_only, against_library, offset, threshold, limit }) => {
@@ -2064,12 +2127,14 @@ defineTool(
         .string()
         .optional()
         .describe("Instead of a cursor: an ISO timestamp, or a plain interval like '6h', '2d', '1w'. Defaults to the last 24 hours."),
-      questions: z
-        .number().int().min(1).max(50).default(3)
-        .describe("How many open questions to lay out for forecasting, 1 to 50. Each is a small frontier of its own — progress, stalls, trails, about 4 KB — so the default is three and a forecasting table asks for a dozen."),
-      limit: z
-        .number().int().min(1).max(50).default(6)
-        .describe("How many rows each headline list carries, 1 to 50. Every row is a headline with the full text one get away, so raising this is cheap and reading forty of them is not."),
+      questions: boundedInt(
+        1, 50, 3,
+        "How many open questions to lay out for forecasting, 1 to 50 (more is clamped to 50). Each is a small frontier of its own — progress, stalls, trails, about 4 KB — so the default is three and a forecasting table asks for a dozen.",
+      ),
+      limit: boundedInt(
+        1, 50, 6,
+        "How many rows each headline list carries, 1 to 50 (more is clamped to 50). Every row is a headline with the full text one get away, so raising this is cheap and reading forty of them is not.",
+      ),
     }),
   },
   async ({ after_seq, since, questions, limit }) => {
@@ -3511,13 +3576,45 @@ const httpServer = outer.listen(PORT, "127.0.0.1", () => {
 // request already in flight, then flush the request log and exit. Exiting
 // directly on SIGTERM used to reset live MCP POSTs during that otherwise
 // rolling restart; agents saw bursts of opaque `fetch failed` errors.
+//
+// The drain has to actually finish, or it is worse than no drain at all. Two
+// things stop `close()` firing: an idle keep-alive connection from nginx's
+// pool that went idle after the one sweep the signal handler used to do, and a
+// genuinely long request. Either way systemd waits out its whole stop timeout
+// and SIGKILLs, which resets every connection the instance still holds -- the
+// `fetch failed` burst this handler exists to prevent, now ninety seconds
+// wide. On 2026-08-22 four instances were killed that way during deploys.
+//
+// So: sweep idle connections until the server closes, and bound the wait. The
+// deadline sits above the p99 MCP call (about 13 seconds; a `check_lean` is
+// the long tail) and below the unit's stop timeout, so a slow caller is waited
+// for and systemd never has to kill anything. A restart normally costs nothing
+// at all -- with no request in flight, `close()` fires immediately -- and a
+// refused connection is the one case nginx does retry on the next instance,
+// POST or not, because nothing was sent.
+const SHUTDOWN_DEADLINE_MS = 45_000;
 let shuttingDown = false;
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    httpServer.close(() => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
       void drainRequestLog().finally(() => process.exit(0));
+    };
+    const sweep = setInterval(() => httpServer.closeIdleConnections?.(), 100);
+    const deadline = setTimeout(() => {
+      httpServer.closeAllConnections?.();
+      finish();
+    }, SHUTDOWN_DEADLINE_MS);
+    sweep.unref?.();
+    deadline.unref?.();
+    httpServer.close(() => {
+      clearInterval(sweep);
+      clearTimeout(deadline);
+      finish();
     });
     httpServer.closeIdleConnections?.();
   });

@@ -190,6 +190,20 @@ SUBP=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\"
 EV=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$EV" | field '.events[0].kind') == submitted ]] || fail "no submitted event"
 
+# Contract: a caller who has the right entry under the wrong key still gets
+# the entry, and a caller who asks for more rows than a page holds gets the
+# page rather than a validation error. Both were the ledger's most common
+# tool errors, and both cost a whole round trip to learn nothing.
+[[ $(call get "{\"id\":\"$CID\"}" | field '.id') == "$CID" ]] || fail "get refused an entry passed as id instead of ref"
+[[ $(call search '{"limit":500}' | field '.results | length') -le 100 ]] || fail "search did not clamp an oversized limit"
+
+# Contract: a query that names a column the view does not have is told what the
+# view does have, not just that the view exists.
+call query '{"sql":"select no_such_column from q_entries"}' | field '.views' \
+  | grep -q 'q_entries(id, kind, title' || fail "a bad column in a real view did not come back with that view's columns"
+call query '{"sql":"select 1 from q_nowhere"}' | field '.views' \
+  | grep -q 'q_entries, q_events' || fail "a query naming no real view did not come back with the view names"
+
 # Contract: evidence files. Bytes upload content-addressed and chunked with a
 # resumable staging protocol, bind to an entry append-only, list on get and
 # q_files, and download byte-identical. Wrong bytes and strangers both fail

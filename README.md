@@ -182,6 +182,15 @@ the two ways review certifies work instead: a question closed here by a T2 link
 of ledger origin, or an entry carrying an applied impact assessment that nothing
 established elsewhere settles.
 
+**Membership is dated, and the date is the arrival.** Review reads a backlog, so
+what is certified today was mostly written days ago, and a board windowed by
+submission time answers "nothing reached the board today" on a day six things
+did. `contribution.board_at` is the moment membership began, maintained by
+`refresh_board` beside state, notability and impact, and `since` with
+`board: true` windows on it. The rule that decides membership is `is_on_board`
+in `schema.sql`, asked by that refresh alone; everything else reads the column,
+and a deploy reconciles the two.
+
 ## Layout
 
 - `schema.sql`, the Postgres schema. The data model is the design document.

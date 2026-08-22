@@ -1340,4 +1340,10 @@ update contribution c
                                                     and v.method = 'lean-kernel')) t
  where c.id = t.id and c.lean_verified is distinct from t.truth;
 
+-- Reconcile the board with the rule that defines it, for the same reason and
+-- on the same terms as the pass above: refresh_board runs per write, and a
+-- write path that forgets it leaves a row certified and undated, or dated and
+-- gone. Only rows that disagree are written, and there are never many.
+select refresh_board(null);
+
 analyze contribution;

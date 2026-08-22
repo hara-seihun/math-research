@@ -3324,8 +3324,9 @@ mountOAuth(app, PUBLIC_URL);
 // response to a single call, and none of these tools emit progress
 // notifications mid-flight, so a stream bought nothing and cost a
 // Content-Length. Without one, nginx cannot buffer and neither nginx nor
-// Cloudflare will compress, which on a 141 KB `news` was the difference
-// between 141 KB and 23 KB on the wire.
+// Cloudflare will compress, which is worth roughly six to one on these
+// packets. It is not a substitute for sending less: an agent pays for what it
+// reads after decompression, which is why the list doors carry headlines.
 const mcpHandler = createMcpHandler(() => buildServer(), { responseMode: "json" });
 const mcpNodeHandler = toNodeHandler(mcpHandler);
 // Express's JSON middleware has already consumed the stream; hand the parsed

@@ -514,6 +514,7 @@ create table if not exists lean_decl (
   indexed_at timestamptz not null default now(),
   primary key (module, name)
 );
+create index if not exists lean_decl_name_idx on lean_decl (name);
 create index if not exists lean_decl_name_trgm_idx on lean_decl using gin (name gin_trgm_ops);
 create index if not exists lean_decl_statement_trgm_idx on lean_decl using gin (statement gin_trgm_ops);
 create index if not exists lean_decl_library_idx on lean_decl (library, is_proof);

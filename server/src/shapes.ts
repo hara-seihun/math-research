@@ -585,6 +585,15 @@ export const SubmitOut = z.strictObject({
   note: z.string().optional(),
 });
 
+const IndexedDecl = z.strictObject({
+  name: z.string(),
+  module: z.string().describe("The module to import to use it."),
+  library: z.string(),
+  kind: z.string(),
+  is_proof: z.boolean().describe("True when the declaration's type is a proposition, so it is a proved fact rather than a definition."),
+  statement: z.string(),
+});
+
 const ProvedDecl = z.strictObject({
   name: z.string(),
   statement: z.string(),
@@ -608,6 +617,10 @@ export const CheckLeanOut = z.strictObject({
   output: z.string().optional(),
   sorry: z.boolean().optional(),
   errors: z.string().optional().describe("Compiler output with line numbers."),
+  declaration_info: z
+    .array(IndexedDecl)
+    .optional()
+    .describe("Exact signatures and import modules for indexed declarations named in the compiler output."),
   your_contributor_key: z.string().optional(),
 });
 
@@ -618,22 +631,18 @@ const IndexedLibrary = z.strictObject({
   modules: z.number().int(),
   indexed_at: iso,
 });
+export const LeanInfoOut = z.strictObject({
+  name: z.string(),
+  declarations: z.array(IndexedDecl),
+  suggestions: z.array(IndexedDecl).optional(),
+  note: z.string(),
+});
+
 export const SearchDeclsOut = z.strictObject({
   query: z.string().optional(),
   matches: z.number().int().optional().describe("How many declarations match; a count that hit the cap says so in `more`."),
   more: z.boolean().optional(),
-  results: z
-    .array(
-      z.strictObject({
-        name: z.string(),
-        module: z.string().describe("The module to import to use it."),
-        library: z.string(),
-        kind: z.string(),
-        is_proof: z.boolean().describe("True when the declaration's type is a proposition, so it is a proved fact rather than a definition."),
-        statement: z.string(),
-      }),
-    )
-    .optional(),
+  results: z.array(IndexedDecl).optional(),
   next: z.strictObject({ offset: z.number().int() }).nullable().optional(),
   index: z.array(IndexedLibrary).optional(),
   note: z.string().optional(),

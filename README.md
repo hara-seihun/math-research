@@ -125,10 +125,13 @@ that stamps `lean_verified` on submissions is exposed as `check_lean`, which
 creates no contribution, allows `sorry`, and answers instantly for source
 already checked. One place pins the version, `lean/lakefile.toml` and
 `lean/lean-toolchain`, and prose asks `server/src/pinned.ts` for it rather than
-naming it. `tools/index-decls.sh` builds the `search_decls` index from the
-built oleans, which is what makes "is there already a lemma for this?" a
-millisecond of Postgres instead of a twenty-second kernel round trip, and what
-makes MathlibPlus visible despite nothing importing it as a whole.
+naming it. `tools/index-decls.sh` builds the declaration index from the built
+oleans. `search_decls` uses it for fuzzy discovery, while `lean_info` gives an
+exact name one concise signature lookup. Failed checks use the same index to
+attach signatures for declarations named in compiler output. This makes "is
+there already a lemma for this?" and "what is its argument order?" millisecond
+Postgres reads instead of extra kernel round trips, and makes MathlibPlus
+visible despite nothing importing it as a whole.
 
 **Names are not what a statement is.** `search_decls` matches text, so it finds
 only what you can already spell. `lean_similar` matches structure. Every

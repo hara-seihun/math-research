@@ -41,6 +41,25 @@ export type DeclSearch = {
   offset: number;
 };
 
+export async function exactDecls(names: string[]): Promise<DeclRow[]> {
+  const wanted = [...new Set(names.map((name) => name.trim()).filter(Boolean))].slice(0, 20);
+  if (wanted.length === 0) return [];
+  return sql<DeclRow[]>`
+    select d.name, d.module, d.library, d.kind, d.statement, d.is_proof
+    from lean_decl d
+    where d.name = any(${wanted}::text[])
+    order by array_position(${wanted}::text[], d.name),
+             case d.library when 'Mathlib' then 0 when 'Batteries' then 1 when 'Init' then 1
+                            when 'Std' then 1 when 'MathlibPlus' then 2 else 3 end,
+             d.module`;
+}
+
+const QUALIFIED_LEAN_NAME = /(?<![A-Za-z0-9_'.])[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)+(?![A-Za-z0-9_'])/g;
+
+export function declarationNamesIn(output: string): string[] {
+  return [...new Set(output.match(QUALIFIED_LEAN_NAME) ?? [])].slice(0, 12);
+}
+
 const COUNT_CAP = 2000;
 
 export async function searchDecls(params: DeclSearch): Promise<{ rows: DeclRow[]; total: number; capped: boolean }> {

@@ -1365,6 +1365,7 @@ declare -A DOORS=(
   [hello]='{}'
   [search]='{"query":"frontier test question"}'
   [search_decls]='{"query":"csSup_le"}'
+  [lean_info]='{"name":"Nat.ModEq.mul_left'\''"}'
   [lean_similar]='{"source":"theorem contract_door (n : Nat) : n + 0 = n := by simp"}'
   [fronts]='{}'
   [theories]='{}'
@@ -1535,6 +1536,7 @@ STILL=$(psql -X -tAq -h "$WORK" -d math -c "select count(*) from contribution wh
 psql -q -h "$WORK" -d math -c "insert into lean_decl (module, name, library, kind, statement, is_proof) values
   ('Mathlib.Order.Bounds.Basic', 'csSup_le', 'Mathlib', 'theorem', 's.Nonempty → (∀ b ∈ s, b ≤ a) → sSup s ≤ a', true),
   ('Mathlib.Order.Bounds.Basic', 'csSup_le_iff', 'Mathlib', 'theorem', 'BddAbove s → s.Nonempty → (sSup s ≤ a ↔ ∀ b ∈ s, b ≤ a)', true),
+  ('Mathlib.Data.Nat.ModEq', 'Nat.ModEq.mul_left''', 'Mathlib', 'theorem', '∀ {n a b : ℕ} (c : ℕ), a ≡ b [MOD n] → c * a ≡ c * b [MOD c * n]', true),
   ('MathlibPlus.GroupTheory.Claim1', 'plus_widget', 'MathlibPlus', 'def', 'Nat → Nat', false)"
 decls() { call search_decls "$1" | field '.results'; }
 decls '{"query":"csSup_le"}' | python3 -c 'import sys,json; r=json.load(sys.stdin); assert r[0]["name"]=="csSup_le" and r[0]["module"]=="Mathlib.Order.Bounds.Basic", r' \
@@ -1551,6 +1553,25 @@ decls '{"query":"widget","proofs_only":true}' | python3 -c 'import sys,json; ass
   || fail "proofs_only returned a definition"
 call search_decls '{}' | python3 -c 'import sys,json; d=json.load(sys.stdin); assert {i["library"] for i in d["index"]} == {"Mathlib","MathlibPlus"}, d' \
   || fail "search_decls did not report what is indexed"
+INFO=$(call lean_info '{"name":"#check @Nat.ModEq.mul_left'\''"}')
+[[ $(echo "$INFO" | field '.declarations[0].statement') == *"(c : ℕ)"* ]] \
+  || fail "lean_info did not return the exact signature: $INFO"
+[[ $(echo "$INFO" | field '.declarations[0].module') == "Mathlib.Data.Nat.ModEq" ]] \
+  || fail "lean_info did not return the import module: $INFO"
+
+# A compiler application mismatch should carry the signature it names. This
+# keeps the repair in the same response instead of making the caller search,
+# guess an argument order, and compile again.
+INFO_SRC='theorem signature_error : True := by trivial'
+IHASH=$(printf 'import Mathlib\n\n%s\n' "$INFO_SRC" | lean_hash)
+call check_lean "{\"contributor_key\":\"$KEY\",\"source\":\"$INFO_SRC\"}" > "$WORK/info-error.out" &
+INFO_JOB=$!
+await_spool "$IHASH"
+runner_says "$IHASH" '{"ok":false,"exit_code":1,"output":"Application type mismatch in Nat.ModEq.mul_left'\'': expected ℕ but got Prop"}'
+wait $INFO_JOB
+INFO_ERROR=$(cat "$WORK/info-error.out")
+[[ $(echo "$INFO_ERROR" | field '.declaration_info[0].name') == "Nat.ModEq.mul_left'" ]] \
+  || fail "check_lean did not attach the signature named in its error: $INFO_ERROR"
 
 # Contract: alpha-normalized similarity compares what a declaration says, not
 # what anyone called it. These three differ only in binder names and in the

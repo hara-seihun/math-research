@@ -35,7 +35,7 @@ import { searchContributions, related, neighbourhood, createEdge, refreshNotabil
 import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
-  HelloOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
+  HelloOut, LeanInfoOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
   RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetOriginOut, SetTierOut, SetTuningOut, structured, SubmitOut, TheoriesOut, TrailOut,
   TrailsOut,
 } from "./shapes.ts";
@@ -48,7 +48,7 @@ import {
 } from "./exposition.ts";
 import { renderArtifact } from "./render.ts";
 import { attachFiles, badPath, FILE_HASH, filesOf, MAX_CHUNK_BYTES, receiveChunk, storedFile } from "./files.ts";
-import { indexSummary, searchDecls } from "./decls.ts";
+import { declarationNamesIn, exactDecls, indexSummary, searchDecls } from "./decls.ts";
 import { scanDuplicates, similarDeclarations } from "./lean-similar.ts";
 import { headSeq, newsPacket, seqBefore } from "./news.ts";
 
@@ -1384,7 +1384,7 @@ defineTool(
     outputSchema: CheckLeanOut,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
-      "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. `proved` is the declarations whose type is a proposition; `stated` is everything that merely elaborated, meaning `def … : Prop` statements, definitions and data. Nothing is submitted, published, or attributed. This is a throwaway check, so use it as often as you like while you work.",
+      "Send Lean 4 source, get the kernel's verdict back: compiler errors with line numbers, or the exact statements you proved and the axioms each one rests on. When an error names an indexed library declaration, `declaration_info` includes its exact signature and import module so you do not have to guess the argument order. `proved` is the declarations whose type is a proposition; `stated` is everything that merely elaborated, meaning `def … : Prop` statements, definitions and data. Nothing is submitted, published, or attributed. This is a throwaway check, so use it as often as you like while you work.",
       `Same pinned Lean ${leanVersion()} / Mathlib ${mathlibVersion()} that stamps lean_verified on submissions, already warm, nothing to install. A typical check takes ten to twenty seconds; identical source is answered instantly from cache. \`sorry\` is allowed here and reported back, so you can check a skeleton before you fill it in.`,
     ].join(" "),
     inputSchema: z.object({
@@ -1409,9 +1409,62 @@ defineTool(
     if (!requested.ok) return fail({ error: requested.error });
 
     const row = requested.cached ? requested.row : await awaitCheck(requested.hash, CHECK_WAIT_MS);
+    const declarationInfo = row.outcome === "failed"
+      ? await exactDecls(declarationNamesIn(row.detail?.output ?? ""))
+      : [];
     return structured(CheckLeanOut, {
       ...report(row, { cached: requested.cached }),
+      ...(declarationInfo.length > 0 ? { declaration_info: declarationInfo } : {}),
       ...(freshKey ? { your_contributor_key: freshKey } : {}),
+    });
+  },
+);
+
+defineTool(
+  "lean_info",
+  {
+    title: "Get one Lean declaration's exact signature",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: [
+      "Stop guessing a Lean declaration's argument order. Give its exact name and get its full pretty-printed signature, including which binders are implicit or explicit, plus the module to import. This is an indexed lookup and normally returns in milliseconds.",
+      "Use this when you know the declaration name, especially after an application type mismatch. Use search_decls when you know what a lemma should say but not what it is called. check_lean also includes declaration_info automatically when compiler output names indexed declarations.",
+    ].join(" "),
+    inputSchema: z.object({
+      name: z
+        .string().min(1)
+        .describe("Exact declaration name, e.g. `Nat.ModEq.mul_left'`. A leading `@`, `#check`, or `#print` is accepted."),
+    }),
+  },
+  async ({ name }) => {
+    const cleaned = name.trim().replace(/^#(?:check|print)\s+/, "").replace(/^@/, "").trim();
+    if (!cleaned) return fail({ error: "give a declaration name." });
+    logRequest("lean_info", null, { name: cleaned });
+    const declarations = await exactDecls([cleaned]);
+    if (declarations.length > 0) {
+      return structured(LeanInfoOut, {
+        name: cleaned,
+        declarations,
+        note:
+          declarations.length === 1
+            ? "This is the exact indexed signature. Parentheses are explicit arguments; braces are implicit arguments; brackets are instance arguments."
+            : "This exact name occurs in more than one importable module. Pick the module whose library context you are using.",
+      });
+    }
+    const { rows } = await searchDecls({
+      query: cleaned,
+      names_only: true,
+      proofs_only: false,
+      limit: 8,
+      offset: 0,
+    });
+    return structured(LeanInfoOut, {
+      name: cleaned,
+      declarations: [],
+      ...(rows.length > 0 ? { suggestions: rows } : {}),
+      note:
+        rows.length > 0
+          ? "No exact declaration has that name. These are the nearest indexed name matches."
+          : "No indexed declaration has that name. Use search_decls with name or statement fragments, or check_lean for a local declaration.",
     });
   },
 );
@@ -1422,7 +1475,7 @@ defineTool(
     title: "Search the Lean libraries for something to use",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
-      "Every declaration the pinned Lean libraries actually provide, searchable by name and by statement: Mathlib and its dependencies, the core toolchain, and all of MathlibPlus. Ask before you prove. A hit gives you the exact name, the module to import, and the pretty-printed statement, so `check_lean` is where you use a lemma rather than where you go hunting for one.",
+      "Every declaration the pinned Lean libraries actually provide, searchable by name and by statement: Mathlib and its dependencies, the core toolchain, and all of MathlibPlus. Ask before you prove. A hit gives you the exact name, the module to import, and the pretty-printed statement. If you already know the exact name and need its argument order, use lean_info for one concise answer; check_lean is where you use a lemma rather than where you go hunting for one.",
       "Terms are ANDed and match the name or the statement, so `csSup_le directed` and `Finset.card \"≤\"` both work; \"quoted phrases\" stay whole. names_only searches names alone; proofs_only drops definitions and `def … : Prop` statements and leaves proved facts. This is also the only way to see inside MathlibPlus, which has no umbrella module: search here, then import the module a result names.",
       "Call it with no query for what is indexed and how fresh that index is.",
     ].join(" "),

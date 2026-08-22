@@ -344,12 +344,20 @@ export async function related(args: RelatedArgs) {
 
   const wantsContent = args.method === "ncd";
   // An entry that is already embedded is its own probe: re-embedding its text
-  // costs a second and a half on a CPU embedder to recompute a vector sitting
-  // in the row.
-  const probeVector =
+  // recomputes a vector that is already sitting in the row.
+  //
+  // Resolved to a value rather than a SQL fragment because the query below
+  // needs it twice, once to score and once to order, and a fragment is
+  // consumed by its first interpolation -- the second came out as a bare `$1`
+  // and every semantic `related` call failed with "syntax error at or near
+  // $1". A bound value can be interpolated as many times as it is needed, and
+  // a literal vector on both branches is also what pgvector wants on the
+  // order-by operand for the HNSW index to be used.
+  const probeVector: string | null =
     args.method === "lexical" ? null
-    : embedded ? sql`(select embedding from contribution where id = ${selfId}::uuid)`
-    : await embed(queryText).then((v) => (v ? sql`${asVector(v)}::vector` : null));
+    : embedded
+      ? (await sql<{ v: string }[]>`select embedding::text as v from contribution where id = ${selfId}::uuid`)[0]?.v ?? null
+      : await embed(queryText).then((v) => (v ? asVector(v) : null));
   if (!probeVector && args.method === "semantic") {
     return { error: "semantic search is warming up, so use method 'ncd' or 'lexical' for now." };
   }
@@ -359,12 +367,12 @@ export async function related(args: RelatedArgs) {
   if (probeVector) {
     candidates = await sql<Candidate[]>`
       select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source, c.created_at,
-             round((1 - (c.embedding <=> ${probeVector}))::numeric, 4)::float8 as similarity,
+             round((1 - (c.embedding <=> ${probeVector}::vector))::numeric, 4)::float8 as similarity,
              case when ${wantsContent} then left(a.content, 4000) end as content
       from contribution c left join artifact a on ${wantsContent} and a.hash = c.artifact_hash
       where c.kind <> 'edge' and c.status = 'active' and c.embedding is not null
         and (${selfId}::uuid is null or c.id <> ${selfId})
-      order by c.embedding <=> ${probeVector}
+      order by c.embedding <=> ${probeVector}::vector
       limit ${wantsContent ? 150 : args.limit}`;
   } else {
     // Words, for the caller who asked for words: a title or a typed phrase,

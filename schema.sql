@@ -176,7 +176,13 @@ create table if not exists contribution (
   impact_closure    real,
   impact_assessments integer not null default 0,
   origin            text not null default 'ledger',   -- 'ledger' | 'external'
-  origin_source     text                              -- required when origin = 'external'
+  origin_source     text,                             -- required when origin = 'external'
+  -- When this entry reached the all-time board, null while it is off it. A
+  -- transition time rather than a predicate: "what reached the board today"
+  -- is not "what was submitted today and is on the board", because review
+  -- certifies a week-old closure and the day it did so is the news. Derived
+  -- by refresh_board and never hand-set.
+  board_at          timestamptz
 );
 -- 'rejected' arrived after the first deployments, so the constraint is
 -- rewritten rather than declared once. Re-appliable: drop by the name Postgres
@@ -195,6 +201,10 @@ alter table contribution add column if not exists impact_closure real;
 alter table contribution add column if not exists impact_assessments integer not null default 0;
 alter table contribution add column if not exists origin text not null default 'ledger';
 alter table contribution add column if not exists origin_source text;
+alter table contribution add column if not exists board_at timestamptz;
+-- The board is the smallest population here and the most read, so it is an
+-- index rather than a scan with a filter.
+create index if not exists contribution_board_at_idx on contribution (board_at desc) where board_at is not null;
 alter table contribution drop constraint if exists contribution_origin_check;
 alter table contribution add constraint contribution_origin_check
   check (origin in ('ledger', 'external') and (origin = 'ledger' or origin_source is not null));
@@ -703,7 +713,7 @@ create or replace view contribution_overview as
 select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
        c.artifact_hash, c.metadata, c.notability, c.tags, c.names, c.created_at, c.updated_at, c.search,
        c.lean_verified, c.state, c.impact_reach, c.impact_advance, c.impact_closure, c.impact_assessments,
-       c.origin, c.origin_source
+       c.origin, c.origin_source, c.board_at
 from contribution c;
 
 -- ——— Tunable policy ————————————————————————————————————————————————————
@@ -895,6 +905,66 @@ begin
    where c.id = t.id;
 end $$;
 
+-- ——— The all-time board ————————————————————————————————————————————————
+-- Certified mathematics: what this ledger established first and review has
+-- vouched for. Certification is a certificate on the row, not a property of
+-- its kind -- this ledger records a finding as a question its own closure
+-- settles at least as often as it records one as a `theorem`, so a board
+-- picked by kind ranks campaign scaffolding and misses the results. Either a
+-- T2 settling link of ledger origin, or an applied impact assessment with
+-- nothing established elsewhere closing the same question.
+--
+-- The rule lives here, once, because it is asked three ways: by the refresh
+-- that materializes board membership, by the review queue looking for
+-- certified rows still headlined as questions, and by every read of the board
+-- itself. Stated twice it disagrees with itself, which it has before.
+create or replace function is_certified(cid uuid) returns boolean language sql stable as $$
+  select c.origin = 'ledger' and (
+    exists (select 1 from edge be
+            join contribution bec on bec.id = be.contribution_id
+            join contribution bsetter on bsetter.id = be.src
+            where be.dst = c.id and be.rel = any (array['answers','proves','disproves','refutes','resolves'])
+              and bec.status = 'active' and bsetter.status = 'active'
+              and bec.tier >= 2 and bsetter.origin = 'ledger')
+    or (c.impact_assessments > 0 and not exists (
+          select 1 from edge xe
+          join contribution xec on xec.id = xe.contribution_id
+          join contribution xsetter on xsetter.id = xe.src
+          where xe.dst = c.id and xe.rel = any (array['answers','proves','disproves','refutes','resolves'])
+            and xec.status = 'active' and xsetter.status = 'active'
+            and xsetter.origin = 'external')))
+  from contribution c where c.id = cid
+$$;
+
+-- A row on the board has to say what was found. A closure keeps its question
+-- as an entry and as a name, but its headline is the answer: "Λ ≤ 0.1629 is
+-- independently certified", not "can Λ ≤ 0.1629 be independently certified?".
+-- An interrogative headline reads as an unanswered question wherever it is
+-- ranked, and the top of a page of established mathematics is the worst place
+-- to read that way.
+create or replace function title_states_finding(t text) returns boolean language sql immutable as $$
+  select right(btrim($1), 1) <> '?'
+$$;
+
+create or replace function is_on_board(cid uuid) returns boolean language sql stable as $$
+  select c.status = 'active' and title_states_finding(c.title) and is_certified(c.id)
+  from contribution c where c.id = cid
+$$;
+
+-- Membership is materialized as the moment it began, so "the board over the
+-- last day" is a window on when review certified something rather than on
+-- when it happened to be submitted. Leaving the board clears the mark, so a
+-- row that returns dates from its return: the question a window asks is when
+-- this became established here, and the answer is the latest time it did.
+create or replace function refresh_board(ids uuid[] default null) returns void language plpgsql as $$
+begin
+  if ids is not null and cardinality(ids) = 0 then return; end if;
+  update contribution c
+     set board_at = case when is_on_board(c.id) then coalesce(c.board_at, now()) else null end
+   where (ids is null or c.id = any (ids))
+     and (c.board_at is not null) <> is_on_board(c.id);
+end $$;
+
 -- ——— Work-item state ———————————————————————————————————————————————————
 -- A question is settled when something active in the graph answers it, and
 -- also when something answers a statement this question has been *reformulated*
@@ -1001,6 +1071,9 @@ begin
   perform refresh_state(targets);
   perform refresh_notability(targets);
   perform refresh_impact(targets);
+  -- Last, because board membership reads the assessment counts the line
+  -- above just wrote.
+  perform refresh_board(targets);
 end $$;
 
 \ir tools/tuning-defaults.sql
@@ -1016,7 +1089,7 @@ create or replace view q_entries as
   select id, kind, title, summary, state, status, tier, notability, lean_verified,
          tags, names, identity_id, artifact_hash, metadata, created_at, updated_at,
          impact_reach, impact_advance, impact_closure, impact_assessments,
-         origin, origin_source
+         origin, origin_source, board_at
   from contribution_overview
   where kind <> 'edge';
 
@@ -1173,6 +1246,44 @@ do $$ begin
   if not exists (select 1 from config where key = 'derived_columns_backfilled') then
     update contribution c set title = c.title;
     insert into config (key, value) values ('derived_columns_backfilled', to_jsonb(now()))
+      on conflict (key) do nothing;
+  end if;
+end $$;
+
+-- The board existed before it was dated, so its members need their arrival
+-- times read out of the event ledger once. A member arrived when review first
+-- certified it: the moment the settling link reached T2, or the moment an
+-- impact assessment was applied, whichever came first. Everything after this
+-- pass is dated as it happens by refresh_board.
+do $$ begin
+  if not exists (select 1 from config where key = 'board_at_backfilled') then
+    with member as (
+      select c.id, c.updated_at, c.created_at from contribution c where is_on_board(c.id)
+    ), closure as (
+      select m.id, min(coalesce(promoted.at, e.created_at)) as at
+      from member m
+      join edge e on e.dst = m.id
+        and e.rel = any (array['answers','proves','disproves','refutes','resolves'])
+      join contribution ec on ec.id = e.contribution_id and ec.status = 'active' and ec.tier >= 2
+      join contribution s on s.id = e.src and s.status = 'active' and s.origin = 'ledger'
+      left join lateral (
+        select min(ev.created_at) as at from event ev
+         where ev.contribution_id = ec.id and ev.kind = 'tier-changed'
+           and jsonb_typeof(ev.payload->'tier') = 'number'
+           and (ev.payload->>'tier')::int >= 2) promoted on true
+      group by m.id
+    ), assessed as (
+      select m.id, min(ev.created_at) as at from member m
+      join event ev on ev.contribution_id = m.id and ev.kind = 'impact-assessment-applied'
+      group by m.id
+    )
+    update contribution c
+       set board_at = coalesce(least(closure.at, assessed.at), m.updated_at, m.created_at)
+      from member m
+      left join closure on closure.id = m.id
+      left join assessed on assessed.id = m.id
+     where c.id = m.id;
+    insert into config (key, value) values ('board_at_backfilled', to_jsonb(now()))
       on conflict (key) do nothing;
   end if;
 end $$;

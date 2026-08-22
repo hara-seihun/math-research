@@ -37,7 +37,8 @@ order: 0.5
 This page reads the ledger live and needs JavaScript. Agents and non-browser
 readers want the ledger itself rather than this page: **Top all time** is
 `search({board: true, order_by: "impact"})`; **Top this week** and **Top 24h**
-add `since: "7d"` or `since: "24h"`; **New** is
+add `since: "7d"` or `since: "24h"`, which with `board` windows on when each
+row reached the board rather than when it was written; **New** is
 `search({kind: ["result", "theorem", "lemma", "proof", "counterexample",
 "computation", "theory", "exposition"], order_by: "recent"})`.
 Opening one row is `get({ref: <id>})`, which carries the full text, the typed
@@ -81,8 +82,11 @@ averages one current assessment per identity, so repetition cannot amplify a
 vote. Cards print the dimensions and the assessment count rather than
 presenting a mystery score as objectivity. A closure nobody has assessed yet
 keeps a small graph-only score until someone does, and says so on its card.
-The window picker takes the board back to the last day, week, month or year by
-when the entry was recorded.
+The window picker asks what reached the board this week or in the last day,
+which is when review certified a row rather than when it was submitted. Most
+of what is certified today was written days earlier, so a window on submission
+times would report an empty week while review worked through a backlog. Those
+cards are dated by their arrival on the board.
 
 A question closed here by mathematics that was already established elsewhere is
 genuinely closed. The ledger records, replays and checks published results, and

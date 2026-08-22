@@ -57,7 +57,7 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
     // first thing anyone arriving wants and the one thing graph density
     // cannot answer.
     sql`select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
-               c.origin, c.origin_source, c.created_at, ${impactScore()} as impact_score
+               c.origin, c.origin_source, c.created_at, c.board_at, ${impactScore()} as impact_score
         from contribution c
         where c.status = 'active' and ${onBoard()}
         order by impact_score desc, c.notability desc, c.created_at desc limit 5`,

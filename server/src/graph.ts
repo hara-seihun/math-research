@@ -1,5 +1,5 @@
 import type { TransactionSql } from "postgres";
-import { onBoard, sql, withoutExternalResults } from "./db.ts";
+import { onBoard, sql, windowColumn, withoutExternalResults } from "./db.ts";
 import { sha256hex } from "./identity.ts";
 import { rankBySimilarity } from "./ncd.ts";
 
@@ -87,7 +87,7 @@ export async function searchContributions(args: SearchArgs) {
     and (${args.origin ?? null}::text is null or c.origin = ${args.origin ?? null})
     and (not ${args.board ?? false}::bool or (${onBoard()}))
     and (not ${args.exclude_external ?? false}::bool or (${withoutExternalResults()}))
-    and (${args.since ?? null}::timestamptz is null or c.created_at >= ${args.since ?? null})
+    and (${args.since ?? null}::timestamptz is null or ${windowColumn(args.board)} >= ${args.since ?? null})
     and (${args.include_inactive ?? false} or c.status = 'active')
     and (${args.front ?? null}::uuid is null or exists (
           select 1 from edge e join contribution ec on ec.id = e.contribution_id
@@ -95,7 +95,7 @@ export async function searchContributions(args: SearchArgs) {
             and e.rel = 'in-front' and ec.status = 'active'))`;
 
   const columns = sql`c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.tags, c.names,
-                      c.created_at, c.lean_verified, c.notability, c.origin, c.origin_source`;
+                      c.created_at, c.board_at, c.lean_verified, c.notability, c.origin, c.origin_source`;
 
   // Pass one: the text index. A query whose terms appear anywhere in the
   // corpus is answered entirely here, off contribution_search_idx.
@@ -106,7 +106,7 @@ export async function searchContributions(args: SearchArgs) {
              ts_rank(${RANK_WEIGHTS}::float4[], c.search, to_tsquery('english', ${any})) as text_rank
       from contribution c
       where c.search @@ to_tsquery('english', ${any}) and ${filters})
-    select id, kind, title, summary, tier, status, state, tags, names, created_at,
+    select id, kind, title, summary, tier, status, state, tags, names, created_at, board_at,
            lean_verified, notability, origin, origin_source,
            case when complete then 'every term' else 'some terms' end as matched,
            round(text_rank::numeric, 4)::float8 as score

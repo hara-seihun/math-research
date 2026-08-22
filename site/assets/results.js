@@ -17,6 +17,11 @@ const RESULT_KINDS = [
 
 const PAGE = 25;
 
+// A window on the board is a window on when review certified each row, which
+// is what `since` means once `board` is set. Windowing on submission instead
+// asked a different question -- what was written today and has already been
+// certified -- and answered "nothing reached the board today" on days when six
+// things did.
 const FILTERS = {
   "top-all": {
     request: () => ({ board: true, order_by: "impact" }),
@@ -140,8 +145,8 @@ function relativeTime(iso) {
   return formatter.format(Math.round(days / 30), "month");
 }
 
-function timeNode(iso) {
-  const node = element("time", "meta-time", relativeTime(iso));
+function timeNode(iso, label) {
+  const node = element("time", "meta-time", label ? `${label} ${relativeTime(iso)}` : relativeTime(iso));
   node.dateTime = iso;
   node.title = new Date(iso).toLocaleString();
   return node;
@@ -162,7 +167,10 @@ function card(entry, rank) {
 
   const eyebrow = element("div", "card-eyebrow");
   eyebrow.append(element("span", "rank", String(rank)), element("span", "kind", entry.kind));
-  if (entry.created_at) eyebrow.append(timeNode(entry.created_at));
+  // On the board, the date that matters is when it got there. Submission dates
+  // on a board ordered and windowed by certification read as the wrong clock.
+  if (entry.board_at) eyebrow.append(timeNode(entry.board_at, "certified"));
+  else if (entry.created_at) eyebrow.append(timeNode(entry.created_at));
   link.append(eyebrow, element("h2", "card-title", entry.title));
   if (entry.summary) link.append(element("p", "card-summary", entry.summary));
 
@@ -315,7 +323,8 @@ function renderEntry(entry) {
   const eyebrow = element("div", "card-eyebrow");
   eyebrow.append(element("span", "kind", entry.kind));
   eyebrow.append(element("span", "tier", tierLabel(entry.tier)));
-  eyebrow.append(timeNode(entry.created_at));
+  eyebrow.append(timeNode(entry.created_at, "recorded"));
+  if (entry.board_at) eyebrow.append(timeNode(entry.board_at, "certified"));
   header.append(eyebrow, element("h1", "entry-title", entry.title));
   if (entry.summary && !restatesTheBody(entry)) header.append(element("p", "entry-summary", entry.summary));
   if (entry.author) header.append(element("p", "entry-author", `Contributed by ${entry.author}`));

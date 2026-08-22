@@ -367,6 +367,7 @@ await db`select refresh_state(null)`;
 const [{ tagged }] = await db<{ tagged: string }[]>`
   select (select inherit_topics()) + (select inherit_topics()) as tagged`;
 await db`select refresh_notability(null)`;
-console.log(`state refreshed, ${tagged} entries given inherited topics, notability refreshed`);
+await db`select refresh_board(null)`;
+console.log(`state refreshed, ${tagged} entries given inherited topics, notability and the board refreshed`);
 db.release();
 await sql.end();

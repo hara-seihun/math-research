@@ -22,47 +22,28 @@ export const sql = process.env.DATABASE_URL
 export const SETTLES = ["answers", "proves", "disproves", "refutes", "resolves"];
 
 /** Certified mathematics: what this ledger established first and review has
- *  vouched for.
- *
- *  Certification is a certificate on the row, not a property of the row's
- *  kind: this ledger records a finding as a question its own closure settles
- *  at least as often as it records one as a `theorem`, so a board picked by
- *  kind ranks campaign scaffolding and misses the results. Either a T2
- *  settling link of ledger origin, or an applied impact assessment with
- *  nothing established elsewhere closing the same question.
- *
- *  A fragment over a `contribution` aliased `c`, built fresh per call because
- *  a fragment is consumed by the query it is interpolated into. */
-export const certified = () => sql`
-  c.origin = 'ledger' and (
-    exists (select 1 from edge be
-            join contribution bec on bec.id = be.contribution_id
-            join contribution bsetter on bsetter.id = be.src
-            where be.dst = c.id and be.rel = any(${SETTLES})
-              and bec.status = 'active' and bsetter.status = 'active'
-              and bec.tier >= 2 and bsetter.origin = 'ledger')
-    or (c.impact_assessments > 0 and not exists (
-          select 1 from edge xe
-          join contribution xec on xec.id = xe.contribution_id
-          join contribution xsetter on xsetter.id = xe.src
-          where xe.dst = c.id and xe.rel = any(${SETTLES})
-            and xec.status = 'active' and xsetter.status = 'active'
-            and xsetter.origin = 'external')))`;
+ *  vouched for. The rule itself is `is_certified` in schema.sql, where the
+ *  refresh that materializes board membership also reads it; this is that one
+ *  rule asked about a `contribution` aliased `c`. */
+export const certified = () => sql`is_certified(c.id)`;
 
-/** A row on the board has to say what was found. A closure keeps its question
- *  as an entry and as a name, but its headline is the answer: "Λ ≤ 0.1629 is
- *  independently certified", not "can Λ ≤ 0.1629 be independently certified?".
- *  An interrogative headline reads as an unanswered question wherever it is
- *  ranked, and the top of an all-time board of established mathematics is the
- *  worst possible place to read that way. */
-export const statesAFinding = () => sql`right(btrim(c.title), 1) <> '?'`;
+/** A row on the board has to say what was found: "Λ ≤ 0.1629 is independently
+ *  certified", not "can Λ ≤ 0.1629 be independently certified?". */
+export const statesAFinding = () => sql`title_states_finding(c.title)`;
 
 /** The all-time board: certified mathematics, headlined by what was found,
  *  which is what lemma.ing/results publishes and what `order_by: 'impact'` is
- *  worth ordering. A certified row that still asks its question is held off
- *  and handed to review as `asking_closures` instead of shipped as a
- *  headline. */
-export const onBoard = () => sql`(${certified()}) and ${statesAFinding()}`;
+ *  worth ordering. Membership is materialized as the moment it began, so this
+ *  is a column test rather than a walk of the graph, and `board_at` is also
+ *  what a time window on the board means. A certified row that still asks its
+ *  question is off it and handed to review as `asking_closures` instead of
+ *  shipped as a headline. */
+export const onBoard = () => sql`c.board_at is not null`;
+
+/** Which clock a `since` window runs on. Off the board it is submission time;
+ *  on the board it is arrival time, because review certifies a week-old
+ *  closure and the day it did so is the news. */
+export const windowColumn = (board: boolean | undefined) => (board ? sql`c.board_at` : sql`c.created_at`);
 
 /** Exclude mathematics established elsewhere. This removes directly external
  *  entries and questions with an active external closure, while retaining

@@ -1296,6 +1296,20 @@ call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false}" | python3 -
 ANSWERING=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"State the finding in the headline\",\"summary\":\"Regression fixture.\",\"content\":\"A headline that answers.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"A presentation amendment preserves content\"}}" | field '.id')
 call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$ANSWERING\",\"decision\":\"approve\",\"note\":\"The headline states what was found.\"}" > /dev/null
 call search '{"board":true,"order_by":"impact","limit":1}' | python3 -c 'import sys,json;assert json.load(sys.stdin)["results"][0]["id"]=="'"$EDIT_TARGET"'"' || fail "a re-headlined closure did not return to the board"
+
+# Contract: a window on the board is a window on when review certified a row,
+# not on when it was submitted. Review works through a backlog, so what reaches
+# the board today was mostly written days ago; windowing on submission reported
+# "nothing reached the board in the last 24 hours" on a day six things did.
+WQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"The month-old cell is realized\",\"summary\":\"s\",\"content\":\"An obligation recorded long before anyone read it.\"}" | field '.id')
+WA=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"The realizing construction, recorded a month ago\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$WQ\",\"rel\":\"answers\"}]}" | field '.id')
+W_EDGE=$(psql -h "$WORK" -d math -tAc "select contribution_id from edge where src='$WA' and dst='$WQ' and rel='answers'")
+psql -h "$WORK" -d math -qc "update contribution set created_at = now() - interval '30 days' where id in ('$WQ','$WA','$W_EDGE')"
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$W_EDGE\",\"tier\":2,\"note\":\"read a month after it was written\"}" > /dev/null
+call search '{"board":true,"order_by":"impact","since":"24h","limit":100}' | python3 -c 'import sys,json;rows=[r for r in json.load(sys.stdin)["results"] if r["id"]=="'"$WQ"'"];assert rows, "a closure certified minutes ago missed the 24h board";assert rows[0]["board_at"] > rows[0]["created_at"], rows[0]' || fail "the board window ran on submission time instead of certification time"
+call search '{"kind":"problem","since":"24h","limit":100}' | python3 -c 'import sys,json;assert not any(r["id"]=="'"$WQ"'" for r in json.load(sys.stdin)["results"])' || fail "an ordinary window stopped meaning submission time"
+call retract "{\"contributor_key\":\"$KEY\",\"ref\":\"$WA\",\"note\":\"withdrawn\"}" > /dev/null
+[[ $(psql -h "$WORK" -d math -tAc "select board_at is null from contribution where id='$WQ'") == t ]] || fail "a question whose closure was withdrawn kept its board date"
 # One pending rejection lets the every-door census exercise that outcome too.
 IMPACT_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment\",\"title\":\"Bad impact assessment\",\"summary\":\"Reject me.\",\"content\":\"Unsupported scores.\",\"assesses_impact\":\"$EDIT_TARGET\",\"impact\":{\"reach\":0,\"advance\":0,\"closure\":0}}" | field '.id')
 

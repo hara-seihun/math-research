@@ -4,7 +4,7 @@ import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, isInitializeRequest, McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { announceWrite, cacheKey, listenForWrites, shared } from "./cache.ts";
-import { certified, drainRequestLog, impactScore, logRequest, onBoard, pruneRequestLog, SETTLES, sql, statesAFinding, withoutExternalResults } from "./db.ts";
+import { certified, drainRequestLog, impactScore, logRequest, onBoard, pruneRequestLog, SETTLES, sql, statesAFinding, windowColumn, withoutExternalResults } from "./db.ts";
 import { guide, guideList, guideNames, guides as shelf } from "./guides.ts";
 import { leanVersion, mathlibVersion } from "./pinned.ts";
 import { corpus } from "./snapshot.ts";
@@ -522,7 +522,7 @@ defineTool(
       exclude_external: z
         .boolean().optional()
         .describe("Exclude entries established elsewhere and questions with an active external closure. Keeps ordinary ledger results."),
-      since: z.string().optional().describe("Only entries created since this ISO timestamp or interval such as '30m', '24h', '7d', or '2w'."),
+      since: z.string().optional().describe("Only entries created since this ISO timestamp or interval such as '30m', '24h', '7d', or '2w'. With `board: true` it windows on when each row reached the board instead, which is when review certified it rather than when it was submitted."),
       order_by: z
         .enum(["notability", "impact", "recent", "oldest"]).optional()
         .describe("Only for browsing without a query (text search orders by relevance). 'impact' combines damped graph importance with T2 reviewed reach/advance/closure. Default 'notability'."),
@@ -574,7 +574,7 @@ defineTool(
                 and (${settled_by_origin ?? null}::text is null or setter.origin = ${settled_by_origin ?? null})))
         and (not ${board ?? false}::bool or (${onBoard()}))
         and (not ${exclude_external ?? false}::bool or (${withoutExternalResults()}))
-        and (${sinceAt ?? null}::timestamptz is null or c.created_at >= ${sinceAt ?? null})
+        and (${sinceAt ?? null}::timestamptz is null or ${windowColumn(board)} >= ${sinceAt ?? null})
         and (${lean_verified ?? null}::bool is null or c.lean_verified = ${lean_verified ?? false})
         and (${frontId ?? null}::uuid is null or exists (
               select 1 from edge e join contribution ec on ec.id = e.contribution_id
@@ -589,7 +589,7 @@ defineTool(
                c.origin, c.origin_source,
                c.impact_reach, c.impact_advance, c.impact_closure, c.impact_assessments,
                ${impactScore()} as impact_score,
-               c.tags, c.names, c.created_at
+               c.tags, c.names, c.created_at, c.board_at
         from contribution c ${where}
         order by ${order_by === "recent" ? sql`c.created_at desc, c.id desc` : order_by === "oldest" ? sql`c.created_at asc, c.id asc` : order_by === "impact" ? sql`impact_score desc, c.notability desc, c.created_at desc, c.id desc` : sql`c.notability desc, c.created_at desc, c.id desc`}
         limit ${limit} offset ${offset}`,
@@ -957,7 +957,7 @@ defineTool(
     const id = found.id;
     const [c] = await sql`
       select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.metadata, c.notability, c.tags, c.names,
-             c.identity_id, c.artifact_hash, c.created_at, c.updated_at, c.lean_verified,
+             c.identity_id, c.artifact_hash, c.created_at, c.updated_at, c.board_at, c.lean_verified,
              c.origin, c.origin_source,
              a.content, a.media_type, i.display_name as author
       from contribution_overview c
@@ -998,9 +998,10 @@ defineTool(
     // A kind without work-state should not show `state: null`; empty
     // sections likewise say nothing a reader needs. A short entry whose
     // title, summary and content are the same sentence should say it once.
-    const { state, summary, origin_source: originSource, ...entry } = c!;
+    const { state, summary, origin_source: originSource, board_at: boardAt, ...entry } = c!;
     return structured(GetOut, {
       ...entry,
+      ...(boardAt ? { board_at: boardAt } : {}),
       ...(originSource ? { origin_source: originSource } : {}),
       ...(sameText(summary as string, entry.title as string) ? {} : { summary }),
       ...(state ? { state } : {}),
@@ -1046,7 +1047,7 @@ defineTool(
     outputSchema: QueryOut,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_dictionary(correspondence_id, correspondence, tier, notability, theory_id, source_side, target_side, fidelity, row_no, source, target, note, proof), every theory's translation table as rows; q_transports(reformulation_id, title, tier, status, notability, created_at, fidelity, reformulates_id, reformulates, reformulates_kind, reformulates_state, via_id, via, via_kind, theory_id, transports), what has been restated through a theory and whether it carries settlement; q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases; q_files(contribution_id, path, hash, media_type, size_bytes, identity_id, created_at), every attached evidence file, downloadable at /files/<hash>; q_expositions(exposition_id, title, tier, status, notability, identity_id, artifact_hash, media_type, size_bytes, created_at, edge_tier, expounds_id, expounds, expounds_kind, expounds_tier), every paper and the entry it writes up. Nothing else is visible to it.",
+      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, board_at, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_dictionary(correspondence_id, correspondence, tier, notability, theory_id, source_side, target_side, fidelity, row_no, source, target, note, proof), every theory's translation table as rows; q_transports(reformulation_id, title, tier, status, notability, created_at, fidelity, reformulates_id, reformulates, reformulates_kind, reformulates_state, via_id, via, via_kind, theory_id, transports), what has been restated through a theory and whether it carries settlement; q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, created_at, updated_at); q_trail_entries(trail_id, note, contribution_ids, created_at); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases; q_files(contribution_id, path, hash, media_type, size_bytes, identity_id, created_at), every attached evidence file, downloadable at /files/<hash>; q_expositions(exposition_id, title, tier, status, notability, identity_id, artifact_hash, media_type, size_bytes, created_at, edge_tier, expounds_id, expounds, expounds_kind, expounds_tier), every paper and the entry it writes up. Nothing else is visible to it.",
     inputSchema: z.object({
       sql: z
         .string().max(8000)
@@ -2273,12 +2274,12 @@ defineTool(
     const [target] = await sql<{ title: string; origin: string; origin_source: string | null }[]>`
       select title, origin, origin_source from contribution where id = ${id}`;
     if (!target) return fail({ error: "no contribution with that id" });
-    // Which questions this decision moves on or off the all-time board, asked
-    // by evaluating the board's own membership rule either side of the write.
-    // Re-deriving that rule here instead once cost the caller the truth: the
-    // copy tested `kind in ('problem','conjecture')`, the board tests nothing
-    // of the kind, and every question filed as a `result` left the board in
-    // silence. A rule stated twice is a rule that disagrees with itself.
+    // Which questions this decision moves on or off the all-time board, read
+    // off the board's own membership either side of the write. Re-deriving
+    // the rule here instead once cost the caller the truth: the copy tested
+    // `kind in ('problem','conjecture')`, the board tests nothing of the kind,
+    // and every question filed as a `result` left the board in silence. A rule
+    // stated twice is a rule that disagrees with itself.
     const settledByThis = await sql<{ id: string }[]>`
       select distinct e.dst as id
       from edge e
@@ -2301,6 +2302,10 @@ defineTool(
                                    before: { origin: target.origin, source: target.origin_source }, note } as never)})`;
       await releaseClaims(tx, [id]);
     });
+    // Origin is one of the five ways a row moves on or off the board, so the
+    // questions this entry settles have to be re-derived before they are read
+    // back, or the answer describes the board as it was a moment ago.
+    await refreshAround([id, ...touched]);
     const after = touched.length ? await boardMembers() : [];
     const on = new Set(after.map((r) => r.id));
     const was = new Set(before.map((r) => r.id));

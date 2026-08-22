@@ -398,32 +398,32 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"not
 GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '.tier') == 2 ]] || fail "operator set_tier did not apply"
 
-# Contract: the review queue is a worklist, not a scoreboard. Your own work is
-# out (you may not promote it), and so is anything you have already read. What
-# somebody *else* read and left undecided stays in, marked, because a reading
-# without a verdict is not a decision and entries that collected one used to
-# sit at T0 unreachable forever. backlog counts the whole queue rather than the
-# page a scheduler happens to have asked for.
+# Contract: the review queue is identity-blind. The mathematics here is written
+# by one agent fleet under one key, so a queue that hid the reviewer's own work
+# and their own readings handed that fleet an empty worklist, its scheduler a
+# demand of zero, and the ledger no reviewers at all. Everything active stays
+# in, whoever wrote it and whoever has read it; a reading without a verdict is
+# not a decision, so those come back marked and sorted behind the unread ones.
+# backlog counts the whole queue rather than the page a scheduler asked for.
 RQX=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"conjecture\",\"title\":\"queue subject\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 RQO=$(call submit "{\"contributor_key\":\"$OPKEY\",\"kind\":\"conjecture\",\"title\":\"the reviewer's own conjecture\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 queue() { call review_queue "{\"contributor_key\":\"$OPKEY\",\"kind\":\"conjecture\",\"claim\":false${1:-}}"; }
 queued() { python3 -c "import sys,json; d=json.load(sys.stdin); ids=[e['id'] for e in d['unreviewed']]; assert d['backlog']['unreviewed'] == len(ids), d['backlog']; sys.exit(0 if ('\$1' in ids) == ('\$2' == 'in') else 1)"; }
 queue "" | queued "$RQX" in || fail "an unreviewed entry was missing from the review queue"
-queue "" | queued "$RQO" out || fail "the review queue offered the reviewer their own submission"
-queue ',"include_own":true' | queued "$RQO" in || fail "include_own did not bring the reviewer's own work back"
+queue "" | queued "$RQO" in || fail "the review queue hid the reviewer's own submission"
 RQR=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"review\",\"title\":\"a reading of the queue subject\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RQR\",\"dst\":\"$RQX\",\"rel\":\"reviews\"}" | field '.edge_id' > /dev/null
 queue "" | queued "$RQX" in || fail "someone else's undecided reading hid an entry from the queue"
-queue "" | python3 -c "import sys,json; d=json.load(sys.stdin)
-row = next(e for e in d['unreviewed'] if e['id'] == '$RQX')
-assert row['reviews'] == 1, row
-assert d['backlog']['awaiting_decision'] >= 1, d['backlog']" || fail "the queue did not mark an entry as read-but-undecided"
-# The reviewer's own reading is what takes it off their list.
+# The reviewer's own reading does not hide it either, and read-but-undecided
+# sorts behind unread.
 RQR2=$(call submit "{\"contributor_key\":\"$OPKEY\",\"kind\":\"review\",\"title\":\"the reviewer's own reading\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 call link "{\"contributor_key\":\"$OPKEY\",\"src\":\"$RQR2\",\"dst\":\"$RQX\",\"rel\":\"reviews\"}" | field '.edge_id' > /dev/null
-queue "" | queued "$RQX" out || fail "an entry the reviewer had already read stayed on their list"
-queue ',"include_reviewed":true' | queued "$RQX" in || fail "include_reviewed did not bring back what the reviewer had read"
-queue ",\"include_reviewed\":true,\"exclude_authors\":[\"$(identity_of "$KEY")\"]" | queued "$RQX" out || fail "exclude_authors did not drop that identity's work"
+queue "" | python3 -c "import sys,json; d=json.load(sys.stdin)
+ids = [e['id'] for e in d['unreviewed']]
+row = next(e for e in d['unreviewed'] if e['id'] == '$RQX')
+assert row['reviews'] == 2, row
+assert ids.index('$RQO') < ids.index('$RQX'), ids
+assert d['backlog']['awaiting_decision'] >= 1, d['backlog']" || fail "the queue lost track of an entry read by its own reviewer"
 
 # ——— Reviewers do not collide ————————————————————————————————————————————
 # Contract: the queue hands its rows out under a lease. Two reviewers asking
@@ -475,6 +475,28 @@ call review_claim "{\"contributor_key\":\"$TKEY\",\"refs\":[\"$HOLD\"]}" \
 # nothing, so an expired lease is invisible and the entry comes back.
 psql -q -h "$WORK" -d math -c "update review_claim set expires_at = now() - interval '1 minute' where contribution_id = '$HOLD'"
 lease_queue "\"$OPKEY\"" ',"limit":10' | ids_of | grep -q "$HOLD" || fail "an expired lease still held an entry out of the queue"
+
+# Contract: the lease belongs to a reviewing session, not to a key. One agent
+# fleet reviews under one contributor key, so exclusion by identity gave every
+# one of its concurrent sessions the same page and the fleet paid for the same
+# reading forty times.
+for i in 1 2 3 4; do
+  call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"fleet-subject\",\"title\":\"fleet subject $i\",\"summary\":\"s\",\"content\":\"c.\"}" > /dev/null
+done
+fleet_queue() { SESSION=$1 call review_queue "{\"contributor_key\":\"$OPKEY\",\"kind\":\"fleet-subject\",\"limit\":2}"; }
+S1=$(new_session)
+S2=$(new_session)
+ONE=$(fleet_queue "$S1" | ids_of)
+TWO=$(fleet_queue "$S2" | ids_of)
+[[ $(echo "$ONE" | wc -w) == 2 && $(echo "$TWO" | wc -w) == 2 ]] || fail "a fleet session was handed nothing to review"
+for a in $ONE; do
+  for b in $TWO; do
+    [[ $a == "$b" ]] && fail "two sessions of one key were handed the same entry ($a)"
+  done
+done
+fleet_queue "$S1" | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert sorted(c['id'] for c in d['your_claims']) == sorted('$ONE'.split()), d['your_claims']" \
+  || fail "a session's worklist showed the whole fleet's claims instead of its own"
 
 # ——— Review can say no ————————————————————————————————————————————————————
 # Contract: promotion is not the only exit. "The Riemann Hypothesis is true,
@@ -538,7 +560,7 @@ RV=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"review\",\"title\":\"
 [[ $(call get "{\"ref\":\"$RV\"}" | jq -r '.tier') == null ]] || fail "a review was born with a tier"
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$RV\",\"tier\":2,\"note\":\"promote the judgement\"}" \
   | jq -e '.error' > /dev/null || fail "a review was promoted along a ladder it is not on"
-call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"include_own\":true,\"limit\":100}" \
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"limit\":100}" \
   | jq -e '[.unreviewed[].kind] | index("review") | not' > /dev/null \
   || fail "the review queue offered a review as work"
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RV_SUBJ\",\"dst\":\"$RV\",\"rel\":\"reviews\"}" \

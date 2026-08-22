@@ -372,13 +372,24 @@ create index if not exists edge_transport_idx on edge (rel)
 -- nothing, and there is no background job to run. A decision on the entry
 -- (promotion, rejection, retraction, or an applied proposal) deletes the row
 -- outright, because the work the lease protected is finished.
+--
+-- The holder is a reviewer, not an identity. An agent fleet contributes and
+-- reviews under one contributor key, so leasing by identity handed every one
+-- of its concurrent sessions the same rows -- the exact collision this table
+-- exists to prevent. `claimant` is the MCP session when the transport has one
+-- and the identity otherwise; `identity_id` stays, because who the reviewer is
+-- is still public.
 create table if not exists review_claim (
   contribution_id uuid primary key references contribution(id),
   identity_id     text not null references identity(id),
+  claimant        text not null,
   claimed_at      timestamptz not null default now(),
   expires_at      timestamptz not null
 );
-create index if not exists review_claim_holder_idx on review_claim (identity_id, expires_at);
+alter table review_claim add column if not exists claimant text;
+update review_claim set claimant = identity_id where claimant is null;
+alter table review_claim alter column claimant set not null;
+create index if not exists review_claim_holder_idx on review_claim (claimant, expires_at);
 create index if not exists review_claim_expiry_idx on review_claim (expires_at);
 
 -- Exploration trails: append-only diaries agents keep while investigating.
@@ -1104,7 +1115,7 @@ create or replace view q_patches as
 -- Who is adjudicating what right now, so contention is answerable with a
 -- query instead of guessed at. Live rows only; expired leases are history.
 create or replace view q_review_claims as
-  select contribution_id, identity_id, claimed_at, expires_at from review_claim
+  select contribution_id, identity_id, claimant, claimed_at, expires_at from review_claim
   where expires_at > now();
 
 create or replace view q_config as select key, value, updated_at from config;

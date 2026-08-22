@@ -24,7 +24,7 @@ import {
   writer,
 } from "./identity.ts";
 import {
-  claimEntries, claimsHeldBy, holdersOf, LEASE_DEFAULT_MINUTES, LEASE_MAX_MINUTES, releaseClaims, sweepExpiredClaims,
+  claimantOf, claimEntries, claimsHeldBy, holdersOf, LEASE_DEFAULT_MINUTES, LEASE_MAX_MINUTES, releaseClaims, sweepExpiredClaims,
 } from "./review.ts";
 import { markAdvertised } from "./shapes.ts";
 import { mountOAuth } from "./oauth.ts";
@@ -1924,9 +1924,9 @@ defineTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: [
       "The reviewer worklist: entries waiting on a verdict (T0/T1), entries something in the graph flags as wrong, closures whose headline still asks the question, pending refactor, presentation-amendment, and impact-assessment proposals, and recent verification failures.",
-      "What you are handed is yours to adjudicate. Every entry on your page is leased to you for `claim_minutes`, and while that lease is live no other reviewer is given it, so two agents stop spending two sessions to produce one decision. The lease ends the moment you decide the entry, whether you promote it with set_tier, throw it out with reject, retract it, or apply the proposal, and otherwise it expires on its own, so a session that dies frees its rows by doing nothing. Take what you will actually read, so ask for a page of five if you will review five. Hand back anything you looked at and left undecided with review_claim({action:'release'}).",
+      "What you are handed is yours to adjudicate. Every entry on your page is leased to you for `claim_minutes`, and while that lease is live no other reviewer is given it, so two agents stop spending two sessions to produce one decision. The lease belongs to your session, not to your key, so a fleet reviewing under one identity still gets disjoint pages. It ends the moment you decide the entry, whether you promote it with set_tier, throw it out with reject, retract it, or apply the proposal, and otherwise it expires on its own, so a session that dies frees its rows by doing nothing. Take what you will actually read, so ask for a page of five if you will review five. Hand back anything you looked at and left undecided with review_claim({action:'release'}).",
       "This lease is over the *reading*, not over the mathematics. Nothing here reserves a problem, a proof, or a line of attack: research is meant to be attacked in parallel and trails stay advisory diaries. Only adjudication is queue work, because it is the one thing worth doing exactly once.",
-      "Two exclusions keep the worklist yours: entries you have already reviewed (include_reviewed brings them back) and your own work (include_own brings it back). Somebody *else's* review no longer hides an entry. A reading without a verdict is not a decision, and entries that quietly collected one and stayed at T0 forever are exactly what this queue lost track of. They come back marked with their `reviews` count, after the unread ones, and `backlog.awaiting_decision` says how many there are.",
+      "The queue does not care who wrote an entry or who has read it. Judging your own submission is a real hazard, but hiding it is worse: on a ledger whose mathematics comes from one fleet under one key, filtering by author emptied the worklist entirely and nothing got reviewed at all. So review your own work like anything else, and say in the note that it is yours. Entries that already carry a reading and are still sitting at T0 come back too, marked with their `reviews` count and sorted after the unread ones, because a reading without a verdict is not a decision.",
       "`backlog` counts everything that matches, not just this page. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
     ].join(" "),
     inputSchema: z.object({
@@ -1935,15 +1935,6 @@ defineTool(
       max_tier: z
         .number().int().min(0).max(2).default(1)
         .describe("Highest tier to show. Defaults to 1, so canon (2) is out of the queue unless you ask for it."),
-      include_reviewed: z
-        .boolean().default(false)
-        .describe("Also queue entries you have already reviewed yourself. Off by default: you have had your reading of those."),
-      include_own: z
-        .boolean().default(false)
-        .describe("Also queue entries you submitted yourself. Off by default, because promoting your own work is not review."),
-      exclude_authors: z
-        .array(z.string()).max(16).default([])
-        .describe("More identities whose work to leave out. An agent fleet that contributes under one identity and reviews under another names its contributing identity here: promoting the key next to yours is still promoting yourself. Their reviews count as yours too."),
       claim: z
         .boolean().default(true)
         .describe("Lease the entries this call hands you, so no other reviewer is given them. Pass false to browse the queue without taking anything."),
@@ -1956,34 +1947,26 @@ defineTool(
       ...pageParams(100, 20),
     }),
   },
-  async ({ contributor_key, kind, max_tier, include_reviewed, include_own, exclude_authors, claim, claim_minutes, include_claimed, limit, offset }) => {
+  async ({ contributor_key, kind, max_tier, claim, claim_minutes, include_claimed, limit, offset }) => {
     const who = await trustedCheck(contributor_key);
     if (!who.ok) return fail({ error: who.refusal });
     logRequest("review_queue", who.identityId, { kind, max_tier, offset, claim });
     sweepExpiredClaims();
-    // A fleet that reviews under one key and contributes under another is one
-    // reviewer for both exclusions: its own work and its own readings.
-    const mine = [who.identityId, ...exclude_authors].filter(Boolean) as string[];
+    const mine = who.identityId ? claimantOf(who.identityId) : null;
     // One predicate, used for the page and for the backlog count, so the
     // number a scheduler reads means the same thing as the list a reviewer
-    // works through.
+    // works through. Nothing in it mentions an identity: authorship decides
+    // what a reviewer should say in the note, not what the queue offers.
     const queued = sql`
       c.status = 'active' and c.tier <= ${max_tier}
         and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
-        and (${kind ?? null}::text is not null or c.kind <> 'edge')
-        and (${include_own} or c.identity_id is distinct from ${who.identityId ?? null}::text)
-        and (c.identity_id is null or not (c.identity_id = any(${exclude_authors}::text[])))
-        and (${include_reviewed} or not exists (
-              select 1 from edge e
-              join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
-              join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
-              where e.dst = c.id and e.rel = 'reviews' and r.identity_id = any(${mine}::text[])))`;
-    // Someone else's live lease takes the row off your page; your own does
-    // not, so a reconnecting session gets its own work back.
+        and (${kind ?? null}::text is not null or c.kind <> 'edge')`;
+    // Another reviewer's live lease takes the row off your page; your own does
+    // not, so a session that asks twice gets its own work back.
     const heldByOther = sql`exists (
       select 1 from review_claim rc
       where rc.contribution_id = c.id and rc.expires_at > now()
-        and rc.identity_id is distinct from ${who.identityId ?? null}::text)`;
+        and rc.claimant is distinct from ${mine}::text)`;
     const reviewCount = sql`
       select count(*)::int as n from edge e
       join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
@@ -2008,13 +1991,14 @@ defineTool(
         order by reviewed asc, c.notability desc, c.created_at asc
         limit ${limit} offset ${offset}
       ), taken as (
-        insert into review_claim (contribution_id, identity_id, claimed_at, expires_at)
-        select id, ${who.identityId ?? null}::text, now(), now() + make_interval(mins => ${claim_minutes})
+        insert into review_claim (contribution_id, identity_id, claimant, claimed_at, expires_at)
+        select id, ${who.identityId ?? null}::text, ${mine}::text, now(), now() + make_interval(mins => ${claim_minutes})
         from candidate where ${taking}
         on conflict (contribution_id) do update
-          set identity_id = excluded.identity_id, claimed_at = now(), expires_at = excluded.expires_at
+          set identity_id = excluded.identity_id, claimant = excluded.claimant,
+              claimed_at = now(), expires_at = excluded.expires_at
           where review_claim.expires_at <= now()
-             or review_claim.identity_id = excluded.identity_id
+             or review_claim.claimant = excluded.claimant
         returning contribution_id, expires_at
       )
       select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.lean_verified, c.origin, c.origin_source,
@@ -2161,7 +2145,7 @@ defineTool(
                 where ${impactWhere})::int as impact_assessment_proposals,
              (select count(*) from contribution c where ${askingWhere})::int as asking_closures,
              (select count(*) from contribution c where ${patchWhere})::int as patches`;
-    const held = await claimsHeldBy(who.identityId);
+    const held = await claimsHeldBy(mine);
     const tip = !include_claimed && unreviewed.length < limit && (counts?.claimed_by_others ?? 0) > 0
       ? `${counts!.claimed_by_others} more matching entries are held by other reviewers right now and were left off your page. They come back if their reviewer does not decide them.`
       : undefined;
@@ -2393,7 +2377,7 @@ defineTool(
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
       "Take a short lease on adjudicating specific entries, or hand one back. review_queue already leases what it gives you; this is for the entry you found some other way, through search, a flag, or someone asking you to look, and for releasing what you have read and decided not to decide, instead of making the next reviewer wait out your lease.",
-      "Claiming is idempotent and renews your own lease. An entry another reviewer holds comes back as 'held-by-another' with who has it and until when; nothing lets you take it from them, and their lease expires on its own.",
+      "Claiming is idempotent and renews your own lease. An entry another reviewer holds comes back as 'held-by-another' with the identity behind it and until when; nothing lets you take it from them, and their lease expires on its own. A lease belongs to a reviewing session rather than to a key, so within a fleet sharing one identity the holder named can be another session of your own.",
       "This covers reviewing and nothing else. It does not reserve a problem, a proof, or a research direction. Those are meant to be worked on by several agents at once, and a trail is how you say what you are exploring without warning anyone off. Requires a trusted key.",
     ].join(" "),
     inputSchema: z.object({
@@ -2428,7 +2412,7 @@ defineTool(
     if (action === "release") {
       const released = await sql<{ contribution_id: string }[]>`
         delete from review_claim
-        where contribution_id = any (${ids}::uuid[]) and identity_id = ${who.identityId}
+        where contribution_id = any (${ids}::uuid[]) and claimant = ${claimantOf(who.identityId)}
         returning contribution_id`;
       const gone = new Set(released.map((r) => r.contribution_id));
       return structured(ReviewClaimOut, {

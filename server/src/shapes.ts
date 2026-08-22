@@ -892,10 +892,10 @@ export const ReviewQueueOut = z.strictObject({
         expires_at: iso,
       }),
     )
-    .describe("Every entry you currently hold for review, including ones taken in an earlier call."),
+    .describe("Every entry this reviewing session currently holds, including ones taken in an earlier call. A lease belongs to the session, not to the key, so a fleet's other sessions are not listed here."),
   tip: z.string().optional(),
   backlog: z.strictObject({
-    unreviewed: z.number().int(),
+    unreviewed: z.number().int().describe("Every entry matching the queue, not just this page: everything active at or under max_tier, whoever wrote it, including the read-but-undecided ones counted again in awaiting_decision."),
     awaiting_decision: z.number().int().describe("Still at T0 and already read by someone: nobody ever decided these. The limbo this queue is meant to drain."),
     claimed_by_others: z.number().int().describe("Matching entries another reviewer holds right now, excluded from your page."),
     flagged: z.number().int().describe("Active entries something in the graph refutes or disputes. Read the objection, then promote or reject."),

@@ -115,6 +115,21 @@ export const trim = (text: string | null, limit = LIST_SUMMARY): string | null =
   return line.length <= limit ? line : line.slice(0, limit - 1).replace(/\s+\S*$/, "") + "…";
 };
 
+// A verifier writes for a machine: a failing axiom audit names every axiom it
+// found, and a native_decide proof carries thousands. Twenty of those rows made
+// the reviewer worklist a 13 MB answer to a one-row question. Every read of a
+// verification carries the verdict and the head of the log; `q_verifications`
+// has all of it for the one caller in a hundred who wants it.
+const VERIFIER_TEXT = 600;
+
+export const slimVerifierText = <T extends string | null | undefined>(text: T): T =>
+  typeof text === "string" && text.length > VERIFIER_TEXT
+    ? (`${text.slice(0, VERIFIER_TEXT)} …[truncated; q_verifications has it all]` as T)
+    : text;
+
+export const slimDetail = (detail: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(detail).map(([k, v]) => [k, typeof v === "string" ? slimVerifierText(v) : v]));
+
 /** Two strings that say the same thing, whitespace aside. */
 export const sameText = (a: string | null, b: string | null): boolean =>
   !!a && !!b && a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();

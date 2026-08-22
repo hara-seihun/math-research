@@ -32,7 +32,7 @@ import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
-import { beyondTitle, deref, listRow, sameText, settlement, trim, type Ref } from "./read.ts";
+import { beyondTitle, deref, listRow, sameText, settlement, slimDetail, slimVerifierText, trim, type Ref } from "./read.ts";
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LeanGrepOut, LeanInfoOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
@@ -1005,11 +1005,6 @@ defineTool(
             where e.src = ${id} and e.rel = ${EXPOUNDS_REL}
             order by t.notability desc`
         : [];
-    // Long verifier logs live in q_verifications; inline detail keeps the
-    // verdict and the head of any log rather than pages of compiler output.
-    const slim = (detail: Record<string, unknown>) =>
-      Object.fromEntries(Object.entries(detail).map(([k, v]) =>
-        [k, typeof v === "string" && v.length > 600 ? `${v.slice(0, 600)} ...[truncated; q_verifications has it all]` : v]));
     // A kind without work-state should not show `state: null`; empty
     // sections likewise say nothing a reader needs. A short entry whose
     // title, summary and content are the same sentence should say it once.
@@ -1031,7 +1026,7 @@ defineTool(
         ? { tip: "links are capped at 8 per relation; `links.more` counts the rest. get({ref, rel: '<relation>'}) pages one relation in full." }
         : {}),
       ...(verifications.length
-        ? { verifications: verifications.map((v) => ({ ...v, detail: slim(v.detail as Record<string, unknown>) })) }
+        ? { verifications: verifications.map((v) => ({ ...v, detail: slimDetail(v.detail as Record<string, unknown>) })) }
         : {}),
       receipt,
       events,
@@ -1834,7 +1829,16 @@ defineTool(
       where c.identity_id = ${identityId}
       order by c.created_at desc
       limit ${limit} offset ${offset}`;
-    return structured(MySubmissionsOut, { identity: identityId, submissions: rows });
+    return structured(MySubmissionsOut, {
+      identity: identityId,
+      submissions: rows.map((r) => ({
+        ...r,
+        verifications: (r.verifications as { detail: Record<string, unknown> }[]).map((v) => ({
+          ...v,
+          detail: slimDetail(v.detail),
+        })),
+      })),
+    });
   },
 );
 
@@ -2222,11 +2226,13 @@ defineTool(
       where ${impactWhere}
       order by tgt.notability desc, e.created_at asc
       limit 50`;
-    const failures = await sql`
-      select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
-      from verification v join contribution c on c.id = v.contribution_id
-      where v.outcome in ('failed', 'inconclusive')
-      order by v.updated_at desc limit 20`;
+    const failures = (
+      await sql<{ contribution_id: string; title: string; outcome: string; reason: string | null; updated_at: Date }[]>`
+        select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
+        from verification v join contribution c on c.id = v.contribution_id
+        where v.outcome in ('failed', 'inconclusive')
+        order by v.updated_at desc limit 20`
+    ).map((f) => ({ ...f, reason: slimVerifierText(f.reason) }));
     // Public contradiction as a review signal. Anyone at all can say "this is
     // wrong" by linking a refutes/disputes edge, and it lands in front of a
     // trusted reviewer here instead of sitting in the graph unread. Questions

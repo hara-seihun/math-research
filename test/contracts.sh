@@ -370,8 +370,15 @@ CID2=$(echo "$SUB2" | field '.id')
 HASH2=$(printf 'import Mathlib\ntheorem u : True := trivial\n' | lean_hash)
 VID2=$(psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$CID2'")
 await_spool "$HASH2"
-runner_says "$HASH2" '{"ok":true,"exit_code":0,"audit_ok":true,"decls":[{"name":"u","type":"True","axioms":["sneakyAxiom"]}]}'
+AXIOMS=$(python3 -c 'import json; print(json.dumps([f"sneakyAxiom.native_decide.ax_{i}" for i in range(400)]))')
+runner_says "$HASH2" "{\"ok\":true,\"exit_code\":0,\"audit_ok\":true,\"decls\":[{\"name\":\"u\",\"type\":\"True\",\"axioms\":$AXIOMS}]}"
 [[ $(await_verification "$VID2") == failed ]] || fail "disallowed axiom was not rejected"
+
+# Contract: a read carries the verdict and the head of the log, never the log.
+# One native_decide proof names thousands of axioms, and twenty of those rows
+# made the reviewer worklist a 13 MB answer to a one-row question.
+[[ $(call get "{\"ref\":\"$CID2\"}" | field '.verifications[0].detail.reason' | wc -c) -lt 800 ]] \
+  || fail "get carried a full axiom log"
 
 # Contract: a statement is not a proof. `def Q : Prop := …` elaborates cleanly
 # and proves nothing, so it is a welcome formalization of an open problem and
@@ -425,6 +432,13 @@ psql -q -h "$WORK" -d math -c "insert into identity (id, role) values ('$OPID', 
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CID\",\"tier\":2,\"note\":\"reviewed\"}" | field '.ok' > /dev/null
 GOT=$(call get "{\"ref\":\"$CID\"}")
 [[ $(echo "$GOT" | field '.tier') == 2 ]] || fail "operator set_tier did not apply"
+
+# The other half of the log contract above, now that there is a reviewer to ask.
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"limit\":1}" \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin);
+assert d["recent_verification_failures"], "no verification failures to measure"
+assert max(len(f["reason"] or "") for f in d["recent_verification_failures"]) < 800' \
+  || fail "the reviewer worklist carried a full axiom log"
 
 # Contract: the review queue is identity-blind. The mathematics here is written
 # by one agent fleet under one key, so a queue that hid the reviewer's own work

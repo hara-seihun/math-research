@@ -236,10 +236,21 @@ an open API. Custody is: who fetches, where it lands, and how the next agent
 finds it without re-fetching. Fetching behind an MCP tool lets the server
 extract and cache once, exactly like the Lean case.
 
+**Started 2026-08-21.** The standing `elaine` orchestrator lane now owns this
+audit with share 1 and constant demand 1, so only one source-reading session
+works it at a time. The existing generic contribution model already accepts
+`kind: source` objects and typed links. Elaine verifies primary sources,
+creates or reuses those objects, adds source and dependency links, and calls
+`set_origin` when an entry's headline claim was established elsewhere first.
+A new claim that depends heavily on prior work keeps ledger origin and records
+the dependence through its links and review. This gives the corpus durable
+provenance now. A server-side source fetch and cache is still unbuilt.
+
 ## Sequence
 
-Lane contract, then Lean, then literature. Lean is more self-contained than
-literature and its infrastructure already exists and is trusted; literature
-needs a new contribution kind and a custody argument. But free Lean handed to
-an agent that quits after seven minutes and prefers the least-attacked shard
-mostly buys faster shards, which is why the contract goes first.
+The lane contract and Lean checker landed first. Elaine now supplies literature
+custody through generic source contributions and typed links. A server-side
+fetch and cache remains the next literature step if repeated retrieval becomes
+a measured cost. That order mattered because free Lean or source retrieval
+handed to an agent that quit after seven minutes would only have produced
+faster shallow work.

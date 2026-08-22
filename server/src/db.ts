@@ -88,12 +88,18 @@ async function flushLog(): Promise<void> {
   const batch = pending;
   pending = [];
   try {
+    // The cast is per element, not on the array. Handed an array of JSON
+    // strings for a jsonb[] parameter, the driver encodes each one as a JSON
+    // string literal, so every row landed holding a quoted blob instead of an
+    // object and `args->>'query'` matched nothing. Unnest as text, cast each.
     await sql`
       insert into request_log (tool, identity_id, session, args)
-      select * from unnest(${batch.map((r) => r.tool)}::text[],
-                           ${batch.map((r) => r.identityId)}::text[],
-                           ${batch.map((r) => r.session)}::text[],
-                           ${batch.map((r) => r.args)}::jsonb[])`;
+      select tool, identity_id, session, args::jsonb
+      from unnest(${batch.map((r) => r.tool)}::text[],
+                  ${batch.map((r) => r.identityId)}::text[],
+                  ${batch.map((r) => r.session)}::text[],
+                  ${batch.map((r) => r.args)}::text[])
+        as row (tool, identity_id, session, args)`;
   } catch (error) {
     // Losing telemetry must never take a request with it, but it must not be
     // silent either: a request log that has quietly stopped writing looks

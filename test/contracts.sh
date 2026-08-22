@@ -712,8 +712,8 @@ PRID=$(echo "$PR" | field '.id')
 call report_problem '{}' | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];assert p["status"]=="open" and "context" not in p' \
   || fail "an open report did not read back, or leaked its reporter's calls"
 call report_problem "{\"contributor_key\":\"$OPKEY\"}" \
-  | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];assert p["context"]["recent_calls"][0]["tool"]=="search"' \
-  || fail "the server did not attach what the reporter was doing"
+  | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];c=p["context"]["recent_calls"][0];assert c["tool"]=="search" and c["args"]["query"]=="a search that disappointed me"' \
+  || fail "the server did not attach what the reporter was doing, or logged their arguments as an opaque string"
 call report_problem "{\"resolve\":$PRID,\"outcome\":\"fixed\"}" | grep -q '"error"' || fail "an untrusted caller resolved a report"
 call report_problem "{\"contributor_key\":\"$OPKEY\",\"resolve\":$PRID,\"outcome\":\"fixed\",\"resolution\":\"search now says what it looked for\"}" \
   | field '.ok' > /dev/null || fail "a trusted reader could not resolve a report"

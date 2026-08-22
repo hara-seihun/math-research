@@ -2058,11 +2058,11 @@ defineTool(
         .optional()
         .describe("Instead of a cursor: an ISO timestamp, or a plain interval like '6h', '2d', '1w'. Defaults to the last 24 hours."),
       questions: z
-        .number().int().min(1).max(50).default(6)
-        .describe("How many open questions to lay out for forecasting, 1 to 50. Each is a small frontier (~3 KB), so ask for what you will read."),
+        .number().int().min(1).max(50).default(3)
+        .describe("How many open questions to lay out for forecasting, 1 to 50. Each is a small frontier of its own — progress, stalls, trails, about 4 KB — so the default is three and a forecasting table asks for a dozen."),
       limit: z
-        .number().int().min(1).max(50).default(10)
-        .describe("How many rows each headline list carries, 1 to 50."),
+        .number().int().min(1).max(50).default(6)
+        .describe("How many rows each headline list carries, 1 to 50. Every row is a headline with the full text one get away, so raising this is cheap and reading forty of them is not."),
     }),
   },
   async ({ after_seq, since, questions, limit }) => {

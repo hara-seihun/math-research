@@ -35,8 +35,19 @@ export const HOW_TO_READ = [
   "questions lists the open work worth forecasting: everything touched in this window, topped up by notability. Each carries where it stands, what partial progress exists and at which tier, where each distilled route stalls, who is exploring it now, and what was already tried, so a quiet window still supports a full forecast. If you are asked for the odds, give one whole-number subjective percentage per question that it will eventually be settled here, sorted high to low, alongside the recent advance, the concrete blocker, and the custody of the evidence. Those percentages are your judgment, not ledger fields; omit anything settled in this window and never write a 100% row.",
 ].join("\n\n");
 
-const rels = (rows: { rel: string | null; n: number }[]) =>
-  Object.fromEntries(rows.filter((r) => r.rel).map((r) => [r.rel!, r.n]));
+/** The relation vocabulary is open: anyone can assert a link with a relation
+ *  nobody has used before, and 176 of them have been. A movement summary wants
+ *  what moved, so the tail past the top few is one number rather than 3 KB of
+ *  singletons. Rows arrive already ordered by count. */
+const KINDS_SHOWN = 20;
+
+const rels = (rows: { rel: string | null; n: number }[]) => {
+  const named = rows.filter((r) => r.rel);
+  const head = Object.fromEntries(named.slice(0, KINDS_SHOWN).map((r) => [r.rel!, r.n]));
+  const tail = named.slice(KINDS_SHOWN);
+  if (!tail.length) return head;
+  return { ...head, [`+${tail.length} rarer kinds`]: tail.reduce((n, r) => n + r.n, 0) };
+};
 
 /** Resolve a `since` into the last sequence number before it.
  *

@@ -1,6 +1,6 @@
 import { sql } from "./db.ts";
 import type { Tx } from "./graph.ts";
-import { requestContext } from "./identity.ts";
+import { requestContext, sha256hex } from "./identity.ts";
 
 // --- Review claims ------
 // A lease over the *adjudication* of one entry, held by one reviewer for a
@@ -25,8 +25,15 @@ export const LEASE_MAX_MINUTES = 240;
  *  contributor key, and keying exclusion on that key handed all forty of its
  *  concurrent sessions the same page. The MCP session is the reviewer; the
  *  identity is only who that reviewer is. A caller with no session (a raw
- *  JSON-RPC probe) is one reviewer under its key. */
-export const claimantOf = (identityId: string): string => requestContext().sessionId ?? identityId;
+ *  JSON-RPC probe) is one reviewer under its key.
+ *
+ *  Hashed, because a live Mcp-Session-Id authenticates its holder here and
+ *  q_review_claims is a public view: contention is answerable without handing
+ *  the world a session to speak through. */
+export const claimantOf = (identityId: string): string => {
+  const { sessionId } = requestContext();
+  return sessionId ? sha256hex(`review-claimant:${sessionId}`) : identityId;
+};
 
 /** A decision ends the reading the lease protected, so the lease goes with it.
  *  Called from every terminal verdict: promotion, rejection, retraction, and

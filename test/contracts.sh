@@ -700,6 +700,28 @@ psql -q -h "$WORK" -d math -c "update trail set updated_at = now() - interval '3
 call trails '{}' | python3 -c 'import sys,json;ts=json.load(sys.stdin)["trails"];assert all(t["id"]!="'"$ST"'" for t in ts)' || fail "stale trail shown in default listing"
 call trails '{"include_stale":true}' | python3 -c 'import sys,json;ts=json.load(sys.stdin)["trails"];assert any(t["id"]=="'"$ST"'" and t["activity"]=="stale" for t in ts)' || fail "include_stale did not surface the abandoned trail"
 
+# Contract: a problem with the server can be reported by anyone, in one
+# sentence, with no identity and nothing else; the server attaches what the
+# reporter was doing; the report reads back with what came of it; and the
+# attached call history goes only to the readers who act on reports.
+SESS=$(new_session)
+SESSION=$SESS call search '{"query":"a search that disappointed me"}' > /dev/null
+PR=$(SESSION=$SESS call report_problem '{"problem":"search found nothing and I could not tell whether that was me or it","tool":"search"}')
+PRID=$(echo "$PR" | field '.id')
+[[ -n $PRID ]] || fail "a problem report was refused"
+call report_problem '{}' | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];assert p["status"]=="open" and "context" not in p' \
+  || fail "an open report did not read back, or leaked its reporter's calls"
+call report_problem "{\"contributor_key\":\"$OPKEY\"}" \
+  | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];assert p["context"]["recent_calls"][0]["tool"]=="search"' \
+  || fail "the server did not attach what the reporter was doing"
+call report_problem "{\"resolve\":$PRID,\"outcome\":\"fixed\"}" | grep -q '"error"' || fail "an untrusted caller resolved a report"
+call report_problem "{\"contributor_key\":\"$OPKEY\",\"resolve\":$PRID,\"outcome\":\"fixed\",\"resolution\":\"search now says what it looked for\"}" \
+  | field '.ok' > /dev/null || fail "a trusted reader could not resolve a report"
+call report_problem '{}' | python3 -c 'import sys,json;assert all(x["id"]!='"$PRID"' for x in json.load(sys.stdin)["reports"])' \
+  || fail "a resolved report is still waiting on someone"
+call report_problem '{"include_resolved":true}' | python3 -c 'import sys,json;p=[x for x in json.load(sys.stdin)["reports"] if x["id"]=='"$PRID"'][0];assert p["status"]=="fixed" and p["resolution"]' \
+  || fail "a reporter cannot see what came of their report"
+
 # Contract: search is dash/accent-insensitive and degrades to fuzzy, so a
 # hyphen query finds an en-dash title (the de Bruijn–Newman discovery failure).
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"de Bruijn–Newman upper bound 0.2\",\"summary\":\"a certified bound\",\"content\":\"Lambda le 0.2.\"}" > /dev/null
@@ -1446,6 +1468,7 @@ declare -A DOORS=(
   [my_submissions]="{\"contributor_key\":\"$KEY\"}"
   [trail]="{\"contributor_key\":\"$KEY\",\"title\":\"every door\",\"note\":\"n\"}"
   [trails]='{}'
+  [report_problem]='{}'
   [guides]='{}'
   [news]='{}'
   [set_tuning]="{\"contributor_key\":\"$OPKEY\",\"notability_weights\":{},\"note\":\"no-op\"}"

@@ -1,4 +1,5 @@
 import postgres from "postgres";
+import { requestContext } from "./request-context.ts";
 
 // One connection per instance is not enough and a hundred is worse than
 // useless: every connection is a Postgres backend process with its own
@@ -70,7 +71,7 @@ export const impactScore = () => sql`
 // rides behind the answer instead of in front of it, batched into one
 // multi-row insert per flush window.
 
-type LogRow = { tool: string; identityId: string | null; args: string };
+type LogRow = { tool: string; identityId: string | null; session: string | null; args: string };
 
 const LOG_FLUSH_MS = Number(process.env.LOG_FLUSH_MS ?? 200);
 const LOG_FLUSH_ROWS = 512;
@@ -88,9 +89,10 @@ async function flushLog(): Promise<void> {
   pending = [];
   try {
     await sql`
-      insert into request_log (tool, identity_id, args)
+      insert into request_log (tool, identity_id, session, args)
       select * from unnest(${batch.map((r) => r.tool)}::text[],
                            ${batch.map((r) => r.identityId)}::text[],
+                           ${batch.map((r) => r.session)}::text[],
                            ${batch.map((r) => r.args)}::jsonb[])`;
   } catch (error) {
     // Losing telemetry must never take a request with it, but it must not be
@@ -106,7 +108,11 @@ export function logRequest(tool: string, identityId: string | null, args: unknow
     text.length > 8192
       ? JSON.stringify({ truncated: true, sha256: new Bun.CryptoHasher("sha256").update(text).digest("hex") })
       : text;
-  pending.push({ tool, identityId, args: stored });
+  // The connection, not just the contributor: read doors log no identity at
+  // all (they resolve none), so a session is the only thread that ties a
+  // caller's calls together -- which is what report_problem attaches so a
+  // one-sentence complaint still says what its author was doing.
+  pending.push({ tool, identityId, session: requestContext().sessionId ?? null, args: stored });
   if (pending.length >= LOG_FLUSH_ROWS) {
     void flushLog();
     return;

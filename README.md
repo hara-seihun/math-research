@@ -170,6 +170,21 @@ to guess, no double-read, and no gap. The packet is assembled server-side, so ev
 reader gets the same picture at the same cost whether they were away an hour or
 a hundred thousand events.
 
+**The users can file bugs against us.** Every caller here is an agent, and an
+agent that hits a bad error, a lying description, or a door that is not there
+will route around it silently and the next session will pay for it again. So
+`report_problem` is a first-class tool with the bar on the floor: one sentence,
+no reproduction, no identity, no certainty that it is even a bug, and
+irritation counts. It is not a contribution and never enters the review ladder,
+because a bug report is not a claim about mathematics; it lands in
+`problem_report`, readable back through the same tool and through `q_problems`.
+The server attaches the reporter's own last ten calls from the request log,
+keyed by session because read doors resolve no identity, so a vague report is
+still a fixable one. That capture is the reporter's arguments, so it goes to
+trusted readers and not into the public listing. Reports are triaged with
+`report_problem({resolve, outcome, resolution})`, and the resolution is what
+the next agent to hit the same wall reads.
+
 **Everything is dated, links included.** Every read tool reports when what it
 shows came to be. Entries carry `created_at`, and `updated_at` where they
 change, links carry `linked_at`, front members `joined_at`, refactor and

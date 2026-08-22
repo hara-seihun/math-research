@@ -1,6 +1,6 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { createPublicKey, verify as verifyEd25519, type KeyObject } from "node:crypto";
 import { sql } from "./db.ts";
+import { remember, requestContext } from "./request-context.ts";
 
 export function sha256hex(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -16,35 +16,6 @@ export const newClientSecret = () => "mrs_" + randomHex(32);
 export const KEY_HELP =
   "Three ways to be someone here, none of them required: contribute over an MCP session and this server mints you a key and hands it back once; authorize over OAuth if your client speaks it (there is nothing to log into); or present a key you already hold as the contributor_key argument or an `Authorization: Bearer mrk_…` header.";
 
-/**
- * What the transport knows about this request. Both fields are optional: an
- * unidentified caller is a first-class caller here.
- */
-export type RequestContext = {
-  bearer?: string;
-  sessionId?: string;
-  minted?: string;
-  /** Whoever this request turned out to belong to, filled in as the handler
-   *  resolves it, so the request log can name the caller without asking the
-   *  database a second time. */
-  resolved?: string | null;
-  address?: string;
-};
-
-const context = new AsyncLocalStorage<RequestContext>();
-
-export function withRequestContext<T>(ctx: RequestContext, run: () => T): T {
-  return context.run(ctx, run);
-}
-
-export const requestContext = (): RequestContext => context.getStore() ?? {};
-
-const remember = (identityId: string | null): string | null => {
-  const store = context.getStore();
-  if (store) store.resolved = identityId;
-  return identityId;
-};
-
 export const bearerOf = (authorization: string | string[] | undefined): string | undefined =>
   /^bearer\s+(\S+)$/i.exec((Array.isArray(authorization) ? authorization[0] : authorization)?.trim() ?? "")?.[1];
 
@@ -56,7 +27,7 @@ export type Resolution =
 
 /** Who is calling, from the strongest signal available, creating nothing. */
 export async function caller(argumentKey?: string): Promise<Resolution> {
-  const { bearer, sessionId } = context.getStore() ?? {};
+  const { bearer, sessionId } = requestContext();
   const key = argumentKey ?? (bearer?.startsWith("mrk_") ? bearer : undefined);
   if (key) return { kind: "identity", identityId: remember(sha256hex(key))!, via: "key" };
 
@@ -118,8 +89,7 @@ export async function writer(argumentKey?: string): Promise<Writer> {
     where id = ${who.sessionId} and identity_id is null
     returning identity_id`;
   if (bound) {
-    const store = context.getStore();
-    if (store) store.minted = identityId;
+    requestContext().minted = identityId;
     return { identityId, freshKey };
   }
 
@@ -138,9 +108,9 @@ export async function writer(argumentKey?: string): Promise<Writer> {
  * only an identity that owns no work is removed, and the next attempt mints.
  */
 export async function rollbackMint(): Promise<void> {
-  const store = context.getStore();
-  const identityId = store?.minted;
-  if (!store || !identityId) return;
+  const store = requestContext();
+  const identityId = store.minted;
+  if (!identityId) return;
   store.minted = undefined;
   if (store.sessionId) {
     await sql`update mcp_session set identity_id = null

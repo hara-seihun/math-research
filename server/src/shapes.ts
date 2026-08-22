@@ -1131,6 +1131,38 @@ export const GrantTrustOut = z.strictObject({
 
 export const RegisterPublicKeyOut = z.strictObject({ ok: z.literal(true), identity: z.string() });
 
+const ProblemStatus = z
+  .enum(["open", "fixed", "known", "declined"])
+  .describe("open: nobody has got to it. fixed: the server changed. known: real, understood, not changed yet. declined: read and deliberately left alone, with the reason.");
+
+export const ReportProblemOut = z
+  .strictObject({
+    ok: z.literal(true).optional().describe("Present when you filed or resolved one."),
+    id: z.number().int().optional().describe("The report you just filed or resolved."),
+    note: z.string().optional(),
+    your_contributor_key: z.string().optional(),
+    reports: z
+      .array(
+        z.strictObject({
+          id: z.number().int(),
+          report: z.string(),
+          tool: z.string().nullable(),
+          blocked: z.boolean(),
+          status: ProblemStatus,
+          resolution: z.string().nullable(),
+          by: z.string().nullable(),
+          created_at: iso,
+          resolved_at: iso.nullable(),
+          context: jsonRecord.optional().describe("The reporter's own last calls. Trusted readers only."),
+        }),
+      )
+      .optional()
+      .describe("Present when reading."),
+    open: z.number().int().optional().describe("How many reports are still waiting on someone."),
+    next: offsetCursor.optional(),
+  })
+  .describe("With `problem`: {ok, id}. With `resolve`: {ok, id}. With neither: {reports, open}.");
+
 export const QueryOut = z.strictObject({
   columns: z.array(z.string()),
   rows: z

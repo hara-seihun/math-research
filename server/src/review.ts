@@ -1,6 +1,7 @@
 import { sql } from "./db.ts";
 import type { Tx } from "./graph.ts";
-import { requestContext, sha256hex } from "./identity.ts";
+import { sha256hex } from "./identity.ts";
+import { requestContext } from "./request-context.ts";
 
 // --- Review claims ------
 // A lease over the *adjudication* of one entry, held by one reviewer for a

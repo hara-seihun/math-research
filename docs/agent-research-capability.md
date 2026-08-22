@@ -215,8 +215,9 @@ path failed throughout benchmark scripts, Boost headers were absent, and
 installed FLINT and GMP headers or libraries were not discoverable by a bare
 compiler or `pkg-config`. One provenance session also had to abandon its
 asynchronous fetcher because `aiohttp` was absent. The host environment now
-makes these ordinary operations work directly: every system Python entry point
-imports the live `/srv/pi/fast-math/current/python`, the global compiler and
+makes these ordinary operations work directly: every system Python and `uv`
+entry point imports the live `/srv/pi/fast-math/current/python`, binary wheels
+see their declared runtime libraries, and the global compiler and
 `pkg-config` wrappers see the declared headers and libraries, Boost and
 `aiohttp` are installed, and the observed `time` path is a declarative link.
 The fix is in `/etc/nixos/configuration.nix`, not in a session-local shell.

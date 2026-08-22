@@ -1411,6 +1411,19 @@ IMPACT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"impact-assessment
 [[ $(psql -h "$WORK" -d math -tAc "select impact_assessments from contribution where id='$EDIT_TARGET'") == 0 ]] || fail "T0 impact assessment affected its target"
 call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(a["assessment_id"]=="'"$IMPACT"'" and a["proposed"]=={"reach":5,"advance":5,"closure":5} for a in d["impact_assessment_proposals"]) and d["backlog"]["impact_assessment_proposals"] >= 1' || fail "pending impact assessment missing from review queue"
 call apply_impact_assessment "{\"contributor_key\":\"$OPKEY\",\"assessment_id\":\"$IMPACT\",\"decision\":\"approve\",\"note\":\"Rubric values checked for the contract fixture.\"}" > /dev/null
+
+# Contract: reviewers race, and the one who arrives second is told the work was
+# already done rather than that the id is no good. Losing the race after
+# reading the whole target is expensive enough without sending the loser
+# hunting for a proposal that is not missing.
+call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$AMENDMENT\",\"decision\":\"approve\",\"note\":\"Racing a decided amendment.\"}" \
+  | grep -q 'already decided (amendment-applied)' || fail "a second reviewer on a decided amendment was not told it was decided"
+call apply_impact_assessment "{\"contributor_key\":\"$OPKEY\",\"assessment_id\":\"$IMPACT\",\"decision\":\"approve\",\"note\":\"Racing a decided assessment.\"}" \
+  | grep -q 'already decided (impact-assessment-applied)' || fail "a second reviewer on a decided impact assessment was not told it was decided"
+call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$EDIT_TARGET\",\"decision\":\"approve\",\"note\":\"Not a proposal at all.\"}" \
+  | grep -q 'review_queue lists what is actually waiting' || fail "a non-proposal contribution did not point at the review queue"
+call apply_amendment '{"contributor_key":"'"$OPKEY"'","amendment_id":"00000000-0000-4000-8000-000000000000","decision":"approve","note":"No such id."}' \
+  | grep -q 'no contribution with id' || fail "an unknown id was not distinguished from a decided proposal"
 call search '{"kind":"problem","order_by":"impact","limit":1}' | python3 -c 'import sys,json;d=json.load(sys.stdin);r=d["results"][0];i=r["ranking"]["reviewed_impact"];assert r["id"]=="'"$EDIT_TARGET"'" and i["total"]==15 and i["assessments"]==1 and i["score"]>30' || fail "reviewed impact did not drive explained impact ordering"
 # An assessment a reviewer applied is the other way onto the board, and it puts
 # the entry at the top of it, which is the whole point of assessing anything.

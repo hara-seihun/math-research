@@ -2903,7 +2903,7 @@ defineTool(
         and ac.status = 'active' and ac.kind = 'impact-assessment'
         and tgt.status = 'active'
       order by e.created_at asc limit 1`;
-    if (!row) return fail({ error: "no pending impact assessment on that contribution" });
+    if (!row) return fail(await noLongerPending(assessment_id, "impact assessment"));
     const proposed = row.proposed ?? {};
     if (proposed.target !== row.target_id) {
       return fail({ error: "impact metadata and assesses-impact edge disagree on the target" });
@@ -2979,7 +2979,7 @@ defineTool(
         and ac.status = 'active' and ac.kind = 'amendment'
         and tgt.status = 'active'
       order by e.created_at asc limit 1`;
-    if (!row) return fail({ error: "no pending amendment proposal on that contribution" });
+    if (!row) return fail(await noLongerPending(amendment_id, "amendment proposal"));
     const proposed = row.proposed ?? {};
     if (proposed.target !== row.target_id) {
       return fail({ error: "amendment metadata and amends edge disagree on the target" });
@@ -3037,6 +3037,44 @@ defineTool(
   },
 );
 
+/** Why a proposal is not there to decide.
+ *
+ *  Reviewers race. Two of them pull the same pending amendment off the queue,
+ *  both read the target and write a considered note, and the loser used to be
+ *  told only "no pending amendment proposal on that contribution" -- which
+ *  reads like a bad id, so the next move is to go hunting for one. It is not a
+ *  bad id; the work was already done, seconds earlier, and the honest answer
+ *  is who did it and how it went. That answer also ends the session's work on
+ *  that entry instead of restarting it. 294 calls in a week landed here.
+ *
+ *  The other real case is a genuinely unknown id, and saying so plainly is
+ *  what separates it from the race. */
+async function noLongerPending(proposalId: string, what: string): Promise<{ error: string; decided?: unknown }> {
+  const [decided] = await sql<{ kind: string; at: string; by: string | null; note: unknown }[]>`
+    select ev.kind, ev.created_at as at, id.display_name as by, ev.payload->>'note' as note
+      from event ev
+      left join identity id on id.id = ev.identity_id
+     where ev.payload->>'amendment_id' = ${proposalId}
+        or ev.payload->>'assessment_id' = ${proposalId}
+        or ev.payload->>'by' = ${proposalId}
+        or (ev.contribution_id = ${proposalId}
+            and ev.kind in ('amendment-rejected', 'refactor-rejected', 'refactor-applied',
+                            'impact-assessment-rejected'))
+     order by ev.created_at desc limit 1`;
+  if (decided) {
+    return {
+      error: `that ${what} was already decided (${decided.kind}) at ${decided.at}${decided.by ? ` by ${decided.by}` : ""}. Nothing left to do here; the queue moved on.`,
+      decided,
+    };
+  }
+  const [exists] = await sql<{ kind: string; status: string; tier: number }[]>`
+    select kind, status, tier from contribution where id = ${proposalId}`;
+  if (!exists) return { error: `no contribution with id ${proposalId}. Ids come back from review_queue and search.` };
+  return {
+    error: `that contribution is a ${exists.kind} at tier ${exists.tier}, status ${exists.status}, with no pending ${what} on it. review_queue lists what is actually waiting.`,
+  };
+}
+
 defineTool(
   "apply_refactor",
   {
@@ -3062,7 +3100,7 @@ defineTool(
       select e.contribution_id as edge_id, e.dst from edge e
       join contribution ec on ec.id = e.contribution_id
       where e.src = ${refactor_id} and e.rel = 'supersedes' and ec.status = 'active' and ec.tier = 0`;
-    if (proposals.length === 0) return fail({ error: "no pending supersedes proposal on that contribution" });
+    if (proposals.length === 0) return fail(await noLongerPending(refactor_id, "supersedes proposal"));
     await sql.begin(async (tx) => {
       const applied = decision === "approve";
       for (const p of proposals) {

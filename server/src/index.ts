@@ -3063,7 +3063,7 @@ async function noLongerPending(proposalId: string, what: string): Promise<{ erro
      order by ev.created_at desc limit 1`;
   if (decided) {
     return {
-      error: `that ${what} was already decided (${decided.kind}) at ${decided.at}${decided.by ? ` by ${decided.by}` : ""}. Nothing left to do here; the queue moved on.`,
+      error: `that ${what} was already decided (${decided.kind}) at ${new Date(decided.at).toISOString()}${decided.by ? ` by ${decided.by}` : ""}. Nothing left to do here; the queue moved on.`,
       decided,
     };
   }

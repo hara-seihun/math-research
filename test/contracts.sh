@@ -1271,6 +1271,23 @@ call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"parti
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$Q\",\"dst\":\"$SQ\",\"rel\":\"reduces-to\"}" > /dev/null
 call frontier "{\"ref\":\"$Q\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert len(d["progress_toward_it"])>=1 and any(x["id"]=="'"$SQ"'" for x in d["open_subproblems"])' || fail "frontier did not distill attack state"
 
+# Contract: a well-worked question's frontier still fits its reader. Fifteen
+# routes with a stall note each, ten pieces of progress and a long statement
+# came to 24 KB on Frankl, so the busiest questions were the ones whose
+# frontier came back as nothing at all.
+LONGQ=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"a question with a long statement and many routes\",\"summary\":\"s\",\"content\":\"$(python3 -c "print('The statement of this question runs on and on. ' * 300)")\"}" | field '.id')
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  RT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"route\",\"title\":\"route $i at the long question\",\"summary\":\"$(python3 -c "print('a route summary with plenty to say. ' * 10)")\",\"content\":\"c.\",\"state\":\"partial\",\"first_unsupported\":\"$(python3 -c "print('the step where it stalls, described at length. ' * 6)")\",\"relates_to\":[{\"id\":\"$LONGQ\",\"rel\":\"attacks\"}]}" | field '.id')
+done
+call frontier "{\"ref\":\"$LONGQ\"}" | python3 -c "import sys,json
+raw = sys.stdin.read()
+d = json.loads(raw)
+assert len(raw) < 16000, len(raw)
+assert d['content_note'], 'a long statement was carried whole at the expense of the routes'
+assert d.get('sample') or len(d['routes']) == 10, d.get('sample')
+assert d['routes'], 'the frontier kept nothing of what attacks the question'" \
+  || fail "a well-worked question's frontier did not fit what a client will hold"
+
 # Contract: a door's own preference breaks a near-tie. "frontier test" names
 # both the question and the write-up attacking it; frontier wants the question.
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"frontier test question attack\",\"summary\":\"s\",\"content\":\"c.\"}" > /dev/null

@@ -403,6 +403,10 @@ export const TheoriesOut = z
   .describe("Without arguments: {theories}. With ref: one framework with its vocabulary and dictionaries. With `for`: what applies to an entry.");
 
 export const FrontierOut = z.strictObject({
+  content_note: z.string().optional().describe("Present when the question's own text was cut to leave room for where it stands. get({ref}) has all of it."),
+  sample: z
+    .string().optional()
+    .describe("Present when the lists were cut to keep the answer inside what a client will hold: which ones were shortened and to what. They are ordered best first, so what is missing is the tail."),
   id: z.string(),
   kind: z.string(),
   title: z.string(),

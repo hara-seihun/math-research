@@ -153,6 +153,9 @@ const MAX_CONTENT = 200_000;
  *  RESPONSE_TARGET. Everything but the body is what the caller asked about the
  *  entry rather than of it, so the body yields first. */
 const CONTENT_FLOOR = 2_000;
+/** How much of a question's own text a frontier carries before it starts
+ *  costing the reader the routes, which are what they came for. */
+const FRONTIER_BODY = 4_000;
 
 /** Work state, for every kind that carries one. Questions derive open /
  *  settled / retired from the graph; a route declares where its attack stands.
@@ -1142,8 +1145,15 @@ defineTool(
       .filter((r) => (r.metadata as Record<string, string> | null)?.first_unsupported)
       .map((r) => ({ route: r.title, state: r.state, stalls_at: (r.metadata as Record<string, string>).first_unsupported }));
     const { state: qState, ...question } = q!;
-    return structured(FrontierOut, {
+    // The question's own body, as much of it as a standing report can carry.
+    // frontier answers "where does this stand", and get is the door that
+    // reads; a long statement should not cost the reader the routes.
+    const body = (question.content as string | null) ?? null;
+    const packet: Record<string, unknown> = {
       ...question,
+      ...(body && body.length > FRONTIER_BODY
+        ? { content: `${body.slice(0, FRONTIER_BODY)}\u2026`, content_note: `${body.length} characters in all; get({ref}) has the whole statement.` }
+        : {}),
       ...(qState ? { state: qState } : {}),
       matched_by: found.matched,
       stands: q!.state === "settled"
@@ -1169,7 +1179,15 @@ defineTool(
       tip: restatements.length
         ? "exploring_now lists trails, which are diaries rather than durable claims; already_tried is chronological history, and durable obstructions appear under where_routes_stall. This question has also been restated through a theory: read the reformulation, and remember that answering an 'equivalent' one at T2 settles this one too."
         : "exploring_now lists trails, which are diaries rather than durable claims. Parallel work is welcome; open your own with trail. already_tried is chronological history; durable obstructions also appear as route contributions under where_routes_stall. Read a diary in full with trails({trail_id}). theories({for:<this>}) asks whether a framework applies.",
-    });
+    };
+    // A well-worked question has fifteen routes, ten pieces of progress and a
+    // stall note for each, which came to 24 KB on Frankl -- past the size a
+    // client keeps, so the busiest questions were the ones whose frontier came
+    // back as nothing at all. The lists shorten, best first, and say so.
+    const dropped = fitToBudget(packet);
+    return structured(FrontierOut, dropped
+      ? { ...packet, sample: `${dropped}. Ordered best first, so what is missing is the tail; search({query, kind:'route'}) and the entry's own links have the rest.` }
+      : packet);
   },
 );
 

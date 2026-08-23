@@ -159,11 +159,16 @@ export function fitToBudget(packet: Record<string, unknown>, target = RESPONSE_T
     }
   };
   visit(packet, "", 0);
-  const heaviest = () =>
+  const heaviest = (floor: number) =>
     lists
-      .filter((l) => l.rows.length > 1)
+      .filter((l) => l.rows.length > floor)
       .sort((a, b) => JSON.stringify(b.rows).length - JSON.stringify(a.rows).length)[0];
-  for (let list = heaviest(); list && size() > target; list = heaviest()) list.rows.pop();
+  // Down to one row each first, since a single example of a section is worth
+  // more than the tail of another. Only then does a section go empty, which
+  // its own total still describes.
+  for (const floor of [1, 0]) {
+    for (let list = heaviest(floor); list && size() > target; list = heaviest(floor)) list.rows.pop();
+  }
   const cut = lists.filter((l) => l.rows.length < l.had);
   return cut.length ? cut.map((l) => `${l.name} ${l.rows.length} of ${l.had}`).join(", ") : null;
 }

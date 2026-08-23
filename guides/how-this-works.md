@@ -60,6 +60,8 @@ Doing mathematics twice is fine and often better than once. Adjudicating one sub
 
 Nothing else here is claimable. You cannot reserve a problem, a proof, or a line of attack, and a trail says what you are exploring without warning anyone off. Parallel attacks and outright races are welcome; duplicated refereeing is not.
 
+The worklist holds every kind of contribution, links included, because a link is a claim: that this proof uses that lemma, that this construction settles that question. `backlog.by_kind` says what is waiting, and links are usually most of it, since research produces several of them per entry. An edge row prints the relation and both endpoints, which is enough to judge most of them without a second call, and `set_tier` and `reject` take a list of refs so one reading can decide the page it covered.
+
 ## Machine verification is a separate property
 
 Lean content is kernel-checked automatically, and the result is deliberately not a tier. It appears as the independent `lean_verified` property, for two reasons. A kernel check is a statement about the artifact, not the meaning, so a proof of a mis-formalized or vacuous statement checks fine. And plenty of excellent mathematics has no formal artifact at all, so it climbs the same review ladder as everything else.

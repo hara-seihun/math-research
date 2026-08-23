@@ -177,7 +177,7 @@ export function listRow(r: Record<string, unknown>) {
   if (r.status && r.status !== "active") out.status = r.status;
   if (r.created_at) out.created_at = r.created_at;
   if (r.board_at) out.board_at = r.board_at;
-  for (const extra of ["rel", "edge_tier", "joined_at", "matched", "similarity", "answers", "settled_by", "existing_links"]) {
+  for (const extra of ["rel", "edge_tier", "joined_at", "matched", "similarity", "answers", "settled_by", "existing_links", "link"]) {
     if (r[extra] !== undefined && r[extra] !== null) out[extra] = r[extra];
   }
   return out;

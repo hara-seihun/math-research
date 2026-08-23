@@ -107,6 +107,14 @@ export const ListRow = z
     board_at: iso.optional().describe("When this entry reached the all-time board, meaning when review certified it. Present only for rows on it, and what `since` windows when `board: true`."),
     rel: z.string().optional().describe("The relation this row arrived through, when listed via a link."),
     edge_tier: z.number().int().optional().describe("The linking edge's own review tier."),
+    link: z
+      .strictObject({
+        rel: z.string(),
+        src: z.strictObject({ id: z.string(), kind: z.string(), title: z.string(), tier, status: z.string() }),
+        dst: z.strictObject({ id: z.string(), kind: z.string(), title: z.string(), tier, status: z.string() }),
+      })
+      .optional()
+      .describe("What an edge row actually asserts, both endpoints named. A link's title is only its relation, so without this a reviewer cannot tell 'uses' from 'uses' and has to fetch every row to judge it."),
     joined_at: iso.optional().describe("When this member joined the front."),
     matched: z.string().optional().describe("How search matched it: 'every term', 'some terms', or 'fuzzy'."),
     similarity: z.number().optional(),
@@ -921,7 +929,10 @@ export const ReviewQueueOut = z.strictObject({
     .describe("Every entry this reviewing session currently holds, including ones taken in an earlier call. A lease belongs to the session, not to the key, so a fleet's other sessions are not listed here."),
   tip: z.string().optional(),
   backlog: z.strictObject({
-    unreviewed: z.number().int().describe("Every entry matching the queue, not just this page: everything active at or under max_tier, whoever wrote it, including the read-but-undecided ones counted again in awaiting_decision."),
+    unreviewed: z.number().int().describe("Every entry matching the queue, not just this page: everything active at or under max_tier, of every kind including links, whoever wrote it, including the read-but-undecided ones counted again in awaiting_decision."),
+    by_kind: z
+      .record(z.string(), z.number().int())
+      .describe("What the unreviewed count is made of, by kind. Links usually dominate it and are the cheapest rows to work through; `kind` narrows the page to one of these."),
     awaiting_decision: z.number().int().describe("Still at T0 and already read by someone: nobody ever decided these. The limbo this queue is meant to drain."),
     claimed_by_others: z.number().int().describe("Matching entries another reviewer holds right now, excluded from your page."),
     flagged: z.number().int().describe("Active entries something in the graph refutes or disputes. Read the objection, then promote or reject."),
@@ -1048,15 +1059,31 @@ export const SetOriginOut = z.strictObject({
     .describe("Questions this entry settles that reach the board because of this decision, which is what calling something ours again does."),
 });
 
+/** A ref a bulk decision could not act on, with why. The others still went
+ *  through: one unresolvable ref in a page of a hundred is not a reason to
+ *  make a reviewer re-read the ninety-nine. */
+export const RefusedRefs = z
+  .array(z.strictObject({ ref: z.string(), error: z.string() }))
+  .optional()
+  .describe("Refs this call did not act on, each with why. Everything else in the call was still decided.");
+
 export const SetTierOut = z.strictObject({
   ok: z.literal(true),
-  id: z.string(),
   tier,
   note: z.string(),
-  restored: z
-    .boolean()
-    .optional()
-    .describe("The entry had been rejected by review and this promotion put it back in the corpus."),
+  decided: z
+    .array(
+      z.strictObject({
+        id: z.string(),
+        title: z.string(),
+        restored: z
+          .boolean()
+          .optional()
+          .describe("The entry had been rejected by review and this promotion put it back in the corpus."),
+      }),
+    )
+    .describe("Every entry this call moved. One decision per row in the public event ledger, all carrying the note."),
+  refused: RefusedRefs,
 });
 
 export const SetTuningOut = z.strictObject({
@@ -1093,13 +1120,15 @@ export const RetractOut = z.strictObject({ ok: z.literal(true), id: z.string(), 
 
 export const RejectOut = z.strictObject({
   ok: z.literal(true),
-  id: z.string(),
-  title: z.string(),
   reason: z.enum(["not-mathematics", "unsupported", "false", "duplicate"]),
   note: z.string(),
+  rejected: z
+    .array(z.strictObject({ id: z.string(), title: z.string() }))
+    .describe("Every entry this call threw out. One decision per row in the public event ledger, all carrying the reason and note."),
+  refused: RefusedRefs,
   reopened: z
     .array(z.strictObject({ id: z.string(), title: z.string() }))
-    .describe("Questions this entry was claiming to settle, now open again because what settled them is out."),
+    .describe("Questions these entries were claiming to settle, now open again because what settled them is out."),
 });
 
 export const ReviewClaimOut = z.strictObject({

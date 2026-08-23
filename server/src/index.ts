@@ -137,6 +137,34 @@ const refParam = z
   .string()
   .describe("An entry: its id, a name or handle it is known by, or its exact title. Names come back from search and get.");
 
+/** A verdict tool's subject: one entry, or the page of them one reading
+ *  covered. The queue hands out a hundred rows at a time and most of them are
+ *  links; a decision door that takes one ref at a time turns a page a reviewer
+ *  has already read into a hundred round trips, which is how a backlog of
+ *  twenty thousand edges stayed a backlog. */
+const oneOrMoreRefs = z.union([refParam, z.array(refParam).min(1).max(100)]);
+
+const refList = (ref: string | string[]): string[] => [...new Set(Array.isArray(ref) ? ref : [ref])];
+
+/** Resolve every ref, keeping the failures as data beside the successes. */
+async function resolveRefs(
+  refs: string[],
+  opts?: string | { kind?: string; prefer?: string[] },
+): Promise<{ ids: { ref: string; id: string }[]; refused: { ref: string; error: string }[] }> {
+  const ids: { ref: string; id: string }[] = [];
+  const refused: { ref: string; error: string }[] = [];
+  const seen = new Set<string>();
+  for (const ref of refs) {
+    const found = await deref(ref, opts);
+    if ("error" in found) refused.push({ ref, error: found.error });
+    else if (!seen.has(found.id)) {
+      seen.add(found.id);
+      ids.push({ ref, id: found.id });
+    }
+  }
+  return { ids, refused };
+}
+
 const MODULES_SHOWN = 8;
 
 const capModules = (modules: string[] | null): string[] | null =>
@@ -2272,15 +2300,15 @@ defineTool(
     title: "Review queue (trusted)",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: [
-      "The reviewer worklist: entries waiting on a verdict (T0/T1), entries something in the graph flags as wrong, closures whose headline still asks the question, pending refactor, presentation-amendment, and impact-assessment proposals, and recent verification failures.",
+      "The reviewer worklist: everything waiting on a verdict (T0/T1) of every kind, links included, entries something in the graph flags as wrong, closures whose headline still asks the question, pending refactor, presentation-amendment, and impact-assessment proposals, Lean patches, and recent verification failures.",
       "What you are handed is yours to adjudicate. Every entry on your page is leased to you for `claim_minutes`, and while that lease is live no other reviewer is given it, so two agents stop spending two sessions to produce one decision. The lease belongs to your session, not to your key, so a fleet reviewing under one identity still gets disjoint pages. It ends the moment you decide the entry, whether you promote it with set_tier, throw it out with reject, retract it, or apply the proposal, and otherwise it expires on its own, so a session that dies frees its rows by doing nothing. Take what you will actually read, so ask for a page of five if you will review five. Hand back anything you looked at and left undecided with review_claim({action:'release'}).",
       "This lease is over the *reading*, not over the mathematics. Nothing here reserves a problem, a proof, or a line of attack: research is meant to be attacked in parallel and trails stay advisory diaries. Only adjudication is queue work, because it is the one thing worth doing exactly once.",
       "The queue does not care who wrote an entry or who has read it. Judging your own submission is a real hazard, but hiding it is worse: on a ledger whose mathematics comes from one fleet under one key, filtering by author emptied the worklist entirely and nothing got reviewed at all. So review your own work like anything else, and say in the note that it is yours. Entries that already carry a reading and are still sitting at T0 come back too, marked with their `reviews` count and sorted after the unread ones, because a reading without a verdict is not a decision.",
-      "`backlog` counts everything that matches, not just this page. Edges are excluded by default (pass kind='edge' to review links). Requires a trusted key.",
+      "A link is a contribution on the same ladder as the mathematics, and an unreviewed one is an unchecked claim about what depends on, advances, or settles what. So links are queued like everything else, and an edge row prints what it asserts — relation, both endpoints, their kinds and tiers — which is enough to decide most of them without a second call. `backlog` counts everything that matches rather than this page; `backlog.by_kind` says what it is made of, and `kind` narrows the page to one of them, which is how you take a run of links or a run of theorems rather than a mixture. Requires a trusted key.",
     ].join(" "),
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
-      kind: z.string().optional().describe("Only queue entries of this kind, for example 'proof' or 'conjecture'."),
+      kind: z.string().optional().describe("Only queue entries of this kind, for example 'proof', 'conjecture', or 'edge' for links. `backlog.by_kind` lists what is actually waiting."),
       max_tier: z
         .number().int().min(0).max(2).default(1)
         .describe("Highest tier to show. Defaults to 1, so canon (2) is out of the queue unless you ask for it."),
@@ -2308,8 +2336,7 @@ defineTool(
     // what a reviewer should say in the note, not what the queue offers.
     const queued = sql`
       c.status = 'active' and c.tier <= ${max_tier}
-        and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
-        and (${kind ?? null}::text is not null or c.kind <> 'edge')`;
+        and (${kind ?? null}::text is null or c.kind = ${kind ?? null})`;
     // Another reviewer's live lease takes the row off your page; your own does
     // not, so a session that asks twice gets its own work back.
     const heldByOther = sql`exists (
@@ -2321,6 +2348,20 @@ defineTool(
       join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
       join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
       where e.dst = c.id and e.rel = 'reviews'`;
+    // An edge's own title is only its relation word, so a page of links reads
+    // as twenty rows saying "uses". What a reviewer has to judge is the
+    // assertion: these two entries, in this direction, under this relation.
+    // Carried on the row because one fetch per edge is what made a queue of
+    // twenty thousand links unworkable rather than merely long.
+    const linkDetail = sql`
+      select json_build_object(
+               'rel', ed.rel,
+               'src', json_build_object('id', s.id, 'kind', s.kind, 'title', s.title, 'tier', s.tier, 'status', s.status),
+               'dst', json_build_object('id', d.id, 'kind', d.kind, 'title', d.title, 'tier', d.tier, 'status', d.status)) as link
+      from edge ed
+      join contribution s on s.id = ed.src
+      join contribution d on d.id = ed.dst
+      where ed.contribution_id = c.id`;
     // Selecting the page and leasing it are one statement. Two reviewers ask
     // at the same instant and the conflicting insert refuses the row that is
     // already held, so the loser never sees it rather than seeing it twice.
@@ -2328,6 +2369,7 @@ defineTool(
     const rows = await sql<{
       id: string; kind: string; title: string; summary: string; tier: number; notability: number;
       created_at: Date; lean_verified: boolean; reviews: number; claimed_until: Date | null;
+      link: Record<string, unknown> | null;
     }[]>`
       with candidate as (
         select c.id, c.notability, c.created_at,
@@ -2351,11 +2393,12 @@ defineTool(
         returning contribution_id, expires_at
       )
       select c.id, c.kind, c.title, c.summary, c.tier, c.notability, c.created_at, c.lean_verified, c.origin, c.origin_source,
-             rc.n as reviews, t.expires_at as claimed_until
+             rc.n as reviews, t.expires_at as claimed_until, lk.link
       from candidate cand
       join contribution_overview c on c.id = cand.id
       left join taken t on t.contribution_id = cand.id
       join lateral (${reviewCount}) rc on true
+      left join lateral (${linkDetail}) lk on true
       order by cand.reviewed asc, c.notability desc, c.created_at asc`;
     // A row the insert refused was taken by someone else between the scan and
     // the write. It is theirs; do not hand it out as well.
@@ -2467,10 +2510,14 @@ defineTool(
       order by c.tier desc, c.created_at asc
       limit ${limit}`;
     const [counts] = await sql<{
-      unreviewed: number; awaiting_decision: number; claimed_by_others: number; flagged: number;
-      refactor_proposals: number; amendment_proposals: number; impact_assessment_proposals: number; patches: number;
+      unreviewed: number; by_kind: Record<string, number>; awaiting_decision: number; claimed_by_others: number;
+      flagged: number; refactor_proposals: number; amendment_proposals: number; impact_assessment_proposals: number;
+      patches: number;
     }[]>`
       select (select count(*) from contribution_overview c where ${queued})::int as unreviewed,
+             (select coalesce(json_object_agg(k.kind, k.n), '{}'::json) from (
+                select c.kind, count(*)::int as n from contribution_overview c
+                 where ${queued} group by c.kind) k) as by_kind,
              (select count(*) from contribution_overview c
                 where ${queued} and c.tier = 0 and exists (
                   select 1 from edge e
@@ -2514,6 +2561,7 @@ defineTool(
       ...(tip ? { tip } : {}),
       backlog: counts ?? {
         unreviewed: unreviewed.length,
+        by_kind: {},
         awaiting_decision: 0,
         claimed_by_others: 0,
         flagged: flagged.length,
@@ -2549,10 +2597,10 @@ defineTool(
     outputSchema: SetTierOut,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Move any entry, including a link (edge), along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. This is a decision, so it releases your review claim on the entry and any other reviewer's. Promoting something a reviewer had rejected puts it back in the corpus, because review is what reverses a review decision, and says so in `restored`. The opposite verdict is `reject`. Requires a trusted key.",
+      "Move any entry, including a link (edge), along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. This is a decision, so it releases your review claim on the entry and any other reviewer's. Promoting something a reviewer had rejected puts it back in the corpus, because review is what reverses a review decision, and says so in `restored`. `ref` takes a list when one reading covers several rows — a page of links out of one refactor, a family of extracted statements you read together — and each gets its own event carrying the shared note; anything the call cannot move comes back in `refused` while the rest still go through. Do not batch readings you did not actually do together. The opposite verdict is `reject`. Requires a trusted key.",
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
-      ref: refParam.describe("The entry (or link) to move: id, name, or title."),
+      ref: oneOrMoreRefs.describe("The entry (or link) to move: id, name, or title. A list moves each of them, up to 100."),
       tier: z
         .number().int().min(0).max(3)
         .describe("The tier to move it to: 0 recorded, 1 confirmed as well-formed mathematics, 2 canon, 3 published in a journal."),
@@ -2562,43 +2610,60 @@ defineTool(
   async ({ contributor_key, ref, tier, note }) => {
     const who = await trustedCheck(contributor_key);
     if (!who.ok) return fail({ error: who.refusal });
-    logRequest("set_tier", who.identityId, { ref, tier });
-    const found = await refOr(ref);
-    if ("failed" in found) return found.failed;
-    const id = found.id;
+    const asked = refList(ref);
+    logRequest("set_tier", who.identityId, { refs: asked.length, tier });
+    const { ids, refused } = await resolveRefs(asked);
     // A review is the judgement, so there is no ladder under it to move it
-    // along. Refused here rather than by the check constraint so the answer
-    // says what to do instead.
-    const [target] = await sql<{ kind: string }[]>`select kind from contribution where id = ${id}`;
-    if (target?.kind === "review") {
-      return fail({
-        error:
-          "a review has no tier: it is the judgement, not a claim awaiting one. " +
-          "To act on what it says, move the entry it reviews. To disagree with it, review that entry yourself.",
-      });
+    // along. Refused per row rather than by the check constraint so the answer
+    // says what to do instead, and so one review in a page does not cost the
+    // reviewer the other ninety-nine decisions.
+    const kinds = new Map(
+      (await sql<{ id: string; kind: string; title: string }[]>`
+        select id, kind, title from contribution where id = any (${ids.map((r) => r.id)}::uuid[])`)
+        .map((row) => [row.id, row]),
+    );
+    const movable: { ref: string; id: string; title: string }[] = [];
+    for (const asking of ids) {
+      const target = kinds.get(asking.id);
+      if (!target) refused.push({ ref: asking.ref, error: "no contribution with that id" });
+      else if (target.kind === "review") {
+        refused.push({
+          ref: asking.ref,
+          error:
+            "a review has no tier: it is the judgement, not a claim awaiting one. " +
+            "To act on what it says, move the entry it reviews. To disagree with it, review that entry yourself.",
+        });
+      } else movable.push({ ref: asking.ref, id: asking.id, title: target.title });
     }
-    const updated = await sql.begin(async (tx) => {
-      const [row] = await tx<{ tier: number; status: string; was: string }[]>`
+    if (!movable.length) return fail({ error: refused[0]?.error ?? "nothing to move", refused });
+    const moving = movable.map((m) => m.id);
+    const restored = await sql.begin(async (tx) => {
+      const rows = await tx<{ id: string; status: string; was: string }[]>`
         update contribution c
            set tier = ${tier},
                status = case when c.status = 'rejected' and ${tier} >= 1 then 'active' else c.status end,
                updated_at = now()
-          from (select status from contribution where id = ${id}) prev
-         where c.id = ${id} returning c.tier, c.status, prev.status as was`;
-      if (!row) return false;
+          from (select id, status from contribution where id = any (${moving}::uuid[])) prev
+         where c.id = prev.id returning c.id, c.status, prev.status as was`;
+      const back = rows.filter((r) => r.was === "rejected" && r.status === "active").map((r) => r.id);
+      const payload = tx.json({ tier, note } as never);
       await tx`insert into event (kind, contribution_id, identity_id, payload)
-               values ('tier-changed', ${id}, ${who.identityId}, ${tx.json({ tier, note } as never)})`;
-      const restored = row.was === "rejected" && row.status === "active";
-      if (restored) {
+               select 'tier-changed', id, ${who.identityId}, ${payload}
+               from unnest(${moving}::uuid[]) as id`;
+      if (back.length) {
         await tx`insert into event (kind, contribution_id, identity_id, payload)
-                 values ('restored', ${id}, ${who.identityId}, ${tx.json({ tier, note } as never)})`;
+                 select 'restored', id, ${who.identityId}, ${payload}
+                 from unnest(${back}::uuid[]) as id`;
       }
-      await releaseClaims(tx, [id]);
-      return { restored };
+      await releaseClaims(tx, moving);
+      return new Set(back);
     });
-    if (!updated) return fail({ error: "no contribution with that id" });
-    await refreshAround([id]);
-    return structured(SetTierOut, { ok: true, id, tier, note, ...(updated.restored ? { restored: true } : {}) });
+    await refreshAround(moving);
+    return structured(SetTierOut, {
+      ok: true, tier, note,
+      decided: movable.map((m) => ({ id: m.id, title: m.title, ...(restored.has(m.id) ? { restored: true } : {}) })),
+      ...(refused.length ? { refused } : {}),
+    });
   },
 );
 
@@ -2693,10 +2758,11 @@ defineTool(
       "The verdict review needs when the answer is no. Promotion is not the only way out of the queue: something that claims the Riemann Hypothesis and offers 1+1=2 as the proof is not confirmed mathematics, and leaving it at T0 forever is not a decision either. It stays in the corpus, keeps whatever question it claimed to settle looking settled, and comes back around the worklist.",
       "Rejecting marks the entry rejected. It stays readable forever, with your reason attached, because the ledger annotates and never deletes. It leaves the active corpus, so it stops being found by search, stops lending importance to anything it points at, and any question it was claiming to answer reopens, with those listed in `reopened`. Your review claim on it is released.",
       "Reject the entry that is wrong, not the question it was about. If a proof is empty but the statement is worth keeping, reject the proof and leave the conjecture open. If the mathematics is real but the write-up is thin, that is a T0 entry and a review saying so, not a rejection. If it is honest work that a later reviewer decides was judged too harshly, set_tier puts it back. Requires a trusted key.",
+      "`ref` takes a list when one reading condemns several rows at once, which is the usual shape for links: every edge out of an entry that turned out to be rejected, a duplicated assertion filed a hundred times. Each gets its own event carrying the shared reason and note, `reopened` names every question the whole call put back, and anything the call cannot reject comes back in `refused` while the rest still go through.",
     ].join(" "),
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
-      ref: refParam.describe("The entry to reject: id, name, or title."),
+      ref: oneOrMoreRefs.describe("The entry to reject: id, name, or title. A list rejects each of them, up to 100."),
       reason: z
         .enum(["not-mathematics", "unsupported", "false", "duplicate"])
         .describe("'not-mathematics' noise, spam, or nothing mathematical to read. 'unsupported' the argument does not establish what it claims, which is the usual verdict on a grand claim with an empty proof, whether or not the claim is true. 'false' the content is definitely wrong. 'duplicate' it is already here (prefer a refactor when the two entries are worth merging)."),
@@ -2706,36 +2772,47 @@ defineTool(
   async ({ contributor_key, ref, reason, note }) => {
     const who = await trustedCheck(contributor_key);
     if (!who.ok) return fail({ error: who.refusal });
-    const found = await refOr(ref);
-    if ("failed" in found) return found.failed;
-    const id = found.id;
-    logRequest("reject", who.identityId, { id, reason });
-    const [target] = await sql<{ title: string; status: string }[]>`
-      select title, status from contribution where id = ${id}`;
-    if (!target) return fail({ error: "no contribution with that id" });
-    if (target.status === "rejected") return fail({ error: "that entry is already rejected." });
-    // What it was holding closed, read before the write so the answer names
+    const asked = refList(ref);
+    logRequest("reject", who.identityId, { refs: asked.length, reason });
+    const { ids, refused } = await resolveRefs(asked);
+    const targets = new Map(
+      (await sql<{ id: string; title: string; status: string }[]>`
+        select id, title, status from contribution where id = any (${ids.map((r) => r.id)}::uuid[])`)
+        .map((row) => [row.id, row]),
+    );
+    const throwing: { id: string; title: string }[] = [];
+    for (const asking of ids) {
+      const target = targets.get(asking.id);
+      if (!target) refused.push({ ref: asking.ref, error: "no contribution with that id" });
+      else if (target.status === "rejected") refused.push({ ref: asking.ref, error: "that entry is already rejected." });
+      else throwing.push({ id: asking.id, title: target.title });
+    }
+    if (!throwing.length) return fail({ error: refused[0]?.error ?? "nothing to reject", refused });
+    const going = throwing.map((t) => t.id);
+    // What these were holding closed, read before the write so the answer names
     // exactly the questions this decision reopened.
-    const claimedToSettle = await sql<{ id: string; title: string }[]>`
-      select distinct q.id, q.title
+    const claimedToSettle = await sql<{ id: string }[]>`
+      select distinct q.id
       from edge e
       join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
       join contribution q on q.id = e.dst and q.status = 'active'
-      where e.src = ${id} and q.kind in ('problem', 'conjecture')
+      where e.src = any (${going}::uuid[]) and q.kind in ('problem', 'conjecture')
         and e.rel = any(${SETTLES})`;
     await sql.begin(async (tx) => {
-      await tx`update contribution set status = 'rejected', updated_at = now() where id = ${id}`;
+      await tx`update contribution set status = 'rejected', updated_at = now()
+                where id = any (${going}::uuid[])`;
       await tx`insert into event (kind, contribution_id, identity_id, payload)
-               values ('rejected', ${id}, ${who.identityId}, ${tx.json({ reason, note } as never)})`;
-      await releaseClaims(tx, [id]);
+               select 'rejected', id, ${who.identityId}, ${tx.json({ reason, note } as never)}
+               from unnest(${going}::uuid[]) as id`;
+      await releaseClaims(tx, going);
     });
-    await refreshAround([id]);
+    await refreshAround(going);
     const reopened = claimedToSettle.length
       ? await sql<{ id: string; title: string }[]>`
           select id, title from contribution
           where id = any (${claimedToSettle.map((q) => q.id)}::uuid[]) and state = 'open'`
       : [];
-    return structured(RejectOut, { ok: true, id, title: target.title, reason, note, reopened });
+    return structured(RejectOut, { ok: true, reason, note, rejected: throwing, ...(refused.length ? { refused } : {}), reopened });
   },
 );
 

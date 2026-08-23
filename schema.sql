@@ -282,6 +282,12 @@ create index if not exists contribution_title_trgm_idx
   on contribution using gin (lower(title) gin_trgm_ops);
 create index if not exists contribution_kind_idx on contribution (kind, status, tier);
 create index if not exists contribution_notability_idx on contribution (status, notability desc);
+-- The reviewer worklist, which is the one read whose population is everything
+-- *not* yet judged. Links are contributions too and there are tens of
+-- thousands of unreviewed ones, so the queue's scan is the largest in the
+-- server and the only one that gets slower the further review falls behind.
+create index if not exists contribution_queue_idx
+  on contribution (tier, notability desc, created_at) where status = 'active';
 create index if not exists contribution_tags_idx on contribution using gin (tags);
 create index if not exists contribution_names_norm_idx on contribution using gin (names_norm);
 create index if not exists contribution_names_trgm_idx on contribution using gin (names_text gin_trgm_ops);

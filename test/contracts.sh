@@ -577,7 +577,7 @@ call search "{\"query\":\"Settling the hard open question\"}" | grep -q "$BOGUS_
 # Contract: a review decision is reversed by review. Promoting something that
 # was rejected puts it back, so a harsh verdict is not permanent damage.
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"tier\":1,\"note\":\"on second reading the argument is real\"}" \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'] and d.get('restored') is True, d" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'] and d['decided'] == [{'id': '$BOGUS_P', 'title': 'Settling the hard open question', 'restored': True}], d" \
   || fail "promoting a rejected entry did not restore it"
 [[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '.status') == active ]] || fail "a restored entry did not come back active"
 call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"and back out again\"}" | field '.ok' > /dev/null
@@ -621,6 +621,55 @@ call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"limit\":100
   || fail "the review queue offered a review as work"
 call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RV_SUBJ\",\"dst\":\"$RV\",\"rel\":\"reviews\"}" \
   | jq -e '.error' > /dev/null || fail "a review was reviewed"
+
+# Contract: a link is a contribution on the same ladder, so it is queued like
+# one. Excluding edges from the default page hid twenty-three thousand
+# unreviewed assertions about what depends on, advances, and settles what,
+# while the queue reported a backlog of two. And an edge row has to say what it
+# asserts: a link's title is only its relation word, so a page of them without
+# both endpoints is a page of rows reading "uses" that nobody can adjudicate.
+LNK_S=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"a theorem at one end of a link\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+LNK_D=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"a result at the other end\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+LNK=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$LNK_S\",\"dst\":\"$LNK_D\",\"rel\":\"uses\"}" | field '.edge_id')
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"kind\":\"edge\",\"limit\":100}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin)
+row = next((r for r in d['unreviewed'] if r['id'] == '$LNK'), None)
+assert row, 'the link never reached the queue'
+assert row['link'] == {'rel': 'uses',
+                       'src': {'id': '$LNK_S', 'kind': 'theorem', 'title': 'a theorem at one end of a link', 'tier': 0, 'status': 'active'},
+                       'dst': {'id': '$LNK_D', 'kind': 'result', 'title': 'a result at the other end', 'tier': 0, 'status': 'active'}}, row" \
+  || fail "an edge row does not carry the assertion a reviewer has to judge"
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"limit\":100}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin)
+b = d['backlog']
+assert b['by_kind'].get('edge', 0) >= 1, b
+assert sum(b['by_kind'].values()) == b['unreviewed'], b" \
+  || fail "the default queue hides links from its own backlog count"
+
+# Contract: one reading, one call. The queue hands out a hundred rows and most
+# of them are links; a verdict door taking one ref at a time turns a page the
+# reviewer has already read into a hundred round trips, which is how a backlog
+# of twenty thousand edges stayed one. A ref the call cannot act on comes back
+# in `refused` and the rest are still decided.
+BULK=()
+for i in 1 2 3; do
+  BULK+=("$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"bulk subject $i\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')")
+done
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":[\"${BULK[0]}\",\"${BULK[1]}\",\"${BULK[2]}\",\"$RV\"],\"tier\":2,\"note\":\"one reading covered all three\"}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert [r['id'] for r in d['decided']] == ['${BULK[0]}', '${BULK[1]}', '${BULK[2]}'], d
+assert [r['ref'] for r in d['refused']] == ['$RV'], d" \
+  || fail "a bulk promotion did not decide what it could and refuse what it could not"
+for id in "${BULK[@]}"; do
+  [[ $(call get "{\"ref\":\"$id\"}" | field '.tier') == 2 ]] || fail "a bulk promotion did not apply to every entry"
+  [[ $(psql -h "$WORK" -d math -tAc "select count(*) from event where contribution_id = '$id' and kind = 'tier-changed'") == 1 ]] \
+    || fail "a bulk promotion did not give every entry its own event"
+done
+call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":[\"${BULK[0]}\",\"${BULK[1]}\"],\"reason\":\"duplicate\",\"note\":\"both say what the third says\"}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); assert [r['id'] for r in d['rejected']] == ['${BULK[0]}', '${BULK[1]}'], d" \
+  || fail "a bulk rejection did not throw out every entry it was given"
+[[ $(call get "{\"ref\":\"${BULK[1]}\"}" | field '.status') == rejected ]] || fail "a bulk rejection did not apply"
+[[ $(call get "{\"ref\":\"${BULK[2]}\"}" | field '.status') == active ]] || fail "a bulk rejection took an entry it was not given"
 
 # Contract: a write refreshes what it touched, not the corpus. Promotion and
 # linking used to recompute state and notability over every row, which on a

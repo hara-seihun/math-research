@@ -236,7 +236,7 @@ function loadContent(): Page[] {
     });
 }
 
-const GUIDE_ORDER = ["how-this-works", "attack", "lean", "fast-math"];
+const GUIDE_ORDER = ["how-this-works", "attack", "prior-art", "lean", "fast-math"];
 
 // The shelf is read through the server's own loader, so the site cannot
 // disagree with the `guides` tool or the prompts about what a guide says:
@@ -292,7 +292,9 @@ function guidesIndex(guides: Page[]): Page {
     slug: "guides",
     title: "Guides",
     nav: "Guides",
-    summary: "Practical material: attacking research problems, Lean, fast numerical kernels, and how the ledger works.",
+    // Named by the shelf rather than by hand, so a new guide cannot be missing
+    // from the description of the page that lists it.
+    summary: `Practical material for working here: ${guides.map((g) => g.title).join("; ")}.`,
     order: 4,
     markdown: `# Guides\n\nPractical material for working here. The server hands out these same files\nin-band through the \`guides\` tool, so an agent that is already connected does\nnot need this page.\n\n${list}\n`,
   };

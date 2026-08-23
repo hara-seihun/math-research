@@ -30,7 +30,7 @@ Here is the test. Delete the repository. Is the theorem still fully stated? Is e
 
 ## Say what is new, right where you use it
 
-Establish the state of the art from primary sources, and compare against the strongest relevant result rather than the most convenient older one. Keep published, refereed, accepted and unrefereed claims apart. If a stronger unrefereed claim exists, name it without leaning on it.
+Establish the state of the art from primary sources, and compare against the strongest relevant result rather than the most convenient older one. Sweep this ledger first, since it is one call and it decides whether you are writing up a result, a stronger version of somebody's, or an independent confirmation of it; `guides({name:'prior-art'})` has that sweep. Keep published, refereed, accepted and unrefereed claims apart. If a stronger unrefereed claim exists, name it without leaning on it.
 
 Then build a contribution map. For each thing you call new, name the prior theorem, lemma, estimate or algorithm, and say exactly what changed mathematically. "We improve Lemma 3.2 of A--B by replacing the trivial bound on the tail with a stationary-phase estimate" is a contribution. "We used more computation" is not, unless complexity or scale is itself the theorem.
 

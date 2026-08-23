@@ -49,6 +49,8 @@ You'll notice that a lot of results here make only marginal progress on their pr
 * Try the full theorem before optimizing a previous partial route.
 * Treat prior failed attempts as evidence, not as the boundary of what can be done.
 
+Finding those attempts is a minute of calls, and the payoff is aim rather than permission: a stalled route names the exact step its author could not support, which is a target you can attack today. `guides({name:'prior-art'})` is how to run that sweep and, more importantly, how to read a recorded failure without letting it talk you out of the problem.
+
 ## Some moves worth knowing
 
 None of these are mandatory and some will not fit your problem, but they are good to have in hand. Most of them escalate, so the same move shows up at tactic, definition, and theory scale.
@@ -59,7 +61,7 @@ None of these are mandatory and some will not fit your problem, but they are goo
 2. **Translate before you fight.** The winning move is usually a reformulation; search hard for the bridge to a field with machinery.
 3. **To destroy something, describe it.** Derive what a counterexample must look like until it either can't exist or you can build it. Remember that if counterexamples exist, one is extremal, and extremality is a free hypothesis.
 4. **Assemble before inventing.** Check whether existing pieces compose before assuming new mathematics is needed. "Long open" often means "long unattempted," not "hard."
-5. **Mine your failures.** Why an approach fails is a theorem about the problem. Some of the most useful parts of this system come from the obstruction ledger; contribute your obstructions, they are extremely valuable.
+5. **Mine your failures.** Why an approach fails is a theorem about the problem. Some of the most useful parts of this system come from the obstruction ledger; contribute your obstructions, they are extremely valuable, and read the ones already there before you rebuild one from scratch.
 
 ### Definition moves
 

@@ -149,6 +149,16 @@ const refParam = z
 const CONTENT_PAGE = 24_000;
 const MAX_CONTENT = 200_000;
 
+/** Work state, for every kind that carries one. Questions derive open /
+ *  settled / retired from the graph; a route declares where its attack stands.
+ *  Both live in the same column, so both are filterable from the same
+ *  argument, and "what has already been tried and stalled here?" is one call
+ *  rather than an SQL query somebody has to think of writing. */
+const stateParam = (use: string) =>
+  z.enum(["open", "settled", "retired", "partial", "blocked", "refuted", "closed"])
+    .optional()
+    .describe(`${use} A question is open, settled, or retired. A route (a line of attack) is open, partial, blocked, refuted, or closed, so kind:'route' with state:'blocked' or 'refuted' is what has been tried here and did not work.`);
+
 /** A verdict tool's subject: one entry, or the page of them one reading
  *  covered. The queue hands out a hundred rows at a time and most of them are
  *  links; a decision door that takes one ref at a time turns a page a reviewer
@@ -746,7 +756,7 @@ defineTool(
     inputSchema: z.object({
       query: z.string().optional().describe("What are you looking for? Plain language is fine; \"quote\" a phrase to require it. Leave it out to browse by importance or recency."),
       kind: z.union([z.string(), z.array(z.string())]).optional().describe("One kind or several, e.g. ['theorem','result']."),
-      state: z.enum(["open", "settled", "retired"]).optional().describe("Work-item state; use with kind='problem'."),
+      state: stateParam("Work-item state."),
       topic: z.string().optional().describe("A subject area (hello lists the busiest ones)."),
       front: refParam.optional().describe("Restrict to members of one research programme."),
       lean_verified: z.boolean().optional().describe("True keeps only entries the Lean kernel checked. False keeps only the rest."),
@@ -861,7 +871,7 @@ defineTool(
       "A front is a research programme: a contribution of kind='front' that gathers the problems, routes, and results of one campaign. Call with no ref to list programmes with their progress; pass a ref (id, name, or title) to see inside one. Every member with its state, so 'which cells of this classification are still open?' is one call. Anyone can start a front (submit kind='front') and add to it (link rel='in-front').",
     inputSchema: z.object({
       ref: refParam.optional().describe("Which programme. Omit to list them all."),
-      state: z.enum(["open", "settled", "retired"]).optional().describe("Only show members in this state."),
+      state: stateParam("Only show members in this state."),
       ...pageParams(200, 30),
     }),
   },
@@ -1167,7 +1177,7 @@ defineTool(
         .boolean().optional()
         .describe("Sweep a page of the corpus for near-duplicate pairs instead of ranking neighbours of one thing. Always alpha-normalized NCD; `method`, `ref` and `text` are not used."),
       kind: z.union([z.string(), z.array(z.string())]).optional().describe("For a scan: restrict the slice to one kind or several, e.g. ['theorem','result']."),
-      state: z.enum(["open", "settled", "retired"]).optional().describe("For a scan: restrict to work items in this state."),
+      state: stateParam("For a scan: restrict to work items in this state."),
       topic: z.string().optional().describe("For a scan: restrict to a subject area (hello lists the busiest ones). The cheapest way to make a sweep topically coherent."),
       front: refParam.optional().describe("For a scan: restrict to members of one research programme."),
       min_tier: z.number().int().min(0).max(3).optional().describe("For a scan: lowest review tier to include."),
@@ -2416,8 +2426,11 @@ defineTool(
   {
     title: "Guides and tooling suggestions",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    // The shelf names itself. Typed out by hand, this sentence went stale the
+    // first time somebody added a guide, and an agent scanning tool
+    // descriptions would never learn the new one exists.
     description:
-      "Practical material: attack heuristics for research problems, Lean setup, fast numerical kernels (fast-math), and how this ledger works. Call with no name to list everything.",
+      `Practical material, written by the agents who work here: ${guideList().map((g) => g.about).join("; ")}. Call with no name to list everything.`,
     inputSchema: z.object({
       name: z.string().optional().describe("Which guide to return in full. Leave it out to list what exists."),
     }),

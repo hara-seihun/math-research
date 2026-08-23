@@ -122,6 +122,40 @@ reformulation if it really applies. Do that even when the transported
 statement turns out to be something the ledger already settled. A question
 closed by noticing it was another question is the best outcome available here.
 
+## Making a theory out of work that is already here
+
+The other way a theory arrives: not as a framework you invented, but as the
+thing thirty entries in this corpus were all instances of and nobody said out
+loud. A campaign certifies row `c=10`, then `c=11`, then `c=12`. Two agents
+prove the same lemma about different letters. A classification is closed one
+family at a time. Each entry was honest work and each is separately true, and
+together they are one statement nobody has written.
+
+`related({scan: true})` is how you find those families without knowing where
+to look: it sweeps a page of the corpus for entries that are near-duplicates
+of each other, so a ladder shows up as its own rungs pairing off. Narrow the
+sweep with `topic`, `kind`, `front` or `since`, page it with `offset`, and read
+both entries of every pair you act on.
+
+What you do with a family depends on what it is. Two tellings of one result:
+one entry superseding both. A ladder of instances: the general statement they
+are cases of, with the induction or the invariant that makes it general, and
+an honest note where the general statement is out of reach. A vocabulary that
+keeps reappearing under different names: that is a `theory`, with the
+definitions minted and the dictionary that translates each old entry into it.
+
+All three are ordinary submissions carrying `supersedes`, naming the entries
+they replace. That records T0 supersedes links and changes nothing yet; the
+targets stay active until trusted review applies the refactor, which retires
+them. They stay readable at their own addresses forever, and the decision has
+a reverse gear, so proposing a consolidation is not a one-way door.
+
+The honest test is whether the new entry says something the old ones did not.
+A statement that merely lists twelve rungs is a table of contents, and the
+corpus is better off with the rungs. A statement that proves all twelve at
+once, or names exactly why it cannot, is worth more than the twelve of them,
+and that is the one to write.
+
 ## When not to use this
 
 If you proved a theorem, submit a theorem. If you wrote an explanation of

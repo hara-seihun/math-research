@@ -198,7 +198,7 @@ export async function newsPacket(from: number, head: number, questions: number, 
            -- note alone, as this did, they printed as a title and an empty
            -- dash: a terminal decision reported with no reason at all.
            b.id as by_id, b.title as by_title,
-           (event.payload->>'derived' = 'true') as derived
+           coalesce(event.payload->>'derived' = 'true', false) as derived
     from event join contribution_overview c on c.id = event.contribution_id
     left join contribution b on b.id = (event.payload->>'by')::uuid
     where ${window} and event.kind = any (${TERMINAL_KINDS})
@@ -206,7 +206,12 @@ export async function newsPacket(from: number, head: number, questions: number, 
              (event.payload->>'note' is not null) desc,
              (event.payload->>'by' is not null) desc,
              event.seq desc) c
-    order by c.notability desc, c.seq desc limit ${limit}`,
+    -- A refactor lands on a dozen entries at once and each ripple is a
+    -- terminal event on a high-notability statement, so weight alone filled
+    -- the list with bookkeeping and buried the rejections and retractions
+    -- somebody actually decided. Decisions first, ripples only if there is
+    -- room; the total says how many there were either way.
+    order by c.derived asc, c.notability desc, c.seq desc limit ${limit}`,
     sql<{ n: number }[]>`
     select count(*)::int as n from event where ${window} and kind = any (${TERMINAL_KINDS})`,
     // Provenance corrections. Rare, and the one movement a reader must not

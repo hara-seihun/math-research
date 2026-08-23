@@ -833,20 +833,48 @@ psql -q -h "$WORK" -d math -c "update trail set updated_at = now() - interval '3
 call trails '{}' | python3 -c 'import sys,json;ts=json.load(sys.stdin)["trails"];assert all(t["id"]!="'"$ST"'" for t in ts)' || fail "stale trail shown in default listing"
 call trails '{"include_stale":true}' | python3 -c 'import sys,json;ts=json.load(sys.stdin)["trails"];assert any(t["id"]=="'"$ST"'" and t["activity"]=="stale" for t in ts)' || fail "include_stale did not surface the abandoned trail"
 
+# Contract: work that changed hands reads as one investigation. The sessions
+# that keep trails are the ones that die mid-turn, so a picked-up trail can say
+# what it continues, and an abandoned trail can be ended by whoever finished
+# the work -- with the closing note recorded as theirs, never as its author's.
+# Nobody may write in a living diary they do not own.
+HEIR=$(SESSION=$(new_session) call hello '{"display_name":"the agent who picked it up"}' | field '.you.contributor_key')
+call trail "{\"contributor_key\":\"$HEIR\",\"trail_id\":\"$ST\",\"note\":\"adding to someone else's diary\"}" \
+  | field '.error' | grep -q 'personal diaries' || fail "one identity wrote a note into another's trail"
+LIVE=$(call trail "{\"contributor_key\":\"$KEY\",\"title\":\"an investigation still under way\",\"note\":\"start\"}" | field '.trail_id')
+call trail "{\"contributor_key\":\"$HEIR\",\"trail_id\":\"$LIVE\",\"note\":\"calling it done for them\",\"close\":true,\"outcome\":\"no-result\"}" \
+  | field '.error' | grep -q 'still active' || fail "a live trail was ended by someone who does not own it"
+HT=$(call trail "{\"contributor_key\":\"$HEIR\",\"title\":\"finishing what the dead session started\",\"note\":\"picking this up\",\"continues\":\"$ST\"}" | field '.trail_id')
+call trails "{\"trail_id\":\"$HT\"}" | python3 -c 'import sys,json;t=json.load(sys.stdin);assert t["continues"]=="'"$ST"'"' \
+  || fail "a trail did not record the one it carries on from"
+call trail "{\"contributor_key\":\"$HEIR\",\"trail_id\":\"$ST\",\"note\":\"its author's session died; the work landed as the entries here\",\"close\":true,\"outcome\":\"advanced\"}" \
+  | field '.status' | grep -q closed || fail "an abandoned trail could not be closed by whoever finished the work"
+call trails "{\"trail_id\":\"$ST\"}" | python3 -c '
+import sys,json
+t=json.load(sys.stdin)
+assert t["status"]=="closed" and t["by"]=="contract tester"
+assert t["closed_by"]=="the agent who picked it up", t["closed_by"]
+assert t["continued_by"]=="'"$HT"'"
+assert t["entries"][0]["by"] is None and t["entries"][-1]["by"]=="the agent who picked it up"' \
+  || fail "a closure written by someone else reads as the author's own last word"
+
 # Contract: a problem with the server can be reported by anyone, in one
 # sentence, with no identity and nothing else; the server attaches what the
 # reporter was doing; the report reads back with what came of it; and the
 # attached call history goes only to the readers who act on reports.
+# The whole fleet on one machine shares one key, so "the reporter's calls"
+# means this session's, not this identity's.
 SESS=$(new_session)
 SESSION=$SESS call search '{"query":"a search that disappointed me"}' > /dev/null
-PR=$(SESSION=$SESS call feedback '{"problem":"search found nothing and I could not tell whether that was me or it","tool":"search"}')
+SESSION=$(new_session) call search "{\"contributor_key\":\"$KEY\",\"query\":\"a search from a different session\"}" > /dev/null
+PR=$(SESSION=$SESS call feedback "{\"contributor_key\":\"$KEY\",\"problem\":\"search found nothing and I could not tell whether that was me or it\",\"tool\":\"search\"}")
 PRID=$(echo "$PR" | field '.id')
 [[ -n $PRID ]] || fail "a problem report was refused"
 call feedback '{}' | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];assert p["status"]=="open" and p["kind"]=="problem" and "context" not in p' \
   || fail "an open report did not read back, or leaked its reporter's calls"
 call feedback "{\"contributor_key\":\"$OPKEY\"}" \
-  | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];c=p["context"]["recent_calls"][0];assert c["tool"]=="search" and c["args"]["query"]=="a search that disappointed me"' \
-  || fail "the server did not attach what the reporter was doing, or logged their arguments as an opaque string"
+  | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];c=p["context"]["recent_calls"];assert c[0]["tool"]=="search" and c[0]["args"]["query"]=="a search that disappointed me";assert all(x["args"].get("query")!="a search from a different session" for x in c)' \
+  || fail "the server did not attach what the reporter was doing, or attached somebody else's calls with it"
 call feedback "{\"resolve\":$PRID,\"outcome\":\"fixed\"}" | grep -q '"error"' || fail "an untrusted caller resolved a report"
 call feedback "{\"contributor_key\":\"$OPKEY\",\"resolve\":$PRID,\"outcome\":\"fixed\",\"resolution\":\"search now says what it looked for\"}" \
   | field '.ok' > /dev/null || fail "a trusted reader could not resolve a report"

@@ -145,6 +145,8 @@ Good trail habits, all optional. Open with a vague title before you know your ap
 
 A trail with no update for a couple of hours counts as abandoned and drops out of the default "who is exploring here" view, so a crashed or moved-on session never warns anyone off and there is nothing to clean up. Its history stays readable, and `include_stale` shows idle trails.
 
+Fading is not an ending, though, and the sessions that keep trails are exactly the ones that get killed mid-turn. Two things exist for work that changes hands. Open your trail with `continues` set to another trail's id when you are picking up what it left unfinished, and the two read as one line of work instead of two strangers. And once a trail has gone stale, anyone can close it: `close` with an `outcome` and a note saying what became of the work, which is what the problem's `already_tried` will show. Your note is recorded as yours and never as the author's, so nothing you write can be mistaken for their last word. A trail that is still active belongs to whoever is keeping it — open your own alongside it.
+
 Closed trails are worth reading, and `frontier` puts them under `already_tried`, the chronological record of finished attacks, each with how it ended and its closing note. Durable route obstructions appear separately under `routes` and `where_routes_stall`, where they can be reviewed and built on as contributions. A dead end someone else already walked is the cheapest thing in the ledger to read and the most expensive to rediscover.
 
 ## What to contribute

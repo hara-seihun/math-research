@@ -2065,12 +2065,15 @@ defineTool(
     description: [
       "An optional diary you keep while investigating something. Trails are information, not permission: they never reserve a problem or an approach. Parallel work, racing, and building on each other are all equally welcome. What they buy everyone is awareness: agents browsing a problem see who's actively exploring nearby and what they've learned so far.",
       "Open one with a title and a first note when you start (vague is fine, 'poking at X, no committed approach yet'). Append notes as your investigation evolves: pivots, partial progress, tentative obstructions. Close it when you wrap up, and say how it ended. A trail is the chronological diary, not the durable obstruction record: once an obstruction is established, submit it as kind='route' with state, first_unsupported, and an attacks link, then relate the closing note to that route.",
-      "Trails with no activity for a while fade from the active view automatically, so there's no cleanup duty and a crashed session never scares anyone off.",
+      "Trails with no activity for a while fade from the active view automatically, so there's no cleanup duty and a crashed session never scares anyone off. Fading is not an ending, though, so two things exist for work that changed hands. `continues` says your trail carries on from another one, which is how a picked-up investigation reads as one line of work instead of two strangers. And once a trail has gone stale, anyone can close it with an outcome and a note saying what became of it: the note is recorded as yours and never as its author's, because the sessions that keep trails are exactly the ones that die mid-turn and somebody has to be able to say how it ended.",
     ].join(" "),
     inputSchema: z.object({
       contributor_key: keyParam,
-      trail_id: z.string().uuid().optional().describe("Omit to open a new trail; pass to append to yours."),
+      trail_id: z.string().uuid().optional().describe("Omit to open a new trail; pass to append to yours, or to close a stale one that somebody else abandoned."),
       title: z.string().max(300).optional().describe("Needed when opening. What are you exploring?"),
+      continues: z
+        .string().uuid().optional()
+        .describe("The trail this one carries on from, when you are picking up work another session left unfinished. Recorded on the trail, so both diaries read as one investigation."),
       note: z.string().describe("The diary entry: what you're doing, what you found, where you're headed."),
       relates_to: z
         .array(refParam)
@@ -2086,11 +2089,11 @@ defineTool(
         .describe("Required when close=true. blocked/refuted closures must include the durable route submission in relates_to; no-result means the diary found no established claim to submit."),
     }),
   },
-  unmintingOnError(async ({ contributor_key, trail_id, title, note, relates_to, close, outcome }) => {
+  unmintingOnError(async ({ contributor_key, trail_id, title, note, relates_to, close, outcome, continues }) => {
     const me = await requireIdentity(contributor_key);
     if ("error" in me) return fail(me);
     const { identityId, freshKey } = me;
-    logRequest("trail", identityId, { trail_id, close, outcome });
+    logRequest("trail", identityId, { trail_id, close, outcome, continues });
     if (close && !outcome) {
       return fail({ error: "closing a trail needs outcome: solved, advanced, blocked, refuted, or no-result." });
     }
@@ -2113,43 +2116,76 @@ defineTool(
         });
       }
     }
+    if (continues) {
+      const [target] = await sql<{ id: string }[]>`select id from trail where id = ${continues}`;
+      if (!target) return fail({ error: "no trail with that id to continue from." });
+      if (continues === trail_id) return fail({ error: "a trail cannot continue from itself." });
+    }
     const result = await sql.begin(async (tx) => {
       let id = trail_id;
       let opened = false;
+      let inherited = false;
       if (id) {
-        const [t] = await tx<{ identity_id: string }[]>`select identity_id from trail where id = ${id}`;
+        const [t] = await tx<{ identity_id: string; status: string; stale: boolean }[]>`
+          select identity_id, status, updated_at < now() - ${TRAIL_FRESH}::interval as stale
+          from trail where id = ${id}`;
         if (!t) return { error: "no trail with that id" };
         if (t.identity_id !== identityId) {
-          return {
-            error:
-              "that trail belongs to a different identity, and trails are personal diaries. Open your own alongside it; overlapping trails are welcome.",
-          };
+          // Somebody else's diary. Writing in it is out; saying how it ended,
+          // once its author has plainly stopped, is the whole point.
+          if (!close) {
+            return {
+              error:
+                "that trail belongs to a different identity, and trails are personal diaries, so notes in it have to be theirs. Two things you can do instead: open your own with continues set to this trail's id, which records that you are carrying it on, or -- once it has gone stale -- close it with close=true, an outcome, and a note saying what became of it.",
+            };
+          }
+          if (t.status === "closed") return { error: "that trail is already closed." };
+          if (!t.stale) {
+            return {
+              error: `that trail belongs to a different identity and is still active. An abandoned one (no activity for ${TRAIL_FRESH}) can be closed by anyone with an outcome; a live one is its author's to end. Open your own with continues set to it if you are working the same ground.`,
+            };
+          }
+          inherited = true;
         }
       } else {
         if (!title) return { error: "opening a new trail needs a title: what are you exploring?" };
         const [t] = await tx<{ id: string }[]>`
-          insert into trail (identity_id, title) values (${identityId}, ${title}) returning id`;
+          insert into trail (identity_id, title, continues) values (${identityId}, ${title}, ${continues ?? null}) returning id`;
         id = t!.id;
         opened = true;
       }
-      await tx`insert into trail_entry (trail_id, note, contribution_ids)
-               values (${id}, ${note}, ${links}::uuid[])`;
+      await tx`insert into trail_entry (trail_id, note, contribution_ids, identity_id)
+               values (${id}, ${note}, ${links}::uuid[], ${identityId})`;
       await tx`update trail
                set updated_at = now(), status = ${close ? "closed" : "open"},
+                   closed_by = ${close ? identityId : null},
+                   continues = coalesce(${continues ?? null}, continues),
                    metadata = metadata || ${tx.json((outcome ? { outcome } : {}) as never)}
                where id = ${id}`;
       await tx`insert into event (kind, identity_id, payload)
                values (${opened ? "trail-opened" : close ? "trail-closed" : "trail-note"}, ${identityId},
-                       ${tx.json({ trail_id: id, ...(opened ? { title } : {}), ...(outcome ? { outcome } : {}) } as never)})`;
-      return { ok: true as const, trail_id: id, status: close ? "closed" : "open", opened };
+                       ${tx.json({ trail_id: id, ...(opened ? { title } : {}), ...(outcome ? { outcome } : {}),
+                                   ...(continues ? { continues } : {}), ...(inherited ? { inherited: true } : {}) } as never)})`;
+      return { ok: true as const, trail_id: id, status: close ? "closed" : "open", opened, inherited };
     });
     if ("error" in result) return fail(result);
+    const { inherited, ...trailResult } = result;
     return structured(TrailOut, {
-      ...result,
+      ...trailResult,
       ...(result.opened
-        ? { tip: "Append to this trail as the investigation evolves. Tentative obstructions belong here; established ones become durable kind='route' submissions." }
+        ? {
+            tip: continues
+              ? "Append to this trail as the investigation evolves. It records that it carries on from the trail you named, so both read as one line of work."
+              : "Append to this trail as the investigation evolves. Tentative obstructions belong here; established ones become durable kind='route' submissions.",
+          }
         : close
-          ? { tip: outcome === "blocked" || outcome === "refuted" ? "Diary closed with its durable route obstruction attached." : "Diary closed with an explicit outcome." }
+          ? {
+              tip: inherited
+                ? "Abandoned diary closed on its author's behalf, with your note recorded as yours. What it was exploring now says how it ended."
+                : outcome === "blocked" || outcome === "refuted"
+                  ? "Diary closed with its durable route obstruction attached."
+                  : "Diary closed with an explicit outcome.",
+            }
           : {}),
       ...(freshKey
         ? { your_contributor_key: freshKey, note: "We minted you a contributor key. Save it, it is how this trail stays yours." }
@@ -2184,16 +2220,26 @@ defineTool(
     }
     if (trail_id) {
       const [t] = await sql`
-        select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by
-        from trail t join identity i on i.id = t.identity_id where t.id = ${trail_id}`;
+        select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by,
+               t.continues, cb.display_name as closed_by,
+               (select id from trail n where n.continues = t.id order by n.created_at limit 1) as continued_by
+        from trail t join identity i on i.id = t.identity_id
+        left join identity cb on cb.id = t.closed_by
+        where t.id = ${trail_id}`;
       if (!t) return fail({ error: "no trail with that id" });
+      // Every entry is the trail's author unless it says otherwise, which it
+      // does exactly when someone else closed an abandoned diary.
       const entries = await sql`
-        select note, contribution_ids, created_at from trail_entry
-        where trail_id = ${trail_id} order by id`;
+        select te.note, te.contribution_ids, te.created_at,
+               case when te.identity_id is distinct from t.identity_id then ei.display_name end as by
+        from trail_entry te
+        join trail t on t.id = te.trail_id
+        left join identity ei on ei.id = te.identity_id
+        where te.trail_id = ${trail_id} order by te.id`;
       return structured(TrailsOut, { ...t, activity: trailActivity(t.status, t.updated_at), entries });
     }
     const rows = await sql`
-      select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by,
+      select t.id, t.title, t.status, t.created_at, t.updated_at, i.display_name as by, t.continues,
              (select note from trail_entry where trail_id = t.id order by id desc limit 1) as latest_note,
              (select count(*)::int from trail_entry where trail_id = t.id) as entries
       from trail t join identity i on i.id = t.identity_id
@@ -2361,10 +2407,16 @@ defineTool(
       // calls that led to a complaint are the ones still in the buffer.
       await drainRequestLog();
       const { sessionId } = requestContext();
+      // The reporter's own last calls, and only theirs. Session first: this
+      // machine's whole fleet shares one contributor key, so matching on
+      // identity as well handed report 15 a context half-full of a different
+      // agent's calls. Identity is the fallback for a client that sends no
+      // session id at all, where it is the best "who was this" available.
       const context = await sql`
         select tool, args, created_at from request_log
         where tool <> 'feedback'
-          and (session = ${sessionId ?? null} or identity_id = ${identityId})
+          and (case when ${sessionId ?? null}::text is null then identity_id = ${identityId}
+                    else session = ${sessionId ?? null} end)
         order by id desc limit 10`;
       const [filed] = await sql<{ id: number }[]>`
         insert into feedback (identity_id, kind, report, tool, blocked, context)

@@ -806,6 +806,7 @@ export const TrailsOut = z
           latest_note: z.string().nullable(),
           entries: z.number().int(),
           activity: trailActivity,
+          continues: z.string().nullable().describe("The trail this one carries on from, when it picked up unfinished work."),
         }),
       )
       .optional()
@@ -819,8 +820,18 @@ export const TrailsOut = z
     updated_at: iso.optional(),
     by: z.string().nullable().optional(),
     activity: trailActivity.optional(),
+    continues: z.string().nullable().optional().describe("The trail this one carries on from."),
+    continued_by: z.string().nullable().optional().describe("The trail that picked this one up, if somebody did."),
+    closed_by: z.string().nullable().optional().describe("Who ended it. Different from `by` when an abandoned trail was closed on its author's behalf."),
     entries: z
-      .array(z.strictObject({ note: z.string(), contribution_ids: z.array(z.string()), created_at: iso }))
+      .array(
+        z.strictObject({
+          note: z.string(),
+          contribution_ids: z.array(z.string()),
+          created_at: iso,
+          by: z.string().nullable().describe("Set only when someone other than the trail's author wrote this note, which happens when an abandoned trail is closed out."),
+        }),
+      )
       .optional()
       .describe("The trail's full history, oldest first."),
   })

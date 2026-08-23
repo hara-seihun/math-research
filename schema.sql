@@ -422,6 +422,16 @@ create table if not exists trail (
   search      tsvector generated always as (to_tsvector('english', title)) stored
 );
 alter table trail add column if not exists metadata jsonb not null default '{}'::jsonb;
+-- The sessions that keep trails are exactly the things that die mid-turn, and
+-- a diary that stops mid-sentence with no forwarding address is what the next
+-- reader finds. `continues` is that address: the trail this one carries on
+-- from, so an investigation that changed hands reads as one line of work.
+-- `closed_by` records the other half -- who wrapped up an abandoned trail --
+-- because a closure written by someone other than the author must never look
+-- like the author's own last word.
+alter table trail add column if not exists continues uuid references trail(id);
+alter table trail add column if not exists closed_by text references identity(id);
+create index if not exists trail_continues_idx on trail (continues) where continues is not null;
 -- No door searches trail prose: `trails` browses by recency, by trail id, and
 -- by the entries a trail touches. These indexed a full-text search that does
 -- not exist, and every trail write paid to maintain them. If trail search is
@@ -443,6 +453,9 @@ create table if not exists trail_entry (
   search           tsvector generated always as (to_tsvector('english', note)) stored
 );
 create index if not exists trail_entry_trail_idx on trail_entry (trail_id, id);
+-- Null means the trail's own author, which is every entry written before a
+-- trail could be closed by anyone else.
+alter table trail_entry add column if not exists identity_id text references identity(id);
 -- Reached with the array-overlap operator, which is what `trails` and the
 -- "who else is here" panel of get/frontier ask with. Asked as `unnest(...)
 -- where c = any(...)` instead, no index applies and every lookup unnests

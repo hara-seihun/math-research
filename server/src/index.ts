@@ -2339,10 +2339,20 @@ defineTool(
         and (${kind ?? null}::text is null or c.kind = ${kind ?? null})`;
     // Another reviewer's live lease takes the row off your page; your own does
     // not, so a session that asks twice gets its own work back.
-    const heldByOther = sql`exists (
-      select 1 from review_claim rc
-      where rc.contribution_id = c.id and rc.expires_at > now()
-        and rc.claimant is distinct from ${mine}::text)`;
+    //
+    // Both of these are sets, not per-row tests. Written as correlated
+    // subqueries they were evaluated once for every candidate, which was
+    // invisible while the queue held a handful of entries and became two
+    // seconds a call once links joined it and the candidate set was twenty
+    // thousand rows. Joined instead: each is a single pass over a small table.
+    const otherClaims = sql`
+      select rc.contribution_id as id from review_claim rc
+      where rc.expires_at > now() and rc.claimant is distinct from ${mine}::text`;
+    const alreadyRead = sql`
+      select distinct e.dst as id from edge e
+      join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+      join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
+      where e.rel = 'reviews'`;
     const reviewCount = sql`
       select count(*)::int as n from edge e
       join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
@@ -2371,14 +2381,13 @@ defineTool(
       created_at: Date; lean_verified: boolean; reviews: number; claimed_until: Date | null;
       link: Record<string, unknown> | null;
     }[]>`
-      with candidate as (
-        select c.id, c.notability, c.created_at,
-               exists (select 1 from edge e
-                       join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
-                       join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
-                       where e.dst = c.id and e.rel = 'reviews') as reviewed
+      with read_already as (${alreadyRead}), held as (${otherClaims}),
+      candidate as (
+        select c.id, c.notability, c.created_at, (rd.id is not null) as reviewed
         from contribution_overview c
-        where ${queued} and (${include_claimed} or not ${heldByOther})
+        left join read_already rd on rd.id = c.id
+        left join held h on h.id = c.id
+        where ${queued} and (${include_claimed} or h.id is null)
         order by reviewed asc, c.notability desc, c.created_at asc
         limit ${limit} offset ${offset}
       ), taken as (
@@ -2514,18 +2523,18 @@ defineTool(
       flagged: number; refactor_proposals: number; amendment_proposals: number; impact_assessment_proposals: number;
       patches: number;
     }[]>`
-      select (select count(*) from contribution_overview c where ${queued})::int as unreviewed,
+      with read_already as (${alreadyRead}), held as (${otherClaims}),
+      queue as (
+        select c.kind, c.tier, (rd.id is not null) as reviewed, (h.id is not null) as held
+        from contribution_overview c
+        left join read_already rd on rd.id = c.id
+        left join held h on h.id = c.id
+        where ${queued})
+      select (select count(*) from queue)::int as unreviewed,
              (select coalesce(json_object_agg(k.kind, k.n), '{}'::json) from (
-                select c.kind, count(*)::int as n from contribution_overview c
-                 where ${queued} group by c.kind) k) as by_kind,
-             (select count(*) from contribution_overview c
-                where ${queued} and c.tier = 0 and exists (
-                  select 1 from edge e
-                  join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
-                  join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
-                  where e.dst = c.id and e.rel = 'reviews'))::int as awaiting_decision,
-             (select count(*) from contribution_overview c
-                where ${queued} and ${heldByOther})::int as claimed_by_others,
+                select kind, count(*)::int as n from queue group by kind) k) as by_kind,
+             (select count(*) from queue where tier = 0 and reviewed)::int as awaiting_decision,
+             (select count(*) from queue where held)::int as claimed_by_others,
              (select count(*) from edge e
                 join contribution ec on ec.id = e.contribution_id
                 join contribution o on o.id = e.src

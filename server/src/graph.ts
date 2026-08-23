@@ -516,6 +516,7 @@ export async function scanDuplicateEntries(args: DuplicateScanArgs) {
     return {
       scanned: 0,
       compared: 0,
+      matched: 0,
       threshold: args.threshold,
       pairs: [],
       note: "nothing active matched those filters, or the offset is past the end of the slice.",
@@ -523,7 +524,7 @@ export async function scanDuplicateEntries(args: DuplicateScanArgs) {
   }
 
   const index = new Map(rows.map((row, i) => [String(i), row]));
-  const { pairs, compared } = await clusterBySimilarity({
+  const { pairs, compared, matched } = await clusterBySimilarity({
     mode: "prose",
     units: rows.map((row, i) => ({ id: String(i), text: row.content ?? "" })),
     threshold: args.threshold,
@@ -558,6 +559,7 @@ export async function scanDuplicateEntries(args: DuplicateScanArgs) {
   return {
     scanned: rows.length,
     compared,
+    matched,
     threshold: args.threshold,
     pairs: scored,
     ...(rows.length === SCAN_PAGE ? { next_offset: args.offset + SCAN_PAGE } : {}),

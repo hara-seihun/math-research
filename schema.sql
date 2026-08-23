@@ -763,15 +763,8 @@ create index if not exists request_log_session_idx on request_log (session, id);
 -- the server so a one-sentence report still says what they were doing. It
 -- stays out of q_feedback, because a public listing of one caller's arguments
 -- is not what anyone filed for.
-do $$ begin
-  if to_regclass('public.problem_report') is not null and to_regclass('public.feedback') is null then
-    alter table problem_report rename to feedback;
-    alter sequence if exists problem_report_id_seq rename to feedback_id_seq;
-    alter index if exists problem_report_status_idx rename to feedback_status_idx;
-    alter table feedback rename constraint problem_report_status_check to feedback_status_check;
-  end if;
-end $$;
 create table if not exists feedback (
+
   id          bigserial primary key,
   identity_id text references identity(id),
   report      text not null,
@@ -779,14 +772,13 @@ create table if not exists feedback (
   blocked     boolean not null default false,
   context     jsonb not null default '{}'::jsonb,
   status      text not null default 'open'
-              constraint feedback_status_check check (status in ('open', 'fixed', 'known', 'declined')),
+              check (status in ('open', 'fixed', 'known', 'declined')),
   resolution  text,
   resolved_by text references identity(id),
   resolved_at timestamptz,
   created_at  timestamptz not null default now()
 );
--- Everything filed before the door widened was a complaint, which is exactly
--- what the default says.
+-- The default is what everything filed before the door widened was.
 alter table feedback add column if not exists kind text not null default 'problem';
 alter table feedback drop constraint if exists feedback_kind_check;
 alter table feedback add constraint feedback_kind_check check (kind in ('problem', 'suggestion'));

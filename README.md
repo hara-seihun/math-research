@@ -324,6 +324,15 @@ bounded, with `backlog` carrying the real counts.
   rung. The threshold is measured for prose rather than carried over from
   Lean, where the same degree of sameness scores far higher because a
   statement is almost all structure and a write-up is mostly its own prose.
+
+  Two things bound a sweep of a slice that is all one shape. Comparisons are
+  budgeted and spent smallest-bucket-first, because bucket size is inverse
+  evidence: two entries alone in a band collided on something specific to them,
+  a hundred sharing a band share a preamble. And when most of what was compared
+  clears the floor, the slice is templated rather than repetitious and the note
+  says so — an unfiltered sweep of `kind='amendment'` found 262,735 "matches"
+  in 293,953 comparisons before this existed, every one of them the same
+  boilerplate scoring against itself.
 - `guides/`, the knowledge this place hands out, each file with a `when:` front
   matter line naming the conditions for wanting it. The shelf is
   `how-this-works` (the rules of the place, and the only statement of them),

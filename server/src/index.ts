@@ -383,8 +383,8 @@ async function addRankingSignals(rows: Record<string, unknown>[]): Promise<Recor
 
 // What each kind means here, so a first-time reader can tell a research
 // write-up from one of the statements extracted out of it. `kind` is open
-// text by design, so anything not listed falls back to KIND_COINED rather
-// than reaching a reader as a kind with no explanation.
+// text by design, and a kind that is not listed is a coined one -- said once
+// in the note rather than repeated onto every row of the census.
 const KIND_MEANING: Record<string, string> = {
   front: "a research programme: a gathering place for the problems and results of one campaign",
   problem: "an open question or classification cell someone is meant to settle; carries a state",
@@ -411,7 +411,7 @@ const KIND_MEANING: Record<string, string> = {
   other: "something that fits none of the kinds above; the vocabulary is open",
 };
 
-const KIND_COINED = "a kind a contributor coined: the vocabulary is open, so get() one and see what it is";
+const KIND_COINED = "A kind with no `means` is one a contributor coined: the vocabulary is open, so get() one and see what it is.";
 
 const keyParam = z
   .string()
@@ -479,13 +479,18 @@ const SERVER_INSTRUCTIONS = [
 async function whatIsHere() {
   const { kinds, by_tier: byTier, top_topics: topTopics, totals } = await corpus.get();
   return {
-    note: "Active entries by kind (`state` is where a work item stands), the review-tier ladder, and the busiest subject areas. A topic works as a search filter. `totals` counts entries and the links between them separately; links are contributions on the same ladder, and `by_tier` counts entries only.",
+    note: "Active entries by kind (`state` is where a work item stands), the review-tier ladder, and the busiest subject areas. A topic works as a search filter. `totals` counts entries and the links between them separately; links are contributions on the same ladder, and `by_tier` counts entries only. " +
+      KIND_COINED,
     totals,
+    // A gloss only where there is one to give. Seventeen coined kinds each
+    // carrying the same sentence about coined kinds cost 1.4 KB of a response
+    // that was already too big for its readers to keep; the sentence is in the
+    // note above, once.
     kinds: kinds.map((k) => ({
       kind: k.kind,
       n: k.n,
       ...(k.states ? { states: k.states } : {}),
-      means: KIND_MEANING[k.kind] ?? KIND_COINED,
+      ...(KIND_MEANING[k.kind] ? { means: KIND_MEANING[k.kind] } : {}),
     })),
     by_tier: byTier,
     top_topics: topTopics,

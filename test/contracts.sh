@@ -1817,7 +1817,11 @@ d = json.load(sys.stdin)
 rows = d['established_here'] + d['most_notable'] + d['fresh_canon']
 assert any(r['id'] == '$GLANCED' for r in rows), 'the fresh canon entry never appeared'
 long = [(r['id'], len(r.get('summary') or '')) for r in rows if len(r.get('summary') or '') > 200]
-assert not long, long" || fail "hello carried a full summary where a glance was the point"
+assert not long, long
+assert not any(r.get('summary') for r in d['most_notable'] + d['fresh_canon']), 'a pointing list carried prose'
+coined = [k for k in d['what_is_here']['kinds'] if 'means' not in k]
+assert coined, 'the census glossed every kind, so the note about coined kinds has nothing to explain'
+assert 'coined' in d['what_is_here']['note']" || fail "hello carried a full summary where a glance was the point"
 [[ $(call get "{\"ref\":\"$GLANCED\"}" | field '.summary' | wc -c) -gt 200 ]] \
   || fail "the door that fetches an entry lost the summary hello trimmed"
 

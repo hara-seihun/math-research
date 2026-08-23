@@ -39,10 +39,11 @@ export type CorpusSnapshot = {
  *  client replaces a tool result with a notice pointing at a temp file -- so
  *  the first call an agent makes here came back with nothing in it. */
 const GLANCE_SUMMARY = 160;
-function glance(r: Record<string, unknown>) {
+function glance(r: Record<string, unknown>, keepSummary = false) {
   const row = listRow(r) as Record<string, unknown>;
   const summary = row.summary as string | undefined;
-  if (summary && summary.length > GLANCE_SUMMARY) {
+  if (!keepSummary) delete row.summary;
+  else if (summary && summary.length > GLANCE_SUMMARY) {
     row.summary = `${summary.slice(0, GLANCE_SUMMARY).trimEnd()}…`;
   }
   return row;
@@ -75,7 +76,7 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
                c.origin, c.origin_source, c.created_at, c.board_at, ${impactScore()} as impact_score
         from contribution c
         where c.status = 'active' and ${onBoard()}
-        order by impact_score desc, c.notability desc, c.created_at desc limit 5`,
+        order by impact_score desc, c.notability desc, c.created_at desc limit 3`,
     sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind not in ('edge', 'statement')
@@ -83,7 +84,7 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
     sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind <> 'edge' and tier >= 2
-        order by created_at desc limit 5`,
+        order by created_at desc limit 3`,
     sql<{ n: number }[]>`
       select count(*)::int as n from trail
       where status = 'open' and updated_at > now() - ${TRAIL_FRESH}::interval`,
@@ -133,9 +134,12 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
       members: Number(p.members),
       open_problems: Number(p.open_problems),
     })),
-    established_here: board.map(glance),
-    most_notable: notable.map(glance),
-    fresh_canon: fresh.map(glance),
+    // What the place has established gets a line of prose about each; the
+    // other two lists are titles and ids, because their whole job is to be
+    // followed with get or search.
+    established_here: board.map((r) => glance(r, true)),
+    most_notable: notable.map((r) => glance(r)),
+    fresh_canon: fresh.map((r) => glance(r)),
     totals,
   };
 }

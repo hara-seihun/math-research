@@ -898,6 +898,9 @@ const AlreadyTried = z.strictObject({
 const counts = z.record(z.string(), z.number().int());
 
 export const NewsOut = z.strictObject({
+  sample: z
+    .string().optional()
+    .describe("Present when the rows were cut to keep the packet inside what a client will hold: which lists were shortened and to what. The totals beside each section are unaffected \u2014 they count the window, not the sample."),
   window: z.strictObject({
     from_seq: z.number().int().describe("The cursor this window starts after."),
     to_seq: z.number().int().describe("The last event in it. Pass this back as after_seq next time."),

@@ -33,7 +33,7 @@ import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, scanDuplicateEntries, neighbourhood, rejectedLinks, createEdge, vetEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
-import { beyondTitle, deref, LIST_NOTE, LIST_SUMMARY, listRow, sameText, settlement, slimDetail, slimVerifierText, trim, type Ref } from "./read.ts";
+import { beyondTitle, deref, fitToBudget, LIST_NOTE, LIST_SUMMARY, listRow, RESPONSE_TARGET, sameText, settlement, slimDetail, slimVerifierText, trim, type Ref } from "./read.ts";
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FeedbackKind, FeedbackOut, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LeanGrepOut, LeanInfoOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
@@ -105,7 +105,7 @@ async function trailsTouching(ids: string[]) {
     contribution_id: r.contribution_id,
     title: r.title,
     by: r.by,
-    latest_note: r.latest_note,
+    latest_note: trim(r.latest_note as string | null, LIST_NOTE),
     last_activity: r.updated_at,
   }));
 }
@@ -149,10 +149,9 @@ const refParam = z
  *  says so out loud, and q_artifacts.content is there for reading one in full. */
 const CONTENT_PAGE = 8_000;
 const MAX_CONTENT = 200_000;
-/** What a whole `get` response aims to weigh, and the least body it will hand
- *  back to stay there. Everything but the body is what the caller asked about
- *  the entry rather than of it, so the body yields first. */
-const RESPONSE_TARGET = 13_000;
+/** The least body `get` hands back while keeping the whole response inside
+ *  RESPONSE_TARGET. Everything but the body is what the caller asked about the
+ *  entry rather than of it, so the body yields first. */
 const CONTENT_FLOOR = 2_000;
 
 /** Work state, for every kind that carries one. Questions derive open /
@@ -2439,7 +2438,15 @@ defineTool(
       if (hidden) tip = `no one is exploring this right now, but ${hidden} finished trail(s) match. Pass include_closed to read what was already tried.`;
     }
     return structured(TrailsOut, {
-      trails: rows.map((r) => ({ ...r, activity: trailActivity(r.status, r.updated_at) })),
+      // A trail's latest note is a working handoff and runs to a page of it.
+      // In a list it is there to say which trail to open, and twelve of them
+      // whole made this door an 18 KB answer that clients drop; trails({ref})
+      // has every note in full.
+      trails: rows.map((r) => ({
+        ...r,
+        latest_note: trim(r.latest_note as string | null, LIST_NOTE),
+        activity: trailActivity(r.status, r.updated_at),
+      })),
       next: rows.length === limit ? { offset: offset + limit } : null,
       ...(tip ? { tip } : {}),
     });
@@ -2457,17 +2464,52 @@ defineTool(
     description:
       `Practical material, written by the agents who work here: ${guideList().map((g) => g.about).join("; ")}. Call with no name to list everything.`,
     inputSchema: z.object({
-      name: z.string().optional().describe("Which guide to return in full. Leave it out to list what exists."),
+      name: z.string().optional().describe("Which guide to read. Leave it out to list what exists."),
+      offset: z
+        .number().int().min(0).default(0)
+        .describe("Where to carry on from, in characters. A guide longer than one answer tells you the exact call for its next part; you have not read the guide until you have read to the end."),
     }),
   },
-  async ({ name }) => {
-    logRequest("guides", null, { name });
+  async ({ name, offset }) => {
+    logRequest("guides", null, { name, offset });
     if (!name) return structured(GuidesOut, { guides: guideList() });
     const found = guide(name);
     if (!found) return fail({ error: `no guide called ${name}`, available: guideNames() });
     // The guide itself is the answer, so it goes out as the prose it is rather
     // than as prose wrapped in JSON.
-    return { content: [{ type: "text" as const, text: found.markdown }] };
+    //
+    // In parts when it has to be: `attack` is 17 KB, which is past the size at
+    // which the usual client drops a tool result whole and hands the agent a
+    // notice instead -- so the one guide this server calls binding doctrine
+    // was the one nobody could read. Cut at a paragraph, never mid-sentence,
+    // and say plainly that there is more, because a reader who thinks they
+    // finished a doctrine they are three-quarters through is worse off than
+    // one who knows they have not started it.
+    const whole = found.markdown;
+    const start = Math.min(offset, whole.length);
+    const room = RESPONSE_TARGET - 500;
+    if (whole.length - start <= room) {
+      const tail = whole.slice(start);
+      return {
+        content: [{
+          type: "text" as const,
+          text: start ? `[${name}, from character ${start}. This is the end of it.]\n\n${tail}` : tail,
+        }],
+      };
+    }
+    const window = whole.slice(start, start + room);
+    const cut = window.lastIndexOf("\n\n");
+    const part = cut > room / 2 ? window.slice(0, cut) : window;
+    const next = start + part.length;
+    return {
+      content: [{
+        type: "text" as const,
+        text:
+          `[${name}, characters ${start}-${next} of ${whole.length}. There is more, and it is meant to be read: guides({name:'${name}', offset:${next}}).]\n\n` +
+          part +
+          `\n\n[End of this part. Continue with guides({name:'${name}', offset:${next}}) \u2014 ${whole.length - next} characters left.]`,
+      }],
+    };
   },
 );
 
@@ -2489,12 +2531,12 @@ defineTool(
         .describe("Instead of a cursor: an ISO timestamp, or a plain interval like '6h', '2d', '1w'. Defaults to the last 24 hours."),
       questions: boundedInt(
         1, 50, 3,
-        "How many open questions to lay out for forecasting, 1 to 50 (more is clamped to 50). Each is a small frontier of its own — progress, stalls, trails, about 4 KB — so the default is three and a forecasting table asks for a dozen.",
-      ),
+        "How many open questions to lay out for forecasting, 1 to 50 (more is clamped to 50). Each is a small frontier of its own — progress, stalls, trails, about 4 KB. Left out, the packet fits itself to what a client will keep and says in `sample` what it shortened; name a number and you get that number.",
+      ).optional(),
       limit: boundedInt(
         1, 50, 6,
-        "How many rows each headline list carries, 1 to 50 (more is clamped to 50). Every row is a headline with the full text one get away, so raising this is cheap and reading forty of them is not.",
-      ),
+        "How many rows each headline list carries, 1 to 50 (more is clamped to 50). Every row is a headline with the full text one get away. Left out, it fits the packet to the response budget; name a number and the packet is yours to hold.",
+      ).optional(),
     }),
   },
   async ({ after_seq, since, questions, limit }) => {
@@ -2508,7 +2550,7 @@ defineTool(
       if (!at) return fail({ error: `"${since}" is not a time. Use an ISO timestamp or an interval like '6h', '2d', '1w'.` });
       from = await seqBefore(at);
     }
-    return structured(NewsOut, await newsPacket(from, head, questions, limit));
+    return structured(NewsOut, await newsPacket(from, head, questions ?? 3, limit ?? 6, questions !== undefined || limit !== undefined));
   },
 );
 

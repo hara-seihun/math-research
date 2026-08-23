@@ -1,5 +1,5 @@
 import { sql } from "./db.ts";
-import { LIST_NOTE, listRow, trim } from "./read.ts";
+import { fitToBudget, LIST_NOTE, listRow, trim } from "./read.ts";
 import { corpus } from "./snapshot.ts";
 
 // --- News ------
@@ -79,7 +79,13 @@ export async function headSeq(): Promise<number> {
 }
 
 
-export async function newsPacket(from: number, head: number, questions: number, limit: number) {
+export async function newsPacket(
+  from: number,
+  head: number,
+  questions: number,
+  limit: number,
+  sized = false,
+) {
   const window = sql`event.seq > ${from} and event.seq <= ${head}`;
 
   // Six full-corpus counts, and the same six hello opens with. Taken from the
@@ -369,7 +375,7 @@ export async function newsPacket(from: number, head: number, questions: number, 
     };
   });
 
-  return {
+  const packet = {
     window: {
       from_seq: from,
       to_seq: head,
@@ -424,4 +430,17 @@ export async function newsPacket(from: number, head: number, questions: number, 
     next: { after_seq: head },
     how_to_read: HOW_TO_READ,
   };
+  // A digest is worth nothing to a reader who never sees it, and two days of
+  // this place came to 44 KB -- past the point where the usual client replaces
+  // the whole answer with a notice. Every section here states its own total,
+  // so a shorter sample still tells the truth about the window; the counts do
+  // not move. A caller who named `questions` or `limit` gets exactly what they
+  // named, since they have thought about the size and this has not.
+  const dropped = sized ? null : fitToBudget(packet as unknown as Record<string, unknown>);
+  return dropped
+    ? {
+        ...packet,
+        sample: `${dropped}. The totals beside each section are the real ones; raise questions or limit for more of the rows, or follow the ids with get and search.`,
+      }
+    : packet;
 }

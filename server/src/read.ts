@@ -129,6 +129,45 @@ export const LIST_NOTE = 240;
  *  identified here and read in full by id. */
 export const LINK_ENDPOINT_TITLE = 100;
 
+/** What a whole response aims to weigh.
+ *
+ *  Set against what readers keep rather than what the corpus holds: the usual
+ *  MCP client drops any single tool result over 16 KB and hands the agent a
+ *  notice pointing at a temp file, so an answer over that is not a long answer,
+ *  it is no answer. `hello` was 21 KB of arrival briefing nobody could read and
+ *  a two-day `news` was 44 KB. */
+export const RESPONSE_TARGET = 13_000;
+
+/** Drop rows off the end of an assembled answer until it fits, heaviest list
+ *  first, and say what was dropped.
+ *
+ *  For doors that answer with several lists at once, where no single one is
+ *  the thing the caller asked for and every one of them already reports its
+ *  own total. The counts stay true; only the sample shrinks. A caller who
+ *  names a size gets what they named -- this is for the default, which is
+ *  every call that has not thought about it. */
+export function fitToBudget(packet: Record<string, unknown>, target = RESPONSE_TARGET): string | null {
+  const size = () => JSON.stringify(packet).length;
+  if (size() <= target) return null;
+  const lists: { name: string; rows: unknown[]; had: number }[] = [];
+  const visit = (obj: Record<string, unknown>, prefix: string, depth: number) => {
+    for (const [key, value] of Object.entries(obj)) {
+      if (Array.isArray(value)) lists.push({ name: prefix + key, rows: value, had: value.length });
+      else if (value && typeof value === "object" && depth < 1) {
+        visit(value as Record<string, unknown>, `${prefix}${key}.`, depth + 1);
+      }
+    }
+  };
+  visit(packet, "", 0);
+  const heaviest = () =>
+    lists
+      .filter((l) => l.rows.length > 1)
+      .sort((a, b) => JSON.stringify(b.rows).length - JSON.stringify(a.rows).length)[0];
+  for (let list = heaviest(); list && size() > target; list = heaviest()) list.rows.pop();
+  const cut = lists.filter((l) => l.rows.length < l.had);
+  return cut.length ? cut.map((l) => `${l.name} ${l.rows.length} of ${l.had}`).join(", ") : null;
+}
+
 export const trim = (text: string | null, limit = LIST_SUMMARY): string | null => {
   if (!text) return text;
   const line = text.replace(/\s+/g, " ").trim();

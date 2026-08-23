@@ -1592,6 +1592,24 @@ assert d["window"]["from_seq"] == int(os.environ["CUR"]), "news window did not s
 assert "T2 canon" in d["how_to_read"], "news dropped the custody vocabulary"
 ' || fail "news did not report the window correctly: $(echo "$NEWS" | head -c 400)"
 
+# Contract: a packet nobody sized fits what a client will hold, and says which
+# lists it shortened; a caller who names a size gets what they named. Two days
+# of this place came to 44 KB, past the point where the usual client replaces
+# the whole answer with a notice -- a digest nobody receives.
+for i in 1 2 3 4 5 6 7 8; do
+  BIG=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"budget question $i\",\"summary\":\"$(python3 -c "print('a long summary for the budget contract. ' * 12)")\",\"content\":\"c.\"}" | field '.id')
+  call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BIG\",\"tier\":2,\"note\":\"$(python3 -c "print('a promotion note with a great deal of reasoning in it. ' * 20)")\"}" > /dev/null
+done
+call news '{"since":"1h"}' | python3 -c "import sys,json
+raw = sys.stdin.read()
+d = json.loads(raw)
+assert len(raw) < 16000, len(raw)
+if len(raw) > 12000: assert d.get('sample'), 'a full packet did not say what it left out'
+assert d['totals'], d.keys()" || fail "an unsized news packet did not fit what a client will hold"
+call news '{"since":"1h","questions":50,"limit":50}' | python3 -c "import sys,json
+d = json.load(sys.stdin)
+assert 'sample' not in d, d['sample']" || fail "news trimmed a packet whose size the caller had chosen"
+
 # Contract: the cursor advances exactly once. Reading from the sequence number
 # the last packet handed back reports nothing that packet already carried.
 CUR2=$(echo "$NEWS" | field '.next.after_seq')
@@ -2243,10 +2261,38 @@ for name in $(call guides '{}' | jq -r '.guides[].name'); do
   [[ $DESC == *,* ]] || fail "prompt $name's description reads as prose, not as the conditions for loading it"
   TOOL_TEXT=$(call guides "{\"name\":\"$name\"}")
   PROMPT_TEXT=$(rpc prompts/get "{\"name\":\"$name\"}" | field '.messages[0].content.text')
-  [[ $PROMPT_TEXT == "$TOOL_TEXT" ]] || fail "prompt $name and the guides tool serve different text"
   grep -q "^when:" <<< "$TOOL_TEXT" && fail "guide $name leaks its front matter into what readers are served"
   RESOURCE_TEXT=$(rpc resources/read "{\"uri\":\"$PUBLIC_URL/guides/$name.md\"}" | field '.contents[0].text')
-  [[ $RESOURCE_TEXT == "$TOOL_TEXT" ]] || fail "guide $name reads differently as a resource than as a tool"
+  [[ $RESOURCE_TEXT == "$PROMPT_TEXT" ]] || fail "guide $name reads differently as a resource than as a prompt"
+  # A guide too long for one answer comes back in parts through the tool, and
+  # the part is the guide's own text with a header saying where it stops and
+  # the exact call that continues it. The prompt and the resource carry the
+  # whole document, because a client loading one has asked for all of it.
+  if [[ $PROMPT_TEXT == "$TOOL_TEXT" ]]; then
+    :
+  else
+    python3 -c "
+import sys
+tool, whole, name = sys.argv[1], sys.argv[2], sys.argv[3]
+head, _, rest = tool.partition('\n\n')
+body, _, foot = rest.rpartition('\n\n')
+assert head.startswith('[' + name) and 'offset:' in head, head[:120]
+assert 'Continue with' in foot and 'offset:' in foot, foot[:120]
+assert whole.startswith(body), 'a part of the guide is not the guide'
+assert len(body) > 5000, len(body)
+" "$TOOL_TEXT" "$PROMPT_TEXT" "$name" || fail "guide $name came back in parts that do not add up to the guide"
+    NEXT=$(python3 -c "
+import re,sys
+m = re.search(r'offset:(\d+)', sys.argv[1]); print(m.group(1))" "$TOOL_TEXT")
+    TAIL=$(call guides "{\"name\":\"$name\",\"offset\":$NEXT}")
+    python3 -c "
+import sys
+tail, whole = sys.argv[1], sys.argv[2]
+assert 'This is the end of it' in tail or 'Continue with' in tail, tail[:200]
+body = tail.partition('\n\n')[2]
+assert body and body.rstrip().endswith(whole.rstrip()[-40:]) or 'Continue with' in tail, 'the last part does not reach the end of the guide'
+" "$TAIL" "$PROMPT_TEXT" || fail "guide $name could not be read to its end"
+  fi
 done
 
 # ——— The import reconciles in both directions ————————————————————————————

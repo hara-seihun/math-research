@@ -1438,7 +1438,15 @@ pairs = [{p["a"]["title"], p["b"]["title"]} for p in d["pairs"]]
 assert {"coset action left", "coset action right"} in pairs, d
 assert not any("sylow count" in p for p in pairs), d
 assert d["scanned"] >= 3 and d["compared"] >= 1, d
+assert d["matched"] >= len(d["pairs"]), d
 ' || fail "a corpus scan did not pair the alpha-equivalent theorems, or paired an unrelated one"
+
+# Contract: `matched` is the population over the threshold, not the page of it
+# that came back. A demand probe sizing the consolidation backlog reads this
+# number, and a caller who sees a full page needs to know there is more.
+call related '{"scan":true,"kind":"theorem","threshold":0.3,"limit":1}' \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); assert len(d["pairs"])==1 and d["matched"]>=1, d' \
+  || fail "a scan reported its page size as the number of pairs it found"
 
 # A scan whose slice is empty is an answer, not an error: the cleanup lane
 # pages until it runs out and must be able to tell drained from broken.

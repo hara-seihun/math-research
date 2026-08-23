@@ -484,6 +484,7 @@ export const RelatedOut = z.union([
   z.strictObject({
     scanned: z.number().int().describe("Entries normalized and bucketed in this page of the sweep."),
     compared: z.number().int().describe("Pairs that actually got a compression distance, after bucketing."),
+    matched: z.number().int().describe("Pairs over the threshold in this page. `pairs` is the strongest `limit` of them, so matched above limit means there is more here than you are looking at."),
     threshold: z.number(),
     pairs: z.array(
       z.strictObject({

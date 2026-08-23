@@ -17,7 +17,7 @@ export type Scored = { id: string; similarity: number };
 export type Pair = { a: string; b: string; similarity: number };
 export type NcdDone =
   | { id: number; kind: "rank"; scored: Scored[] }
-  | { id: number; kind: "cluster"; pairs: Pair[]; compared: number };
+  | { id: number; kind: "cluster"; pairs: Pair[]; compared: number; matched: number };
 
 const normalize = (mode: Mode, text: string): string => (mode === "lean" ? alphaLean(text) : alphaProse(text));
 
@@ -34,7 +34,7 @@ function rank(job: Extract<NcdJob, { kind: "rank" }>): Scored[] {
 // near-duplicate, and NCD then scores only those pairs, using the same signatures
 // the corpus is indexed by, so a scan here and a lookup in Postgres agree
 // about who is worth comparing.
-function cluster(job: Extract<NcdJob, { kind: "cluster" }>): { pairs: Pair[]; compared: number } {
+function cluster(job: Extract<NcdJob, { kind: "cluster" }>): { pairs: Pair[]; compared: number; matched: number } {
   const texts = job.units.map((u) => (job.normalized ? u.text : normalize(job.mode, u.text)));
   const buckets = new Map<number, number[]>();
   texts.forEach((text, i) => {
@@ -64,7 +64,12 @@ function cluster(job: Extract<NcdJob, { kind: "cluster" }>): { pairs: Pair[]; co
     if (score >= job.threshold) pairs.push({ a: job.units[a]!.id, b: job.units[b]!.id, similarity: score });
   }
   pairs.sort((x, y) => y.similarity - x.similarity);
-  return { pairs: pairs.slice(0, job.limit), compared: candidates.length };
+  // `matched` is the population, `pairs` is the page of it a caller asked to
+  // see. A sweep that clears the threshold four hundred times and returns
+  // fifty of them has to say so, or the caller reads a full page as a
+  // finished job -- and a demand probe measuring the backlog reads the limit
+  // it passed in rather than the work that is there.
+  return { pairs: pairs.slice(0, job.limit), compared: candidates.length, matched: pairs.length };
 }
 
 parentPort!.on("message", (job: NcdJob) => {

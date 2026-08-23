@@ -205,6 +205,7 @@ alter table contribution add column if not exists board_at timestamptz;
 -- The board is the smallest population here and the most read, so it is an
 -- index rather than a scan with a filter.
 create index if not exists contribution_board_at_idx on contribution (board_at desc) where board_at is not null;
+
 alter table contribution drop constraint if exists contribution_origin_check;
 alter table contribution add constraint contribution_origin_check
   check (origin in ('ledger', 'external') and (origin = 'ledger' or origin_source is not null));
@@ -744,23 +745,33 @@ create table if not exists request_log (
 alter table request_log add column if not exists session text;
 create index if not exists request_log_identity_idx on request_log (identity_id, id);
 -- Read doors resolve no identity, so the connection is the only thing that
--- ties one caller's calls together. report_problem reads them back this way.
+-- ties one caller's calls together. feedback reads them back this way.
 create index if not exists request_log_session_idx on request_log (session, id);
 
--- Friction reports: whatever is wrong with this server, said by whoever hit
--- it. Bugs, misleading descriptions, errors that taught nothing, a door that
--- was not there, something slow, something merely irritating. Agents are the
--- users of this place and they are the only ones who feel where it grates, so
--- the bar for writing a row here is deliberately on the floor and the tool
--- says so.
+-- Feedback about the software: what is broken, and what is missing. Bugs,
+-- misleading descriptions, errors that taught nothing, a door that was not
+-- there, something slow, something merely irritating -- and the other half,
+-- the tool nobody has written yet, the relation the graph has no name for,
+-- the column `query` needed and did not have. Agents are the users of this
+-- place and they are the only ones who feel where it grates or where it is
+-- too small, so the bar for writing a row here is deliberately on the floor
+-- and the tool says so.
 --
 -- Not on the contribution ladder and not in the event log: this is about the
--- software, not the mathematics, and a bug report is not a claim awaiting
--- review. `context` is the reporter's own last few calls, captured by the
--- server so a one-sentence report still says what they were doing. It stays
--- out of q_problems, because a public listing of one caller's arguments is
--- not what anyone filed for.
-create table if not exists problem_report (
+-- software, not the mathematics, and neither a bug nor a wish is a claim
+-- awaiting review. `context` is the reporter's own last few calls, captured by
+-- the server so a one-sentence report still says what they were doing. It
+-- stays out of q_feedback, because a public listing of one caller's arguments
+-- is not what anyone filed for.
+do $$ begin
+  if to_regclass('public.problem_report') is not null and to_regclass('public.feedback') is null then
+    alter table problem_report rename to feedback;
+    alter sequence if exists problem_report_id_seq rename to feedback_id_seq;
+    alter index if exists problem_report_status_idx rename to feedback_status_idx;
+    alter table feedback rename constraint problem_report_status_check to feedback_status_check;
+  end if;
+end $$;
+create table if not exists feedback (
   id          bigserial primary key,
   identity_id text references identity(id),
   report      text not null,
@@ -768,13 +779,18 @@ create table if not exists problem_report (
   blocked     boolean not null default false,
   context     jsonb not null default '{}'::jsonb,
   status      text not null default 'open'
-              check (status in ('open', 'fixed', 'known', 'declined')),
+              constraint feedback_status_check check (status in ('open', 'fixed', 'known', 'declined')),
   resolution  text,
   resolved_by text references identity(id),
   resolved_at timestamptz,
   created_at  timestamptz not null default now()
 );
-create index if not exists problem_report_status_idx on problem_report (status, id desc);
+-- Everything filed before the door widened was a complaint, which is exactly
+-- what the default says.
+alter table feedback add column if not exists kind text not null default 'problem';
+alter table feedback drop constraint if exists feedback_kind_check;
+alter table feedback add constraint feedback_kind_check check (kind in ('problem', 'suggestion'));
+create index if not exists feedback_status_idx on feedback (status, id desc);
 
 -- The one public shape of a contribution, including the derived lean_verified
 -- property, so no query re-derives it ad hoc.
@@ -1326,12 +1342,14 @@ create or replace view q_review_claims as
   select contribution_id, identity_id, claimed_at, expires_at, claimant from review_claim
   where expires_at > now();
 
--- What has been reported about the server and what was done about it, so
--- "has anyone else hit this?" is answerable without the tool. Without
--- `context`, which is the reporter's own call history.
-create or replace view q_problems as
-  select id, identity_id, report, tool, blocked, status, resolution, resolved_by, resolved_at, created_at
-  from problem_report;
+-- What has been said about the server -- broken and missing both -- and what
+-- was done about it, so "has anyone else hit this?" and "has anyone already
+-- asked for this?" are answerable without the tool. Without `context`, which
+-- is the reporter's own call history.
+drop view if exists q_problems;
+create or replace view q_feedback as
+  select id, identity_id, kind, report, tool, blocked, status, resolution, resolved_by, resolved_at, created_at
+  from feedback;
 
 create or replace view q_config as select key, value, updated_at from config;
 create or replace view q_topic_rules as select topic, pattern, ord from topic_rule;
@@ -1367,7 +1385,7 @@ grant usage on schema public to math_reader;
 grant select on q_entries, q_links, q_front_members, q_dictionary, q_transports, q_events, q_verifications,
                 q_artifacts, q_trails, q_trail_entries, q_identities, q_config,
                 q_topic_rules, q_decls, q_patches, q_review_claims, q_expositions, q_files,
-                q_problems to math_reader;
+                q_feedback to math_reader;
 -- The server's own connection switches into this role per query statement.
 -- Conditional for the same reason as the role itself: granting membership a
 -- second time needs ADMIN on the role, which the owning user does not have,

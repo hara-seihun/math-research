@@ -116,7 +116,7 @@ export function logRequest(tool: string, identityId: string | null, args: unknow
       : text;
   // The connection, not just the contributor: read doors log no identity at
   // all (they resolve none), so a session is the only thread that ties a
-  // caller's calls together -- which is what report_problem attaches so a
+  // caller's calls together -- which is what feedback attaches so a
   // one-sentence complaint still says what its author was doing.
   pending.push({ tool, identityId, session: requestContext().sessionId ?? null, args: stored });
   if (pending.length >= LOG_FLUSH_ROWS) {

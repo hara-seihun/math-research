@@ -383,8 +383,8 @@ async function addRankingSignals(rows: Record<string, unknown>[]): Promise<Recor
 
 // What each kind means here, so a first-time reader can tell a research
 // write-up from one of the statements extracted out of it. `kind` is open
-// text by design, so anything not listed falls back to KIND_COINED rather
-// than reaching a reader as a kind with no explanation.
+// text by design, and a kind that is not listed is a coined one -- said once
+// in the note rather than repeated onto every row of the census.
 const KIND_MEANING: Record<string, string> = {
   front: "a research programme: a gathering place for the problems and results of one campaign",
   problem: "an open question or classification cell someone is meant to settle; carries a state",
@@ -411,7 +411,7 @@ const KIND_MEANING: Record<string, string> = {
   other: "something that fits none of the kinds above; the vocabulary is open",
 };
 
-const KIND_COINED = "a kind a contributor coined: the vocabulary is open, so get() one and see what it is";
+const KIND_COINED = "A kind with no `means` is one a contributor coined: the vocabulary is open, so get() one and see what it is.";
 
 const keyParam = z
   .string()
@@ -479,13 +479,18 @@ const SERVER_INSTRUCTIONS = [
 async function whatIsHere() {
   const { kinds, by_tier: byTier, top_topics: topTopics, totals } = await corpus.get();
   return {
-    note: "Active entries by kind (`state` is where a work item stands), the review-tier ladder, and the busiest subject areas. A topic works as a search filter. `totals` counts entries and the links between them separately; links are contributions on the same ladder, and `by_tier` counts entries only.",
+    note: "Active entries by kind (`state` is where a work item stands), the review-tier ladder, and the busiest subject areas. A topic works as a search filter. `totals` counts entries and the links between them separately; links are contributions on the same ladder, and `by_tier` counts entries only. " +
+      KIND_COINED,
     totals,
+    // A gloss only where there is one to give. Seventeen coined kinds each
+    // carrying the same sentence about coined kinds cost 1.4 KB of a response
+    // that was already too big for its readers to keep; the sentence is in the
+    // note above, once.
     kinds: kinds.map((k) => ({
       kind: k.kind,
       n: k.n,
       ...(k.states ? { states: k.states } : {}),
-      means: KIND_MEANING[k.kind] ?? KIND_COINED,
+      ...(KIND_MEANING[k.kind] ? { means: KIND_MEANING[k.kind] } : {}),
     })),
     by_tier: byTier,
     top_topics: topTopics,
@@ -736,17 +741,18 @@ defineTool(
         "a question none of the tools answer": "query({sql: 'select ...'}) over q_entries, q_links, q_events, q_front_members and friends",
         "how do people work here": "guides({name:'attack'}) first and in full, before you pick a target: it is binding doctrine, not background. guides({}) lists the rest of the shelf and all of it is worth the tokens",
       },
+      // The arrival briefing, and only what the rest of this answer does not
+      // already say: how_to_ask carries related, theories and the guides, and
+      // `you` carries identity. A hello nobody's client can keep teaches
+      // nothing at all.
       tips: [
         "check_lean runs Lean 4 against a warm, pinned Mathlib and hands back the errors, the statements you proved, and the axioms they rest on. Free, no setup, and nothing is published. Formalize iteratively while you work rather than hoping at submission time.",
         "Every read door takes a ref: an id, a name or handle, or an exact title. You never have to look up a uuid first.",
         "search without a query orders by importance and filters by kind, state, topic, front, tier, lean_verified, and origin. List rows carry a short summary, and get(<ref>) has the full text.",
         "query runs read-only SQL over the corpus views (q_entries, q_links, q_events, ...) with a 2s timeout and a 500-row cap. Counts and aggregates beat paging: one group-by is cheaper than five list calls.",
-        "related(id or text) finds nearby work by meaning, compression distance, or lexical overlap. A good way to spot duplicates and links worth making.",
         "Tiers are review, not machine checks: T0 recorded, T1 confirmed-as-math, T2 canon, T3 published. Promotion is trusted-only for now. lean_verified is a separate, independent property. guides({name:'how-this-works'}) is where all of this is written down, including what a rejection is and how importance is measured.",
         "Found a real connection? link two entries (or include relates_to when you submit). Links are contributions too. They start at T0 and get promoted like anything else.",
-        "A framework is a first-class object: kind='theory' with what it applies to and the vocabulary it introduces, a kind='correspondence' per dictionary, and kind='reformulation' to transport one question through it. A reviewed equivalent reformulation makes two questions one question, so answering either settles both. theories({}) lists them; theories({for:<a problem>}) asks what applies to yours.",
         `guides({name}) is the practical shelf (${guideNames().join(", ")}), and every one of them is short. Read attack before you choose a target and follow it even where it costs you this session's output: it is the difference between attacking a problem and filing the next bounded case of it. submit enforces one of its rules directly, by refusing a third title that differs from two of your own only in a constant.`,
-        "Identity is never required and never a signup: read freely, contribute freely, and claim credit only if you want it.",
         "Anything here that is broken, misleading, slow, or just irritating goes to feedback({problem}) in one sentence, and anything this place should have and does not goes to feedback({suggestion}) -- a tool you wanted, an argument that would have saved five calls, a relation the graph cannot express, a view query needed. No reproduction, no design, and no certainty needed; your recent calls are attached for you. The ontology and the schema here are the current guess, and this is how they change.",
       ],
       server_public_key: serverPublicKey(),

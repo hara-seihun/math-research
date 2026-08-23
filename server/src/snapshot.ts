@@ -33,6 +33,22 @@ export type CorpusSnapshot = {
   };
 };
 
+/** A row as an orientation door shows it. hello says what is here and points
+ *  at the doors that fetch it; it is not a reading surface. Eighteen rows of
+ *  full summaries made the whole answer 21 KB, and past about 16 KB a common
+ *  client replaces a tool result with a notice pointing at a temp file -- so
+ *  the first call an agent makes here came back with nothing in it. */
+const GLANCE_SUMMARY = 160;
+function glance(r: Record<string, unknown>, keepSummary = false) {
+  const row = listRow(r) as Record<string, unknown>;
+  const summary = row.summary as string | undefined;
+  if (!keepSummary) delete row.summary;
+  else if (summary && summary.length > GLANCE_SUMMARY) {
+    row.summary = `${summary.slice(0, GLANCE_SUMMARY).trimEnd()}…`;
+  }
+  return row;
+}
+
 async function computeSnapshot(): Promise<CorpusSnapshot> {
   // One pass over the corpus feeds every count, instead of one scan per
   // headline. The state vocabulary differs by kind, since a route is partial or
@@ -52,7 +68,7 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
       left join contribution m on m.id = e.src and m.status = 'active' and ec.id is not null
       where f.kind = 'front' and f.status = 'active'
       group by f.id, f.title, f.notability
-      order by members desc, f.notability desc limit 10`,
+      order by members desc, f.notability desc limit 6`,
     // What this place has actually established, best first, which is the
     // first thing anyone arriving wants and the one thing graph density
     // cannot answer.
@@ -60,15 +76,15 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
                c.origin, c.origin_source, c.created_at, c.board_at, ${impactScore()} as impact_score
         from contribution c
         where c.status = 'active' and ${onBoard()}
-        order by impact_score desc, c.notability desc, c.created_at desc limit 5`,
+        order by impact_score desc, c.notability desc, c.created_at desc limit 3`,
     sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind not in ('edge', 'statement')
-        order by notability desc, created_at desc limit 8`,
+        order by notability desc, created_at desc limit 5`,
     sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind <> 'edge' and tier >= 2
-        order by created_at desc limit 5`,
+        order by created_at desc limit 3`,
     sql<{ n: number }[]>`
       select count(*)::int as n from trail
       where status = 'open' and updated_at > now() - ${TRAIL_FRESH}::interval`,
@@ -118,9 +134,12 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
       members: Number(p.members),
       open_problems: Number(p.open_problems),
     })),
-    established_here: board.map(listRow),
-    most_notable: notable.map(listRow),
-    fresh_canon: fresh.map(listRow),
+    // What the place has established gets a line of prose about each; the
+    // other two lists are titles and ids, because their whole job is to be
+    // followed with get or search.
+    established_here: board.map((r) => glance(r, true)),
+    most_notable: notable.map((r) => glance(r)),
+    fresh_canon: fresh.map((r) => glance(r)),
     totals,
   };
 }

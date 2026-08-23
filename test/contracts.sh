@@ -1805,6 +1805,35 @@ call related '{"scan":true,"kind":"theorem","offset":100000}' \
   || fail "a scan past the end of the slice did not come back empty"
 dated "hello most_notable" "$(call hello '{}')" 'd["most_notable"]'
 
+# Contract: hello is orientation, not reading. Eighteen rows of full summaries
+# made it a 21 KB answer, and past about 16 KB a common client replaces a tool
+# result with a notice pointing at a temp file -- so the first call an agent
+# makes here came back with nothing in it. Rows point; get fetches.
+# The whole arrival answer, against the limit its readers actually apply: pi's
+# MCP adapter replaces any tool result over 16 KB with a notice pointing at a
+# temp file, so a hello above that teaches nothing to the agents that read it.
+# The test corpus is small, so this measures the fixed teaching text -- the
+# tips, the census glosses, the how-to-ask table -- which is most of it and the
+# part that grows by editing rather than by use.
+call hello '{}' | python3 -c "import sys
+raw = sys.stdin.read()
+assert len(raw) < 12000, len(raw)" || fail "hello's fixed text alone is close to the size its readers drop"
+LONG_SUMMARY=$(python3 -c "print('a summary long enough to matter, repeated. ' * 14)")
+GLANCED=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"an entry with a great deal to say for itself\",\"summary\":\"$LONG_SUMMARY\",\"content\":\"c.\"}" | field '.id')
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$GLANCED\",\"tier\":2,\"note\":\"canon, for the glance\"}" | field '.ok' > /dev/null
+call hello '{}' | python3 -c "import sys,json
+d = json.load(sys.stdin)
+rows = d['established_here'] + d['most_notable'] + d['fresh_canon']
+assert any(r['id'] == '$GLANCED' for r in rows), 'the fresh canon entry never appeared'
+long = [(r['id'], len(r.get('summary') or '')) for r in rows if len(r.get('summary') or '') > 200]
+assert not long, long
+assert not any(r.get('summary') for r in d['most_notable'] + d['fresh_canon']), 'a pointing list carried prose'
+coined = [k for k in d['what_is_here']['kinds'] if 'means' not in k]
+assert coined, 'the census glossed every kind, so the note about coined kinds has nothing to explain'
+assert 'coined' in d['what_is_here']['note']" || fail "hello carried a full summary where a glance was the point"
+[[ $(call get "{\"ref\":\"$GLANCED\"}" | field '.summary' | wc -c) -gt 200 ]] \
+  || fail "the door that fetches an entry lost the summary hello trimmed"
+
 # Contract: hello carries the census the live page shows -- the review ladder
 # over entries, and entries and links counted apart, since a link is a
 # contribution on the same ladder but not a thing anyone means by "entries".

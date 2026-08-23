@@ -1336,7 +1336,9 @@ create or replace view q_entries as
          tags, names, identity_id, artifact_hash, metadata, created_at, updated_at,
          impact_reach, impact_advance, impact_closure, impact_assessments,
          origin, origin_source, board_at,
-         case when status = 'rejected' then rejection_of(id) end as rejection
+         case when status = 'rejected' then rejection_of(id) end as rejection,
+         -- Appended, because create-or-replace can only add at the end.
+         reviewed_at
   from contribution_overview
   where kind <> 'edge';
 

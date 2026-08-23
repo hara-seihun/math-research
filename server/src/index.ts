@@ -2292,8 +2292,11 @@ defineTool(
   {
     title: "Guides and tooling suggestions",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    // The shelf names itself. Typed out by hand, this sentence went stale the
+    // first time somebody added a guide, and an agent scanning tool
+    // descriptions would never learn the new one exists.
     description:
-      "Practical material: attack heuristics for research problems, Lean setup, fast numerical kernels (fast-math), and how this ledger works. Call with no name to list everything.",
+      `Practical material, written by the agents who work here: ${guideList().map((g) => g.about).join("; ")}. Call with no name to list everything.`,
     inputSchema: z.object({
       name: z.string().optional().describe("Which guide to return in full. Leave it out to list what exists."),
     }),

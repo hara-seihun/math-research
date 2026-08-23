@@ -2437,6 +2437,13 @@ defineTool(
     // A row the insert refused was taken by someone else between the scan and
     // the write. It is theirs; do not hand it out as well.
     const unreviewed = taking ? rows.filter((r) => r.claimed_until !== null) : rows;
+    // Everything below the worklist is context, not the page that was asked
+    // for, so it gets its own small bound rather than the caller's. Sharing
+    // one `limit` across six sections meant asking for a hundred entries also
+    // asked for a hundred patches and a hundred flags, and a page of fifty
+    // came back past the output limit of the clients reading it. `backlog`
+    // says how many of each there really are.
+    const side = Math.min(limit, 10);
     const proposalWhere = sql`
       e.rel = 'supersedes' and ec.status = 'active' and ec.tier = 0 and rc.status = 'active'`;
     const proposals = await sql`
@@ -2446,7 +2453,7 @@ defineTool(
       join contribution ec on ec.id = e.contribution_id
       join contribution rc on rc.id = e.src
       where ${proposalWhere}
-      limit ${limit}`;
+      limit ${side}`;
     const amendmentWhere = sql`
       e.rel = 'amends' and ec.status = 'active' and ec.tier = 0
         and ac.status = 'active' and ac.kind = 'amendment' and tgt.status = 'active'`;
@@ -2461,7 +2468,7 @@ defineTool(
       join contribution tgt on tgt.id = e.dst
       where ${amendmentWhere}
       order by tgt.notability desc, e.created_at asc
-      limit ${limit}`;
+      limit ${side}`;
     const impactWhere = sql`
       e.rel = 'assesses-impact' and ec.status = 'active' and ec.tier = 0
         and ac.status = 'active' and ac.kind = 'impact-assessment' and tgt.status = 'active'`;
@@ -2476,7 +2483,7 @@ defineTool(
       join contribution tgt on tgt.id = e.dst
       where ${impactWhere}
       order by tgt.notability desc, e.created_at asc
-      limit ${limit}`;
+      limit ${side}`;
     const failures = (
       await sql<{ contribution_id: string; title: string; outcome: string; reason: string | null; updated_at: Date }[]>`
         select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
@@ -2502,7 +2509,7 @@ defineTool(
       join contribution c on c.id = e.dst
       where ${flaggedWhere}
       order by c.notability desc, e.created_at asc
-      limit ${limit}`;
+      limit ${side}`;
     // Certified mathematics whose headline is still the interrogative it was
     // filed as. The board will not print a question as a finding, so these
     // are off it until someone amends the headline to say what was found.
@@ -2521,7 +2528,7 @@ defineTool(
           and ec.status = 'active' and src.status = 'active' and ec.tier >= 2
         order by src.notability desc limit 1) s on true
       where ${askingWhere}
-      order by impact_score desc, c.notability desc limit ${limit}`;
+      order by impact_score desc, c.notability desc limit ${side}`;
     // Patches are the one thing here whose promotion leaves the ledger: T2 is
     // what commits a change to the Lean library, so the build result and the
     // publication state travel with the row a reviewer is deciding on.
@@ -2542,7 +2549,7 @@ defineTool(
       left join patch_publication p on p.contribution_id = c.id
       where ${patchWhere}
       order by c.tier desc, c.created_at asc
-      limit ${limit}`;
+      limit ${side}`;
     const [counts] = await sql<{
       unreviewed: number; by_kind: Record<string, number>; awaiting_decision: number; claimed_by_others: number;
       flagged: number; refactor_proposals: number; amendment_proposals: number; impact_assessment_proposals: number;

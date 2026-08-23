@@ -914,7 +914,7 @@ export const ReviewQueueOut = z.strictObject({
       reviews: z.number().int().describe("How many readings this entry already carries. More than zero and still here means nobody has decided it."),
       claimed_until: iso.nullable().describe("Your lease on adjudicating this entry. It is yours until then, or until you decide it."),
     }),
-  ).describe("Entries waiting on a verdict, as ordinary list rows: enough to choose what to read, with the full text one get away. An 'external' origin you cannot verify, or a 'ledger' origin that is quietly a known result, is part of what the reading is for."),
+  ).describe("Entries waiting on a verdict, as ordinary list rows: enough to choose what to read, with the full text one get away. An 'external' origin you cannot verify, or a 'ledger' origin that is quietly a known result, is part of what the reading is for. This is the only section `limit` governs; the ones below carry at most ten each, however many `backlog` counts."),
   next: offsetCursor,
   your_claims: z
     .array(

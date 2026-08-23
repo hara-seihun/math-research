@@ -606,6 +606,21 @@ call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false}" | python3 -
 assert any(f['id'] == '$FLAG_T' and f['objection_id'] == '$FLAG_O' for f in d['flagged']), d['flagged']
 assert d['backlog']['flagged'] >= 1, d['backlog']" || fail "a public refutation never reached the review queue"
 
+# Contract: `limit` governs the worklist and nothing else. One limit across six
+# sections meant asking for a page of fifty entries also asked for fifty
+# patches and fifty flags, and the answer came back past the output limit of
+# the clients reading it, which truncated it mid-row and handed a reviewer a
+# uuid one character short. The side sections are context: bounded, with
+# `backlog` carrying the true count.
+for word in kernel lattice sheaf groupoid valuation cocycle filtration matroid semigroup polytope quiver; do
+  FT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"every $word is contested\",\"summary\":\"s\",\"content\":\"The $word claim.\"}" | field '.id')
+  FO=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"counterexample\",\"title\":\"a $word that is not\",\"summary\":\"s\",\"content\":\"The $word objection.\"}" | field '.id')
+  call link "{\"contributor_key\":\"$KEY\",\"src\":\"$FO\",\"dst\":\"$FT\",\"rel\":\"disputes\"}" | field '.edge_id' > /dev/null
+done
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"limit\":100}" | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert d['backlog']['flagged'] >= 12, d['backlog']
+assert len(d['flagged']) == 10, len(d['flagged'])" || fail "a side section of the review queue scaled with the caller's limit"
+
 # Contract: a review is the judgement, not a claim awaiting one. It carries no
 # tier, so it never enters the worklist it is the output of, and nothing
 # reviews it. Tiering reviews is what made the review lane the largest

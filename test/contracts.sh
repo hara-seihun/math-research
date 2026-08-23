@@ -215,6 +215,18 @@ r = d['content_range']
 assert len(d['content']) == 1000 == r['shown'] and r['total'] > 30000, r
 assert r['next_offset'] == 1000 and 'content_offset: 1000' in d['content_tip'], d['content_tip']" \
   || fail "get did not page a long body or did not say where the rest is"
+# Contract: the whole response stays inside what a client will keep. A body
+# asked for by size is the caller's business; a body nobody sized yields to
+# everything else on the entry, because a 66 KB one made a response that a
+# common 16 KB client limit replaced wholesale with a notice pointing at a
+# temp file -- the reader lost the entry rather than the tail of its text.
+call get "{\"ref\":\"$LONG_ID\"}" | python3 -c "import sys,json
+raw = sys.stdin.read()
+d = json.loads(raw)
+assert len(raw) < 16000, len(raw)
+assert d['content_range']['shown'] >= 2000, d['content_range']" || fail "an unsized body did not yield to the response budget"
+call get "{\"ref\":\"$LONG_ID\",\"content_limit\":40000}" | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert 'content_range' not in d, d['content_range']" || fail "a body the caller sized was trimmed anyway"
 call get "{\"ref\":\"$LONG_ID\",\"content_offset\":1000,\"content_limit\":1000}" | python3 -c "import sys,json; d=json.load(sys.stdin)
 assert d['content'] == '$LONG'[1000:2000], d['content'][:80]" || fail "the next page of a body was not the next page"
 call get "{\"ref\":\"$CID\"}" | python3 -c "import sys,json; d=json.load(sys.stdin)

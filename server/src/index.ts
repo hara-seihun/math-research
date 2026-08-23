@@ -149,6 +149,11 @@ const refParam = z
  *  says so out loud, and q_artifacts.content is there for reading one in full. */
 const CONTENT_PAGE = 8_000;
 const MAX_CONTENT = 200_000;
+/** What a whole `get` response aims to weigh, and the least body it will hand
+ *  back to stay there. Everything but the body is what the caller asked about
+ *  the entry rather than of it, so the body yields first. */
+const RESPONSE_TARGET = 13_000;
+const CONTENT_FLOOR = 2_000;
 
 /** Work state, for every kind that carries one. Questions derive open /
  *  settled / retired from the graph; a route declares where its attack stands.
@@ -1239,10 +1244,13 @@ defineTool(
       rel: z.string().optional().describe("Show only this link relation, uncapped (50 a page)."),
       links_offset: z.number().int().min(0).default(0).describe("Paging offset within `rel`."),
       content_offset: z.number().int().min(0).default(0).describe("Start the body this many characters in, for reading a long entry a page at a time."),
-      content_limit: boundedInt(
-        500, MAX_CONTENT, CONTENT_PAGE,
-        `How much of the body to include, in characters, 500 to ${MAX_CONTENT}. Defaults to ${CONTENT_PAGE}, which is the whole of all but a few hundred entries here.`,
-      ),
+      content_limit: z
+        .number().int().optional()
+        .transform((n) => (n === undefined ? undefined : Math.min(MAX_CONTENT, Math.max(500, n))))
+        .describe(
+          `How much of the body to include, in characters, 500 to ${MAX_CONTENT} (outside that it is clamped). ` +
+            "Left out, you get as much as fits beside everything else on the entry, which is all of it for all but a few hundred entries here. Set it when you would rather have the text than the trimmings.",
+        ),
     }),
   },
   async ({ ref, rel, links_offset, content_offset, content_limit }) => {
@@ -1258,7 +1266,7 @@ defineTool(
       select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.metadata, c.notability, c.tags, c.names,
              c.identity_id, c.artifact_hash, c.created_at, c.updated_at, c.board_at, c.lean_verified,
              c.origin, c.origin_source,
-             substr(a.content, ${content_offset + 1}, ${content_limit}) as content,
+             substr(a.content, ${content_offset + 1}, ${content_limit ?? CONTENT_PAGE}) as content,
              length(a.content) as content_length, a.media_type,
              i.display_name as author,
              case when c.status = 'rejected' then rejection_of(c.id) end as rejection
@@ -1314,8 +1322,25 @@ defineTool(
       state, summary, origin_source: originSource, board_at: boardAt,
       content_length: contentLength, rejection, ...entry
     } = c!;
-    const shown = ((entry.content as string | null) ?? "").length;
     const total = Number(contentLength ?? 0);
+    // The body gets what is left over, and everything else on the entry is
+    // asked for first. An entry with sixty links and a page of metadata leaves
+    // less room for its own text than a bare one, and it is the crowded
+    // entries that are long -- so a fixed page fits until the day it does not
+    // and the whole answer is replaced by a truncation notice. Trimming here
+    // rather than in SQL because the size that matters is the assembled
+    // response, which is not knowable before it is assembled.
+    const body = ((entry.content as string | null) ?? "");
+    const room =
+      content_limit === undefined
+        ? Math.max(
+            CONTENT_FLOOR,
+            RESPONSE_TARGET -
+              JSON.stringify({ ...entry, content: "", summary, links, thrownOut, verifications, events }).length,
+          )
+        : body.length;
+    entry.content = body.length > room ? body.slice(0, room) : body;
+    const shown = (entry.content as string).length;
     const paged = content_offset > 0 || shown < total;
     return structured(GetOut, {
       ...entry,

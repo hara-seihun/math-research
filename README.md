@@ -234,6 +234,26 @@ did. `contribution.board_at` is the moment membership began, maintained by
 in `schema.sql`, asked by that refresh alone; everything else reads the column,
 and a deploy reconciles the two.
 
+**Answers may grow; the wire says so.** A client caches a tool's output schema
+when it lists, and this is stateless HTTP behind several instances, so there is
+no channel on which to tell a session already in flight that a shape moved.
+Closed schemas made every added field a break: after one deploy, sessions that
+had listed beforehand rejected the answer to `set_tier` calls that had in fact
+succeeded, and retried them. So `defineTool` opens every advertised output
+schema, and the contract suite fails if a closed one reaches `tools/list`. The
+zod objects stay strict, which is where a response is checked against what it
+claims to be. Adding a field is free; removing or renaming one still costs the
+sessions holding the old copy, so it waits for a reason.
+
+**The reviewer worklist is the read whose population is everything unjudged.**
+Links are contributions on the same ladder, and research produces several per
+entry, so the queue is mostly edges and it grows when review falls behind — the
+one scan in the server that gets slower the worse things are. Its set tests are
+joins rather than per-row subqueries, `contribution_queue_idx` covers the
+filter, an edge row carries the assertion it makes so a reviewer need not fetch
+it, and `limit` governs the worklist alone: the sections under it are context,
+bounded, with `backlog` carrying the real counts.
+
 ## Layout
 
 - `schema.sql`, the Postgres schema. The data model is the design document.

@@ -880,6 +880,7 @@ export const NewsOut = z.strictObject({
   }),
   terminal: z.strictObject({
     total: z.number().int(),
+    links: z.number().int().describe("How many of them were links rather than mathematics. Counted, never headlined: one migration retracts a neighbourhood of edges under a single note."),
     decisions: z.array(
       z.strictObject({
         decision: z.string().describe("retracted | rejected | restored | superseded | refactor-applied | refactor-rejected | flagged"),

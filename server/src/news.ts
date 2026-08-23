@@ -201,7 +201,12 @@ export async function newsPacket(from: number, head: number, questions: number, 
            coalesce(event.payload->>'derived' = 'true', false) as derived
     from event join contribution_overview c on c.id = event.contribution_id
     left join contribution b on b.id = (event.payload->>'by')::uuid
-    where ${window} and event.kind = any (${TERMINAL_KINDS})
+    -- Links are counted here and never headlined, exactly as promotions of
+    -- them are. One migration retracts a neighbourhood of thirty edges under
+    -- a single note, and an edge's title is only its relation word, so left
+    -- in they filled the list with ten identical rows reading "retracted:
+    -- uses" while the mathematics somebody threw out sat below the cut.
+    where ${window} and event.kind = any (${TERMINAL_KINDS}) and c.kind <> 'edge'
     order by c.id,
              (event.payload->>'note' is not null) desc,
              (event.payload->>'by' is not null) desc,
@@ -212,8 +217,11 @@ export async function newsPacket(from: number, head: number, questions: number, 
     -- somebody actually decided. Decisions first, ripples only if there is
     -- room; the total says how many there were either way.
     order by c.derived asc, c.notability desc, c.seq desc limit ${limit}`,
-    sql<{ n: number }[]>`
-    select count(*)::int as n from event where ${window} and kind = any (${TERMINAL_KINDS})`,
+    sql<{ n: number; links: number }[]>`
+    select count(*)::int as n,
+           count(*) filter (where c.kind = 'edge')::int as links
+    from event join contribution c on c.id = event.contribution_id
+    where ${window} and event.kind = any (${TERMINAL_KINDS})`,
     // Provenance corrections. Rare, and the one movement a reader must not
     // miss: an entry reclassified to origin 'external' is this ledger saying
     // a result it was carrying as its own was established elsewhere. Reported
@@ -396,6 +404,7 @@ export async function newsPacket(from: number, head: number, questions: number, 
     },
     terminal: {
       total: terminalTotal!.n,
+      links: terminalTotal!.links,
       decisions: terminal.map((row) => ({
         decision: row.decision, entry: listRow(row), note: trim(row.note as string | null, LIST_NOTE),
         ...(row.by_id ? { by: { id: row.by_id, title: row.by_title } } : {}),

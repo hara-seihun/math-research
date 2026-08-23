@@ -2543,11 +2543,19 @@ const feedbackConfig = {
         .enum(["fixed", "known", "declined"]).optional()
         .describe("Trusted, with resolve: fixed (the server changed -- the bug is gone, or the thing asked for is there), known (real and understood, not changed yet), declined (read and deliberately left alone)."),
       resolution: z.string().optional().describe("Trusted, with resolve: what changed, or why it did not. The reporter and everyone after them reads this."),
-      ...pageParams(100, 20),
+      id: z
+        .number().int().optional()
+        .describe("When reading: one report, whole, with the calls its reporter had just made. That trace is the difference between a vague report and a fixable one, and it is what makes a page of them too heavy to carry, so it comes one at a time."),
+      ...pageParams(100, 10),
     }),
 };
 
-const feedbackHandler = unmintingOnError(async ({ contributor_key, problem, suggestion, tool, blocked, kind, include_resolved, resolve, outcome, resolution, limit, offset }: z.infer<typeof feedbackConfig.inputSchema>) => {
+/** How much of a report a page of them carries. Long enough to triage on
+ *  (most are shorter than this and arrive whole), short enough that reading
+ *  the queue is never itself the thing that overflows. */
+const REPORT_PREVIEW = 900;
+
+const feedbackHandler = unmintingOnError(async ({ contributor_key, problem, suggestion, tool, blocked, kind, include_resolved, resolve, outcome, resolution, id, limit, offset }: z.infer<typeof feedbackConfig.inputSchema>) => {
     if (resolve !== undefined) {
       const who = await trustedCheck(contributor_key);
       if (!who.ok) return fail({ error: who.refusal });
@@ -2612,16 +2620,28 @@ const feedbackHandler = unmintingOnError(async ({ contributor_key, problem, sugg
       });
     }
 
-    logRequest("feedback", null, { kind, include_resolved, limit, offset });
+    logRequest("feedback", null, { kind, include_resolved, id, limit, offset });
     // Context is one caller's own arguments. It is what makes a vague report
     // fixable, and it is nobody else's to browse, so it goes to the readers
     // who act on reports and to no one else.
+    //
+    // One report at a time, though. Carried on every row of a page it made
+    // this door answer a triage call with 65 KB, which the client that asked
+    // dropped whole -- so the queue of complaints about oversized answers was
+    // itself unreadable. A page is what is filed and what came of it; `id` is
+    // the one you are about to work on.
     const reader = await trustedCheck(contributor_key);
     const rows = await sql`
-      select p.id::int, p.kind, p.report, p.tool, p.blocked, p.status, p.resolution, p.created_at, p.resolved_at,
-             i.display_name as by, p.context
+      select p.id::int, p.kind,
+             case when ${id ?? null}::int is not null or length(p.report) <= ${REPORT_PREVIEW}
+                  then p.report
+                  else left(p.report, ${REPORT_PREVIEW}) || '… (feedback({id: ' || p.id || '}) has all of it)' end as report,
+             p.tool, p.blocked, p.status, p.resolution, p.created_at, p.resolved_at,
+             i.display_name as by,
+             case when ${id ?? null}::int is not null then p.context end as context
       from feedback p left join identity i on i.id = p.identity_id
-      where (${include_resolved} or p.status = 'open')
+      where (${id ?? null}::int is null or p.id = ${id ?? null})
+        and (${id ?? null}::int is not null or ${include_resolved} or p.status = 'open')
         and (${kind ?? null}::text is null or p.kind = ${kind ?? null})
       order by (p.status = 'open') desc, p.id desc
       limit ${limit} offset ${offset}`;
@@ -2632,8 +2652,8 @@ const feedbackHandler = unmintingOnError(async ({ contributor_key, problem, sugg
     return structured(FeedbackOut, {
       open,
       open_suggestions: openSuggestions,
-      reports: rows.map(({ context, ...r }) => (reader.ok ? { ...r, context } : r)),
-      next: rows.length === limit ? { offset: offset + limit } : null,
+      reports: rows.map(({ context, ...r }) => (reader.ok && context ? { ...r, context } : r)),
+      next: rows.length === limit && id === undefined ? { offset: offset + limit } : null,
     });
 });
 

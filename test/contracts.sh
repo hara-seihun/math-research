@@ -1046,9 +1046,22 @@ PRID=$(echo "$PR" | field '.id')
 [[ -n $PRID ]] || fail "a problem report was refused"
 call feedback '{}' | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];assert p["status"]=="open" and p["kind"]=="problem" and "context" not in p' \
   || fail "an open report did not read back, or leaked its reporter's calls"
-call feedback "{\"contributor_key\":\"$OPKEY\"}" \
+# One report at a time carries the reporter's trace. On every row of a page it
+# made a triage call weigh 65 KB, which the client that asked it dropped
+# whole: the queue of complaints about oversized answers was itself unreadable.
+call feedback "{\"contributor_key\":\"$OPKEY\",\"id\":$PRID}" \
   | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];c=p["context"]["recent_calls"];assert c[0]["tool"]=="search" and c[0]["args"]["query"]=="a search that disappointed me";assert all(x["args"].get("query")!="a search from a different session" for x in c)' \
   || fail "the server did not attach what the reporter was doing, or attached somebody else's calls with it"
+call feedback "{\"contributor_key\":\"$OPKEY\"}" \
+  | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];assert "context" not in p, p' \
+  || fail "a page of reports carried every reporter's trace"
+LONG_REPORT=$(python3 -c "print('a defect described at length. ' * 60)")
+LRID=$(call feedback "{\"problem\":\"$LONG_REPORT\"}" | field '.id')
+call feedback '{}' | python3 -c 'import sys,json;p=[x for x in json.load(sys.stdin)["reports"] if x["id"]=='"$LRID"'][0]
+assert len(p["report"]) < 1000 and "has all of it" in p["report"], p["report"][-80:]' \
+  || fail "a long report was not trimmed on the page, or did not say where the rest is"
+call feedback "{\"id\":$LRID}" | python3 -c 'import sys,json;p=json.load(sys.stdin)["reports"][0]
+assert len(p["report"]) > 1500, len(p["report"])' || fail "asking for one report did not hand back the whole of it"
 call feedback "{\"resolve\":$PRID,\"outcome\":\"fixed\"}" | grep -q '"error"' || fail "an untrusted caller resolved a report"
 call feedback "{\"contributor_key\":\"$OPKEY\",\"resolve\":$PRID,\"outcome\":\"fixed\",\"resolution\":\"search now says what it looked for\"}" \
   | field '.ok' > /dev/null || fail "a trusted reader could not resolve a report"

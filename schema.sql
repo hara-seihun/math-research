@@ -357,6 +357,10 @@ create unique index if not exists contribution_import_key_idx
 --   bears-on    the source's finding applies to the target, which the source
 --               never examined. A review's defect reaching what builds on what
 --               it read is this and not `reviews`.
+--   rederives   the source reaches the target's conclusion by its own route and
+--               does not depend on it. `uses` was being filed for this, which
+--               reads as a dependency that is not there and makes an
+--               independent confirmation look like a borrowing.
 create table if not exists edge (
   contribution_id uuid primary key references contribution(id),
   src             uuid not null references contribution(id),

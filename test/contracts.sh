@@ -660,6 +660,15 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$FOLD\",\"tier\":2,\"no
 # same `id`, and a rejected row carries the verdict beside its tier in both.
 VIEW_A=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"view coverage source\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 VIEW_B=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"view coverage target\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+# Contract: every relation the vocabulary offers carries a notability weight.
+# A relation named in a tool description and weightless in the tuning table is
+# an edge that quietly counts for nothing, which is worse than not offering it.
+psql -h "$WORK" -d math -tAc "select value->'rel' from config where key = 'notability_weights'" \
+  | python3 -c "import sys,json,re
+w = json.load(sys.stdin)
+named = set(re.findall(r'\b(explains|constrains|realizes|implements|bears-on|rederives)\b', open('server/src/index.ts').read()))
+missing = [r for r in named if r not in w]
+assert not missing, missing" || fail "a relation the link door offers has no notability weight"
 VIEW_E=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$VIEW_A\",\"dst\":\"$VIEW_B\",\"rel\":\"explains\",\"note\":\"the mechanism\"}" | field '.edge_id')
 call query "{\"sql\":\"select id, rel, tier from q_links where id = '$VIEW_E'\"}" \
   | python3 -c "import sys,json; r=json.load(sys.stdin)['rows']; assert r and r[0][1] == 'explains', r" \

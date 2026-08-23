@@ -25,11 +25,17 @@ export const FILE_HASH = /^[0-9a-f]{64}$/;
 export const objectPath = (hash: string) => `${FILE_ROOT}/objects/${hash.slice(0, 2)}/${hash}`;
 const stagingPath = (hash: string) => `${FILE_ROOT}/staging/${hash}`;
 
+/** Null means the file is not there. Anything else the filesystem has to say
+ *  is raised, because "absent" and "I could not look" are different answers
+ *  and swallowing the second one turns a busy moment into a permanent-looking
+ *  404 on a URL whose bytes are sitting on disk — or, on the upload side, into
+ *  a staged file that restarts from byte zero. */
 async function sizeOf(path: string): Promise<number | null> {
   try {
     return (await stat(path)).size;
-  } catch {
-    return null;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    throw e;
   }
 }
 
@@ -115,13 +121,30 @@ export async function receiveChunk(
 
 export type StoredFile = { hash: string; media_type: string; size_bytes: number };
 
-export async function storedFile(hash: string): Promise<(StoredFile & { path: string }) | null> {
-  if (!FILE_HASH.test(hash)) return null;
+/** Three answers, not two. "Nobody ever uploaded that" is the caller's
+ *  mistake and permanent; "the inventory has it and the bytes are not
+ *  readable right now" is ours and probably not, and an agent told the first
+ *  when the second is true goes off to regenerate a certificate that exists.
+ *  A hash the inventory knows is never a 404. */
+export type FileLookup =
+  | { found: StoredFile & { path: string } }
+  | { unknown: true }
+  | { unreadable: string };
+
+export async function storedFile(hash: string): Promise<FileLookup> {
+  if (!FILE_HASH.test(hash)) return { unknown: true };
   const [row] = await sql<{ media_type: string; size_bytes: number }[]>`
     select media_type, size_bytes from file where hash = ${hash}`;
-  if (!row) return null;
+  if (!row) return { unknown: true };
   const path = objectPath(hash);
-  return (await sizeOf(path)) === null ? null : { hash, media_type: row.media_type, size_bytes: Number(row.size_bytes), path };
+  let size: number | null;
+  try {
+    size = await sizeOf(path);
+  } catch (e) {
+    return { unreadable: e instanceof Error ? e.message : String(e) };
+  }
+  if (size === null) return { unreadable: "the inventory has this hash but its bytes are not on this instance's disk" };
+  return { found: { hash, media_type: row.media_type, size_bytes: Number(row.size_bytes), path } };
 }
 
 // A path is how a bundle of blobs reads as a tree. Relative, forward slashes,

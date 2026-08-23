@@ -446,17 +446,75 @@ function acceptRefAliases<S extends z.ZodType>(schema: S): z.ZodType {
 
 /** The advertised output schema, opened up.
  *
- *  A client caches a tool's output schema when it lists, and this server is
- *  stateless HTTP behind several instances, so there is no channel on which to
- *  tell a session already in flight that the shape moved. A closed schema
- *  therefore makes every added field a break: sessions that listed before the
- *  deploy reject the answer to a call that in fact succeeded, and retry it. So
- *  what goes on the wire says these fields are here, not that nothing else can
- *  be. The zod objects stay strict, which is where the contract suite checks
- *  that a response is exactly what it claims to be. Fields may be added
- *  freely; removing or renaming one still needs the sessions to turn over. */
-const openOutput = (schema: z.ZodType): z.ZodType =>
-  schema instanceof z.ZodObject ? z.object(schema.shape).catchall(z.unknown()) : schema;
+ *  A client compiles a tool's output schema when it lists and holds it for the
+ *  rest of the session. This server is stateless HTTP behind eight instances
+ *  and serves no notification stream, so there is no channel on which to tell
+ *  a session already in flight that the shape moved: a published schema is a
+ *  promise to every caller who listed before the current deploy, and the only
+ *  promise a place that changes this often can keep is "these fields mean this
+ *  when they are here".
+ *
+ *  Anything stricter breaks a caller who did nothing wrong, after the write
+ *  has already landed. On 2026-08-22 `set_tier` went from answering about one
+ *  entry to answering about a page of them; every session that had listed
+ *  before that deploy spent the rest of its life seeing a schema error for a
+ *  promotion that had in fact gone through, because the copy it held required
+ *  a root `id` the new answer no longer carried — and retrying is what a
+ *  caller does with an error, on a door where retrying is a second write.
+ *
+ *  So the wire copy documents every field and demands none: no `required`, no
+ *  closed object, at any depth. The zod objects stay strict, and the contract
+ *  suite validates every response against them (MCP_VALIDATE=1), so a response
+ *  that does not say exactly what it claims still fails here rather than in
+ *  production. */
+const SUBSCHEMA = ["items", "additionalProperties", "not", "if", "then", "else", "propertyNames", "contains"];
+const SUBSCHEMA_MAP = ["properties", "patternProperties", "$defs", "definitions"];
+const SUBSCHEMA_LIST = ["anyOf", "oneOf", "allOf", "prefixItems"];
+
+/** Walked by keyword rather than by key name: a schema is data, and one of
+ *  these objects may perfectly well describe a *property* called `required`. */
+function openSchema(node: unknown): unknown {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return node;
+  const open: Record<string, unknown> = { ...(node as Record<string, unknown>) };
+  delete open.required;
+  if (open.additionalProperties === false) delete open.additionalProperties;
+  for (const key of SUBSCHEMA) if (key in open) open[key] = openSchema(open[key]);
+  for (const key of SUBSCHEMA_MAP) {
+    const map = open[key];
+    if (map && typeof map === "object") {
+      open[key] = Object.fromEntries(Object.entries(map).map(([name, sub]) => [name, openSchema(sub)]));
+    }
+  }
+  for (const key of SUBSCHEMA_LIST) {
+    const list = open[key];
+    if (Array.isArray(list)) open[key] = list.map(openSchema);
+  }
+  return open;
+}
+
+type StandardSchema = {
+  jsonSchema?: { input: (options: never) => Record<string, unknown>; output: (options: never) => Record<string, unknown> };
+};
+
+/** The same schema with the same validation, publishing an opened copy of
+ *  itself. Built on the original rather than beside it, so everything the SDK
+ *  or zod reaches for is still there. */
+function openOutput(schema: z.ZodType): z.ZodType {
+  const standard = (schema as unknown as Record<string, StandardSchema>)["~standard"];
+  if (!standard?.jsonSchema) return schema;
+  const convert = standard.jsonSchema;
+  const published = Object.create(schema) as z.ZodType;
+  Object.defineProperty(published, "~standard", {
+    value: {
+      ...standard,
+      jsonSchema: {
+        input: (options: never) => openSchema(convert.input(options)) as Record<string, unknown>,
+        output: (options: never) => openSchema(convert.output(options)) as Record<string, unknown>,
+      },
+    },
+  });
+  return published;
+}
 
 function defineTool<S extends z.ZodType>(
   name: string,
@@ -3181,7 +3239,10 @@ async function noLongerPending(proposalId: string, what: string): Promise<{ erro
      order by ev.created_at desc limit 1`;
   if (decided) {
     return {
-      error: `that ${what} was already decided (${decided.kind}) at ${new Date(decided.at).toISOString()}${decided.by ? ` by ${decided.by}` : ""}. Nothing left to do here; the queue moved on.`,
+      error:
+        `that ${what} was already decided (${decided.kind}) at ${new Date(decided.at).toISOString()}${decided.by ? ` by ${decided.by}` : ""}. ` +
+        "Nothing left to do here; the queue moved on. To change what a decided proposal did, move what it left behind rather than the proposal: " +
+        "set_tier on the link puts a supersession back or takes it away, reject or retract the proposing entry undoes it wholesale, and either way the targets follow on that write.",
       decided,
     };
   }
@@ -3200,7 +3261,7 @@ defineTool(
     outputSchema: ApplyRefactorOut,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     description:
-      "Decide a pending supersedes proposal (a T0 supersedes edge). Approving promotes the link to canon and marks the targets superseded (they stay readable forever); rejecting retracts the link and leaves everything active. Requires a trusted key.",
+      "Decide a pending supersedes proposal (a T0 supersedes edge). Approving promotes the link to canon, which is what retires the targets (they stay readable forever); rejecting retracts the link and leaves everything active. What is superseded is derived from the accepted links themselves, so this decision is not a one-way door: retract the link, or reject the refactor that proposed it, and its targets are active again on that write. Requires a trusted key.",
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
       refactor_id: z.string().uuid().describe("The contribution that proposed the refactor."),
@@ -3221,13 +3282,13 @@ defineTool(
     if (proposals.length === 0) return fail(await noLongerPending(refactor_id, "supersedes proposal"));
     await sql.begin(async (tx) => {
       const applied = decision === "approve";
+      // The link is the whole decision. Promoting it to canon retires its
+      // targets and retracting it un-retires them, both by way of
+      // refresh_supersession below, so this writes no status of its own and
+      // there is no state left over when the link is later moved again.
       for (const p of proposals) {
         if (applied) {
           await tx`update contribution set tier = 2, updated_at = now() where id = ${p.edge_id}`;
-          await tx`update contribution set status = 'superseded', updated_at = now()
-                   where id = ${p.dst} and status = 'active'`;
-          await tx`insert into event (kind, contribution_id, identity_id, payload)
-                   values ('superseded', ${p.dst}, ${who.identityId}, ${tx.json({ by: refactor_id, note } as never)})`;
         } else {
           await tx`update contribution set status = 'retracted', updated_at = now() where id = ${p.edge_id}`;
         }
@@ -3663,11 +3724,24 @@ app.get("/render/:hash", async (req: import("express").Request, res: import("exp
 const outer = express();
 
 outer.get("/files/:hash", async (req: import("express").Request, res: import("express").Response) => {
-  const found = await storedFile(String(req.params.hash));
-  if (!found) {
+  const hash = String(req.params.hash);
+  const lookup = await storedFile(hash);
+  if ("unknown" in lookup) {
     res.status(404).json({ error: "no file with that sha256. q_files lists every attached file with its hash." });
     return;
   }
+  // The inventory knows these bytes, so this is our problem and it may well be
+  // over by the next request. Saying 404 here sent an agent off to rebuild a
+  // certificate that existed, and said nothing to anyone who could fix it.
+  if ("unreadable" in lookup) {
+    console.error(`files: ${hash} is in the inventory and unreadable: ${lookup.unreadable}`);
+    res.status(503).json({
+      error: `this file is attached and its bytes are not readable right now (${lookup.unreadable}). It is not gone from the ledger and this is not your call to fix: retry, and if it persists, report_problem with this hash.`,
+      hash,
+    });
+    return;
+  }
+  const { found } = lookup;
   res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Content-Type", found.media_type);

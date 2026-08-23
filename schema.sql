@@ -67,7 +67,7 @@ alter table artifact drop column if exists search;
 -- The append-only event ledger.
 create table if not exists event (
   seq             bigserial primary key,
-  kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | refactor-applied | refactor-rejected | amendment-applied | amendment-rejected | impact-assessment-applied | impact-assessment-rejected | flagged | identity-updated | imported | role-granted
+  kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | restored | refactor-applied | refactor-rejected | amendment-applied | amendment-rejected | impact-assessment-applied | impact-assessment-rejected | flagged | identity-updated | imported | role-granted
   contribution_id uuid,
   identity_id     text,
   payload         jsonb not null default '{}'::jsonb,
@@ -1112,6 +1112,64 @@ begin
    where c.id = any (targets);
 end $$;
 
+-- Supersession is a fact about the graph, not a decision written on a row.
+--
+-- It used to be written: apply_refactor set status = 'superseded' on each
+-- target and nothing ever set it back. So rejecting the refactor that proposed
+-- it, or retracting the accepted link, left every target retired with nothing
+-- in the graph saying why, and a later import that re-asserted a target as
+-- active un-retired something the corpus still supersedes. Neither had a
+-- reverse gear, because apply_refactor decides a proposal once and a decided
+-- proposal is not pending any more.
+--
+-- Derived, both directions come for free: an entry is superseded exactly while
+-- some accepted `supersedes` link points at it from a source review has not
+-- thrown out. Retract the link, reject the refactor, and the target is active
+-- again on the next refresh; re-import it as active and it is superseded again
+-- on the same one.
+--
+-- An entry no `supersedes` link has ever pointed at is left alone. The import
+-- carries a status from the ledger it came from, and 89 rows arrived already
+-- superseded elsewhere with no link here to say so; that is their origin's
+-- fact to state, not this graph's to overrule. 'retracted' and 'rejected' are
+-- decisions about the entry itself and outrank supersession, so they are
+-- untouched too.
+create or replace function refresh_supersession(ids uuid[] default null) returns void language plpgsql as $$
+begin
+  with judged as (
+    select c.id,
+           exists (select 1 from edge e
+                     join contribution ec on ec.id = e.contribution_id
+                     join contribution src on src.id = e.src
+                    where e.dst = c.id and e.rel = 'supersedes'
+                      and ec.status = 'active' and ec.tier >= 2
+                      and src.status not in ('retracted', 'rejected')) as retired
+      from contribution c
+     where (ids is null or c.id = any (ids))
+       and c.status in ('active', 'superseded')
+       and exists (select 1 from edge e where e.dst = c.id and e.rel = 'supersedes')
+  ), moved as (
+    update contribution c
+       set status = case when j.retired then 'superseded' else 'active' end,
+           updated_at = now()
+      from judged j
+     where c.id = j.id
+       and c.status is distinct from (case when j.retired then 'superseded' else 'active' end)
+    returning c.id, c.status
+  )
+  -- The event ledger says what happened even when nobody called a tool named
+  -- for it: the identity is null because the graph moved, not a person.
+  insert into event (kind, contribution_id, payload)
+  select case when m.status = 'superseded' then 'superseded' else 'restored' end, m.id,
+         jsonb_build_object(
+           'derived', true,
+           'by', (select e.src from edge e
+                    join contribution ec on ec.id = e.contribution_id
+                   where e.dst = m.id and e.rel = 'supersedes' and ec.status = 'active' and ec.tier >= 2
+                   limit 1))
+    from moved m;
+end $$;
+
 -- What one write can change: the entry itself, both ends of a link, and the
 -- neighbours of an entry whose weight moved. Everything else in a 58k-row
 -- table is unaffected, so a promotion or a retraction refreshes a handful of
@@ -1137,6 +1195,9 @@ begin
   -- One ordered claim covers both refreshes; each also claims its own, which
   -- is a no-op once these locks are held.
   perform 1 from contribution where id = any (targets) order by id for no key update;
+  -- First, because it moves `status`, which everything below reads: a settled
+  -- question whose answer was just superseded is open again in the same write.
+  perform refresh_supersession(targets);
   perform refresh_state(targets);
   perform refresh_notability(targets);
   perform refresh_impact(targets);
@@ -1393,6 +1454,11 @@ update contribution c
 -- on the same terms as the pass above: refresh_board runs per write, and a
 -- write path that forgets it leaves a row certified and undated, or dated and
 -- gone. Only rows that disagree are written, and there are never many.
+-- And reconcile supersession with the links that now decide it. The first
+-- application of this function has real work: 54 entries were left retired by
+-- a refactor the corpus had since rejected or retracted, and 76 that it still
+-- supersedes had been re-activated by an import.
+select refresh_supersession(null);
 select refresh_board(null);
 
 analyze contribution;

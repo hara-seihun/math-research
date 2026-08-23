@@ -476,10 +476,30 @@ export const FrontierOut = z.strictObject({
 });
 
 
-export const RelatedOut = z.strictObject({
-  method: z.enum(["semantic", "ncd", "lexical"]),
-  related: z.array(ListRow),
-});
+export const RelatedOut = z.union([
+  z.strictObject({
+    method: z.enum(["semantic", "ncd", "lexical"]),
+    related: z.array(ListRow),
+  }),
+  z.strictObject({
+    scanned: z.number().int().describe("Entries normalized and bucketed in this page of the sweep."),
+    compared: z.number().int().describe("Pairs that actually got a compression distance, after bucketing."),
+    threshold: z.number(),
+    pairs: z.array(
+      z.strictObject({
+        similarity: z.number().describe("1 would mean the bodies are one text once names and constants are positions."),
+        a: ListRow,
+        b: ListRow,
+        existing_links: z
+          .array(z.strictObject({ rel: z.string(), edge_tier: z.number().int() }))
+          .optional()
+          .describe("Links the corpus already carries between these two, so a pair that was already consolidated reads as one."),
+      }),
+    ),
+    next_offset: z.number().int().optional().describe("Pass this as offset for the next page of the slice."),
+    note: z.string(),
+  }),
+]);
 
 export const GetOut = z.strictObject({
   id: z.string(),

@@ -1420,6 +1420,31 @@ dated "front members" "$FRD" '[m for ms in d["members_by_kind"].values() for m i
 dated "browse-mode search" "$(call search '{"limit":3}')" 'd["results"]'
 dated "search" "$(call search '{"query":"frontier test question"}')" 'd["results"]'
 dated "related" "$(call related "{\"ref\":\"$Q\",\"method\":\"lexical\",\"limit\":3}")" 'd["related"]'
+
+# Contract: related({scan:true}) finds entries that are near-duplicates of each
+# other with nobody as the query, which is where consolidation work comes from.
+# The two below are one statement in two sets of letters; the third shares the
+# vocabulary and says something else, and must not pair with them.
+DUPA='Let G be a finite group and let H be a subgroup of index n. Then the permutation action of G on the cosets of H has a kernel contained in H, and the quotient embeds in the symmetric group on n letters.'
+DUPB='Let K be a finite group and let L be a subgroup of index m. Then the permutation action of K on the cosets of L has a kernel contained in L, and the quotient embeds in the symmetric group on m letters.'
+DIFF='Let G be a finite group. Every Sylow p-subgroup of G is conjugate to every other, and their number divides the order of G and is congruent to one modulo p.'
+for pair in "coset action left:$DUPA" "coset action right:$DUPB" "sylow count:$DIFF"; do
+  call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"${pair%%:*}\",\"summary\":\"s\",\"content\":\"${pair#*:}\"}" > /dev/null
+done
+call related '{"scan":true,"kind":"theorem","threshold":0.3,"limit":10}' | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+pairs = [{p["a"]["title"], p["b"]["title"]} for p in d["pairs"]]
+assert {"coset action left", "coset action right"} in pairs, d
+assert not any("sylow count" in p for p in pairs), d
+assert d["scanned"] >= 3 and d["compared"] >= 1, d
+' || fail "a corpus scan did not pair the alpha-equivalent theorems, or paired an unrelated one"
+
+# A scan whose slice is empty is an answer, not an error: the cleanup lane
+# pages until it runs out and must be able to tell drained from broken.
+call related '{"scan":true,"kind":"theorem","offset":100000}' \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d["scanned"]==0 and d["pairs"]==[], d' \
+  || fail "a scan past the end of the slice did not come back empty"
 dated "hello most_notable" "$(call hello '{}')" 'd["most_notable"]'
 
 # Contract: hello carries the census the live page shows -- the review ladder

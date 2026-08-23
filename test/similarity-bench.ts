@@ -12,7 +12,8 @@
  *   test/similarity-corpus.sh          # dump the corpus (once)
  *   bun test/similarity-bench.ts       # measure
  *
- * `--task=ledger|renamed|lean|prefilter|speed|dupes`, `--queries=N`, `--pool=N`.
+ * `--task=ledger|renamed|lean|prefilter|speed|dupes|sweep`, `--queries=N`,
+ * `--pool=N`, and `--page=N` for the sweep.
  * A full run takes 45 seconds: the tasks share nothing, so they run as
  * separate processes, and the candidate pools are cached under `.bench/cache`
  * because indexing a quarter-million declarations does not change between
@@ -27,14 +28,14 @@
  * clusters the shipped configuration finds in the wild, which are for reading.
  */
 import zlib from "node:zlib";
-import { alphaLean, alphaProse, flatten, isGenerated, leanBlocks } from "../server/src/similarity.ts";
+import { alphaLean, alphaProse, bands, flatten, isGenerated, leanBlocks, prepare, similarity } from "../server/src/similarity.ts";
 
 const arg = (name: string, fallback: string) =>
   process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=")[1] ?? fallback;
 const DIR = arg("dir", ".bench");
 const QUERIES = Number(arg("queries", "80"));
 const POOL = Number(arg("pool", "150"));
-const TASKS = arg("task", "ledger,renamed,lean,prefilter,speed,dupes").split(",");
+const TASKS = arg("task", "ledger,renamed,lean,prefilter,speed,dupes,sweep").split(",");
 
 // --- Normalizers ------
 
@@ -576,6 +577,89 @@ async function dupesTask() {
   }
 }
 
+// --- Task: what a corpus sweep costs and what it finds ------
+// `related({scan: true})` runs this exact pipeline on a page of the corpus:
+// alpha-normalize every body, bucket by banded minhash, and pay compression
+// distance only inside a bucket. Two numbers decide whether the tool is
+// usable: what a page costs, and where the threshold has to sit for the pairs
+// above it to be worth an agent's reading time. Prose scores far lower than
+// Lean does at the same degree of sameness, because a write-up carries a
+// paragraph of its own prose around whatever it shares, so the threshold is a
+// measurement rather than a transfer from the Lean side.
+
+/** What `related({scan:true})` ships as its default floor. */
+const SHIPPED_THRESHOLD = 0.45;
+
+async function sweepTask() {
+  const page = Number(arg("page", "6000"));
+  const contribs = (await readJsonl<Contribution>("contribs.jsonl")).filter(
+    (c) => c.status === "active" && c.kind !== "edge" && c.content.trim().length > 0,
+  );
+  const slice = contribs.slice(0, page);
+  console.log(`\n## sweeping ${num(slice.length)} of ${num(contribs.length)} active entries`);
+
+  let started = Bun.nanoseconds();
+  const texts = slice.map((c) => alphaProse(c.content.slice(0, 4000)));
+  const normalizeS = (Bun.nanoseconds() - started) / 1e9;
+
+  started = Bun.nanoseconds();
+  const buckets = new Map<number, number[]>();
+  texts.forEach((text, i) => {
+    for (const band of bands(text)) (buckets.get(band) ?? buckets.set(band, []).get(band)!).push(i);
+  });
+  const bandS = (Bun.nanoseconds() - started) / 1e9;
+
+  const seen = new Set<number>();
+  const candidates: [number, number][] = [];
+  for (const bucket of buckets.values()) {
+    if (bucket.length < 2 || bucket.length > 200) continue;
+    for (let i = 0; i < bucket.length; i++) {
+      for (let j = i + 1; j < bucket.length; j++) {
+        const key = bucket[i]! * slice.length + bucket[j]!;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push([bucket[i]!, bucket[j]!]);
+      }
+    }
+  }
+
+  started = Bun.nanoseconds();
+  const scored: { a: number; b: number; s: number }[] = [];
+  const prepared = new Map<number, ReturnType<typeof prepare>>();
+  for (const [a, b] of candidates) {
+    const query = prepared.get(a) ?? prepared.set(a, prepare(texts[a]!)).get(a)!;
+    scored.push({ a, b, s: similarity(query, texts[b]!) });
+  }
+  const ncdS = (Bun.nanoseconds() - started) / 1e9;
+
+  console.log(
+    `normalize ${normalizeS.toFixed(2)}s, band ${bandS.toFixed(2)}s, ${num(candidates.length)} pairs scored in ${ncdS.toFixed(2)}s ` +
+      `(a page costs ${(normalizeS + bandS + ncdS).toFixed(2)}s of worker time)`,
+  );
+
+  const rows = [0.25, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7].map((t) => ({
+    threshold: t.toFixed(2),
+    pairs: num(scored.filter((p) => p.s >= t).length),
+    entries: num(new Set(scored.filter((p) => p.s >= t).flatMap((p) => [p.a, p.b])).size),
+  }));
+  table(rows, ["threshold", "pairs", "entries"]);
+
+  console.log("\n### the strongest pairs, for reading");
+  for (const p of scored.sort((x, y) => y.s - x.s).slice(0, 8)) {
+    console.log(`  ${p.s.toFixed(3)}`);
+    console.log(`    - ${slice[p.a]!.title.replace(/\s+/g, " ").slice(0, 110)}`);
+    console.log(`    - ${slice[p.b]!.title.replace(/\s+/g, " ").slice(0, 110)}`);
+  }
+
+  console.log("\n### pairs straddling the shipped threshold, which is where a bad threshold shows");
+  const near = scored.filter((p) => p.s >= SHIPPED_THRESHOLD - 0.08 && p.s < SHIPPED_THRESHOLD + 0.08).sort(() => Math.random() - 0.5).slice(0, 6);
+  for (const p of near) {
+    console.log(`  ${p.s.toFixed(3)}`);
+    console.log(`    - ${slice[p.a]!.title.replace(/\s+/g, " ").slice(0, 110)}`);
+    console.log(`    - ${slice[p.b]!.title.replace(/\s+/g, " ").slice(0, 110)}`);
+  }
+}
+
 // --- Task: which prefilter can even see a structural twin ------
 // A ranker only ever sees what the prefilter nominated. A lexical prefilter
 // selects on the identifiers alpha normalization is about to throw away, so
@@ -684,4 +768,5 @@ for (const task of TASKS) {
   else if (task === "lean") await leanTask();
   else if (task === "speed") await speedTask();
   else if (task === "dupes") await dupesTask();
+  else if (task === "sweep") await sweepTask();
 }

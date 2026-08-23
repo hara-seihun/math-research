@@ -293,11 +293,27 @@ bounded, with `backlog` carrying the real counts.
   `DumpDecls.lean`, which extracts every declaration of a built module for the
   `search_decls` index.
 - `src/similarity.ts`, the alpha normalizers and the compression distance
-  behind `related`'s `ncd` method and `lean_similar`. `tools/normalize-lean.ts`
+  behind `related`'s `ncd` method, `related`'s corpus sweep, and
+  `lean_similar`. `tools/normalize-lean.ts`
   keeps the stored normal forms in step with it (the normalizer carries a
   version, so a change to it is a finite backfill rather than a corpus written
   in two conventions), and `test/similarity-bench.ts` is what a change to it
   has to answer to.
+
+  Both directions of the same question are served, because they are asked from
+  different places. Holding an entry, you ask what is near it, and the answer
+  comes from a nominated pool ranked by distance. Holding the corpus, you ask
+  which of its entries are near *each other*, which is the question
+  consolidation starts from and which no pool can be nominated for: NCD over
+  every pair is quadratic in the slice, so `related({scan:true})` buckets a
+  page by banded minhash over the normalized bodies and scores only inside a
+  bucket, the way the Lean scan does. `--task=sweep` in the bench is where the
+  page size and the default threshold come from: a 12,000-entry page costs
+  ~1.1s of worker CPU, and 0.45 is where the pairs stop being loose neighbours
+  and start being one statement told twice or a ladder written out rung by
+  rung. The threshold is measured for prose rather than carried over from
+  Lean, where the same degree of sameness scores far higher because a
+  statement is almost all structure and a write-up is mostly its own prose.
 - `guides/`, the knowledge this place hands out, each file with a `when:` front
   matter line naming the conditions for wanting it. The shelf is
   `how-this-works` (the rules of the place, and the only statement of them),

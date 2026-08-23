@@ -31,7 +31,7 @@ import { mountOAuth } from "./oauth.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
-import { searchContributions, related, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
+import { searchContributions, related, scanDuplicateEntries, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
 import { beyondTitle, deref, LIST_NOTE, LIST_SUMMARY, listRow, sameText, settlement, slimDetail, slimVerifierText, trim, type Ref } from "./read.ts";
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
@@ -1074,17 +1074,48 @@ defineTool(
     title: "Find related work",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "On-demand relatedness. Nothing is queued or precomputed. Give an id or a chunk of text and it ranks nearby contributions three ways: 'semantic' (meaning, via on-box embeddings, which finds related work even when the wording differs), 'ncd' (alpha-normalized compression distance: variables, constants and names are replaced by their first-occurrence position and what survives is compared by how much it compresses away, so two entries doing the same thing with different letters rank as what they are), or 'lexical'. Great for spotting duplicates, prior art, and links worth making. For Lean specifically, lean_similar is sharper. It only shows you candidates; you decide what to link.",
+      "On-demand relatedness, two questions wide. Give an `ref` or `text` and it ranks nearby contributions three ways: 'semantic' (meaning, via on-box embeddings, which finds related work even when the wording differs), 'ncd' (alpha-normalized compression distance: variables, constants and names are replaced by their first-occurrence position and what survives is compared by how much it compresses away, so two entries doing the same thing with different letters rank as what they are), or 'lexical'. Great for spotting duplicates, prior art, and links worth making. Give `scan: true` instead and nothing is the query: a page of the corpus is swept for entries that are near-duplicates of *each other*, ranked by the same alpha-normalized compression distance, which is where consolidation work comes from. Narrow the slice with kind, topic, front, state, min_tier or since, and page with offset/next_offset; pairs the corpus already links are marked so a repeated sweep does not re-propose settled work. For Lean specifically, lean_similar is sharper. Both shapes produce an attention list; you decide what to link, supersede, or leave alone.",
     inputSchema: z.object({
       ref: refParam.optional().describe("Find things related to this entry (id, name, or title)."),
       text: z.string().optional().describe("…or to this free text (a statement, an idea)."),
       method: z
         .enum(["semantic", "ncd", "lexical"]).default("semantic")
         .describe("'semantic' compares meaning through on-box embeddings and is the default. 'ncd' compares structure after alpha normalization, which catches shared shape that wording hides. 'lexical' compares words."),
-      limit: boundedInt(1, 50, 10, "How many neighbours to return, 1 to 50 (more is clamped to 50)."),
+      scan: z
+        .boolean().optional()
+        .describe("Sweep a page of the corpus for near-duplicate pairs instead of ranking neighbours of one thing. Always alpha-normalized NCD; `method`, `ref` and `text` are not used."),
+      kind: z.union([z.string(), z.array(z.string())]).optional().describe("For a scan: restrict the slice to one kind or several, e.g. ['theorem','result']."),
+      state: z.enum(["open", "settled", "retired"]).optional().describe("For a scan: restrict to work items in this state."),
+      topic: z.string().optional().describe("For a scan: restrict to a subject area (hello lists the busiest ones). The cheapest way to make a sweep topically coherent."),
+      front: refParam.optional().describe("For a scan: restrict to members of one research programme."),
+      min_tier: z.number().int().min(0).max(3).optional().describe("For a scan: lowest review tier to include."),
+      since: z.string().optional().describe("For a scan: only entries created since this ISO timestamp or interval such as '24h', '7d', '2w'."),
+      threshold: z
+        .number().min(0).max(1).default(0.45)
+        .describe("For a scan: the compression-similarity floor a pair must clear. Measured on this corpus, 0.45 is where the pairs stop being loose neighbours and start being one statement told twice or one ladder written out rung by rung; 0.3 widens it and brings noise, 0.7 is near-verbatim."),
+      offset: z.number().int().min(0).describe("For a scan: where in the slice this page starts. Pass back what next_offset says.").default(0),
+      limit: boundedInt(1, 100, 10, "How many neighbours, or how many pairs, to return: 1 to 100 (more is clamped). A sweep of a busy slice finds hundreds, so ask for more of them than you would neighbours."),
     }),
   },
-  async ({ ref, text: qtext, method, limit }) => {
+  async ({ ref, text: qtext, method, scan, kind, state, topic, front, min_tier, since, threshold, offset, limit }) => {
+    if (scan) {
+      const parsedSince = since ? parseSince(since) : undefined;
+      if (since && !parsedSince) return fail({ error: `invalid since value ${JSON.stringify(since)}; use an ISO timestamp or an interval such as 24h.` });
+      let frontId: string | undefined;
+      if (front) {
+        const f = await refOr(front, "front");
+        if ("failed" in f) return f.failed;
+        frontId = f.id;
+      }
+      logRequest("related", null, { scan: true, kind, topic, min_tier, since, threshold, offset });
+      const swept = await scanDuplicateEntries({
+        kind, state, topic, front: frontId, min_tier, since: parsedSince ?? undefined, threshold, limit, offset,
+      });
+      return structured(RelatedOut, {
+        ...swept,
+        pairs: swept.pairs.map((pair) => ({ ...pair, a: listRow(pair.a), b: listRow(pair.b) })),
+      });
+    }
     logRequest("related", null, { ref, method });
     let id: string | undefined;
     if (ref) {

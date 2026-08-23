@@ -23,6 +23,16 @@ const SUB_RELS = ["reduces-to", "depends-on", "splits-into", "specializes", "ser
 
 const TERMINAL_KINDS = ["retracted", "rejected", "restored", "superseded", "refactor-applied", "refactor-rejected", "flagged"];
 
+// Every headline list below is a top-N over a window that routinely holds a
+// few hundred candidates, so what N is chosen *by* decides what the reader is
+// told. Ordered by recency, as these were, a list of ten described the last
+// few minutes of a two-hour absence: in one real window of 188 promotions the
+// eight most notable ranked 21st to 136th by time, so a reader asking for ten
+// got none of them and no sign any existed, and a briefing was written off
+// that packet. Notability is what the corpus already computes to mean "this
+// matters"; time is the tiebreak.
+const BY_WEIGHT = sql`order by c.notability desc, event.seq desc`;
+
 const TRAIL_FRESH = "2 hours";
 
 const DECLS_SHOWN = 12;
@@ -31,6 +41,8 @@ export const HOW_TO_READ = [
   "This is evidence for a summary, not the summary. Custody first. Every entry here, including every link, sits on one review ladder of T0 recorded (the author's claim, no review), T1 confirmed mathematics, T2 canon accepted by a trusted reviewer, and T3 published externally. lean_verified is an independent machine check and never a tier. It says the listed declarations compile, not that they mean what the prose around them claims.",
   "A question is settled when an active entry stands in an answers/proves/disproves/refutes/resolves relation to it. That is a fact about the graph: the settling entry and the settling link each still carry their own tier, and a fresh settlement is usually T0 until review reaches it. Say so, and treat a settlement as closing only the exact question the link points at, never a broader parent question or a whole programme.",
   "Settling is not the same as being first. A settling entry marked origin: 'external' records mathematics established outside this ledger, with origin_source naming what established it, so the question is genuinely closed here but the result is not ours. Never report such a closure as this ledger's own result. Name the source, and say the ledger recorded, replayed, or verified it.",
+  "Every headline list here — settled, promoted, kernel checks, terminal decisions, provenance corrections — is the most notable `limit` of its window, not the most recent, with the section's own total beside it saying how many there were. A window of three hundred promotions handed to a reader asking for ten is genuinely the ten that matter most, and the other two hundred and ninety are less notable rather than unseen. Raise `limit` to see further down; the totals are what tell you whether that is worth doing.",
+  "A move to origin 'external' in provenance is the ledger correcting its own custody: something it was carrying as its own result was established elsewhere, and origin_source names what established it. Read those before writing anything, because an entry corrected this way is the one a summary is most likely to headline as this ledger's discovery.",
   "Retractions, rejections, supersessions and rejected refactors are terminal decisions, not advances; give the recorded reason. A rejection is review's other verdict: a trusted reviewer read the entry and threw it out, which also reopens anything it was claiming to settle, so treat it as evidence the queue is working rather than as a loss. Trails are diaries: an active trail is what someone is exploring, not a reservation and not a result.",
   "questions lists the open work worth forecasting: everything touched in this window, topped up by notability. Each carries where it stands, what partial progress exists and at which tier, where each distilled route stalls, who is exploring it now, and what was already tried, so a quiet window still supports a full forecast. If you are asked for the odds, give one whole-number subjective percentage per question that it will eventually be settled here, sorted high to low, alongside the recent advance, the concrete blocker, and the custody of the evidence. Those percentages are your judgment, not ledger fields; omit anything settled in this window and never write a 100% row.",
 ].join("\n\n");
@@ -83,12 +95,15 @@ export async function newsPacket(from: number, head: number, questions: number, 
     newEntries,
     newLinks,
     settlements,
+    [settledTotal],
     [promotionCounts],
     promoted,
     [verificationCounts],
     verified,
     terminal,
     [terminalTotal],
+    origins,
+    [originTotal],
     identities,
     activity,
   ] = await Promise.all([
@@ -122,21 +137,38 @@ export async function newsPacket(from: number, head: number, questions: number, 
     where ${window} and event.kind = 'submitted' and event.payload->>'kind' = 'edge'
       and event.payload->>'rel' = any (${SETTLE_RELS})
       and q.kind in ('problem', 'conjecture') and q.status = 'active' and s.status = 'active'
-    order by event.seq desc limit ${limit * 4}`,
+    order by q.notability desc, s.notability desc, event.seq desc limit ${limit * 4}`,
+    // The list above stops at limit*4 rows, so its distinct questions are not
+    // the window's count once several links settle one question. Counted here
+    // instead, or the total would shrink exactly when it mattered most.
+    sql<{ n: number }[]>`
+    select count(distinct event.payload->>'dst')::int as n
+    from event
+    join contribution ec on ec.id = event.contribution_id and ec.status = 'active'
+    join contribution q on q.id = (event.payload->>'dst')::uuid
+    join contribution s on s.id = (event.payload->>'src')::uuid
+    where ${window} and event.kind = 'submitted' and event.payload->>'kind' = 'edge'
+      and event.payload->>'rel' = any (${SETTLE_RELS})
+      and q.kind in ('problem', 'conjecture') and q.status = 'active' and s.status = 'active'`,
     sql<{ total: number; links: number }[]>`
     select count(*)::int as total,
            count(*) filter (where c.kind = 'edge')::int as links
     from event join contribution c on c.id = event.contribution_id
     where ${window} and event.kind = 'tier-changed' and (event.payload->>'tier')::int >= 2`,
+    // One entry read to canon in two steps is one promotion to report, not
+    // two rows of the same title spending a reader's list on itself.
     sql`
-    select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source,
-           c.names, c.created_at,
-           (event.payload->>'tier')::int as promoted_to, event.payload->>'note' as note,
-           event.created_at as at
-    from event join contribution_overview c on c.id = event.contribution_id
-    where ${window} and event.kind = 'tier-changed' and (event.payload->>'tier')::int >= 2
-      and c.kind <> 'edge'
-    order by event.seq desc limit ${limit}`,
+    select * from (
+      select distinct on (c.id)
+             c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
+             c.origin, c.origin_source, c.names, c.created_at,
+             (event.payload->>'tier')::int as promoted_to, event.payload->>'note' as note,
+             event.created_at as at, event.seq
+      from event join contribution_overview c on c.id = event.contribution_id
+      where ${window} and event.kind = 'tier-changed' and (event.payload->>'tier')::int >= 2
+        and c.kind <> 'edge'
+      order by c.id, event.seq desc) c
+    order by c.notability desc, c.seq desc limit ${limit}`,
     sql<{ passed: number; failed: number }[]>`
     select count(*) filter (where payload->>'outcome' = 'passed')::int as passed,
            count(*) filter (where payload->>'outcome' <> 'passed')::int as failed
@@ -148,16 +180,31 @@ export async function newsPacket(from: number, head: number, questions: number, 
               from jsonb_array_elements(event.payload->'decls') d) as decls
     from event join contribution_overview c on c.id = event.contribution_id
     where ${window} and event.kind = 'verification' and event.payload->>'outcome' = 'passed'
-    order by event.seq desc limit ${limit}`,
+    ${BY_WEIGHT} limit ${limit}`,
     sql`
     select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source,
            c.names, c.created_at, c.status,
            event.kind as decision, event.payload->>'note' as note, event.created_at as at
     from event join contribution_overview c on c.id = event.contribution_id
     where ${window} and event.kind = any (${TERMINAL_KINDS})
-    order by event.seq desc limit ${limit}`,
+    ${BY_WEIGHT} limit ${limit}`,
     sql<{ n: number }[]>`
     select count(*)::int as n from event where ${window} and kind = any (${TERMINAL_KINDS})`,
+    // Provenance corrections. Rare, and the one movement a reader must not
+    // miss: an entry reclassified to origin 'external' is this ledger saying
+    // a result it was carrying as its own was established elsewhere. Reported
+    // as a bare count, that reads as nothing happening, and the rediscovery
+    // it records is exactly what a summary would otherwise headline as ours.
+    sql`
+    select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified,
+           c.origin, c.origin_source, c.names, c.created_at,
+           event.payload->>'origin' as set_to, event.payload->>'source' as source,
+           event.payload#>>'{before,origin}' as was, event.payload->>'note' as note, event.created_at as at
+    from event join contribution_overview c on c.id = event.contribution_id
+    where ${window} and event.kind = 'origin-set'
+    ${BY_WEIGHT} limit ${limit}`,
+    sql<{ n: number }[]>`
+    select count(*)::int as n from event where ${window} and kind = 'origin-set'`,
     sql<{ identity_id: string; display_name: string | null; n: number }[]>`
     select event.identity_id, i.display_name, count(*)::int as n
     from event left join identity i on i.id = event.identity_id
@@ -306,6 +353,7 @@ export async function newsPacket(from: number, head: number, questions: number, 
       by_identity: identities.map((r) => ({ identity_id: r.identity_id, name: r.display_name, events: r.n })),
     },
     settled: Object.values(settled).slice(0, limit),
+    settled_total: settledTotal!.n,
     promoted: promoted.map((row) => ({
       entry: listRow(row), tier: row.promoted_to, note: trim(row.note as string | null, LIST_NOTE), at: row.at,
     })),
@@ -326,6 +374,13 @@ export async function newsPacket(from: number, head: number, questions: number, 
       total: terminalTotal!.n,
       decisions: terminal.map((row) => ({
         decision: row.decision, entry: listRow(row), note: trim(row.note as string | null, LIST_NOTE), at: row.at,
+      })),
+    },
+    provenance: {
+      total: originTotal!.n,
+      corrections: origins.map((row) => ({
+        entry: listRow(row), was: row.was, origin: row.set_to, origin_source: row.source,
+        note: trim(row.note as string | null, LIST_NOTE), at: row.at,
       })),
     },
     questions: questionRows,

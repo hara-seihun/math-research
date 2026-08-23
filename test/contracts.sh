@@ -1226,6 +1226,46 @@ assert "news contract" in (promoted[os.environ["NQ"]]["note"] or ""), "news drop
 assert d["promotions"]["total"] >= len(d["promoted"])
 ' || fail "news cursor did not advance cleanly: $(echo "$NEWS2" | head -c 400)"
 
+# Contract: a headline list is the window's most notable, not its most recent.
+# Ordered by time, a list of ten described the last few minutes of a two-hour
+# absence: in one real window of 188 promotions the eight most notable ranked
+# 21st to 136th by recency, so a reader asking for ten got none of them and no
+# sign any existed. A briefing was written off that packet. The section total
+# beside each list is what says how far down the reader is seeing.
+CUR_W=$(call news '{"since":"1h"}' | field '.next.after_seq')
+BURIED=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"the weightiest thing in this window\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$BURIED\",\"dst\":\"$NQ\",\"rel\":\"answers\"}" > /dev/null
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BURIED\",\"tier\":2,\"note\":\"canon, and promoted first of several\"}" > /dev/null
+for word in alpha beta gamma delta epsilon; do
+  LATER=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"a slighter $word remark\",\"summary\":\"s\",\"content\":\"The $word remark.\"}" | field '.id')
+  call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$LATER\",\"tier\":2,\"note\":\"canon, and promoted after it\"}" > /dev/null
+done
+call news "{\"after_seq\":$CUR_W,\"limit\":2}" | BURIED="$BURIED" python3 -c '
+import os, sys, json
+d = json.load(sys.stdin)
+shown = [p["entry"]["id"] for p in d["promoted"]]
+assert os.environ["BURIED"] in shown, f"the most notable promotion was dropped for five later, slighter ones: {shown}"
+weights = [p["entry"]["notability"] for p in d["promoted"]]
+assert weights == sorted(weights, reverse=True), f"promotions are not ordered by weight: {weights}"
+assert d["promotions"]["total"] >= 6, d["promotions"]
+assert d["settled_total"] >= 1, d
+' || fail "news reported the tail of its window instead of the weight of it"
+
+# Contract: a move to origin 'external' is reported, not counted. It is the
+# ledger saying a result it carried as its own was established elsewhere, and
+# it is exactly the entry a summary would otherwise headline as a discovery.
+CUR_O=$(call news '{"since":"1h"}' | field '.next.after_seq')
+call set_origin "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BURIED\",\"origin\":\"external\",\"source\":\"Someone Else 1974, Theorem 2\",\"note\":\"prior art found after promotion\"}" > /dev/null
+call news "{\"after_seq\":$CUR_O}" | BURIED="$BURIED" python3 -c '
+import os, sys, json
+d = json.load(sys.stdin)
+row = next((c for c in d["provenance"]["corrections"] if c["entry"]["id"] == os.environ["BURIED"]), None)
+assert row, f"a provenance correction never reached the packet: {d["provenance"]}"
+assert row["origin"] == "external" and row["was"] == "ledger", row
+assert "Someone Else" in (row["origin_source"] or ""), row
+assert d["provenance"]["total"] >= 1, d["provenance"]
+' || fail "news reported a rediscovery as a bare event count"
+
 # Contract: a list row is a headline, not a document. Every one of these fields
 # was once shipped whole, and `news` answered a default call with 96 KB — 24k
 # tokens of a reader's context for one call. The bound is per row and per field,

@@ -857,10 +857,11 @@ export const NewsOut = z.strictObject({
         ),
       }),
     )
-    .describe("Questions this window settled, with what settles each and at which tier."),
+    .describe("Questions this window settled, with what settles each and at which tier. The most notable `limit` of them; `settled_total` says how many there were."),
+  settled_total: z.number().int().describe("How many questions this window settled in all."),
   promoted: z.array(
     z.strictObject({ entry: ListRow, tier, note: z.string().nullable().describe("The opening of the reviewer's verdict; get(<id>) carries the whole of it."), at: iso }),
-  ).describe("Entries a trusted reviewer moved to canon or above, with the reviewer's verdict."),
+  ).describe("Entries a trusted reviewer moved to canon or above, with the reviewer's verdict. The most notable `limit` of them, one row per entry however many steps it took; `promotions.total` says how many there were."),
   promotions: z.strictObject({
     total: z.number().int(),
     links: z.number().int().describe("How many of them were links rather than mathematics."),
@@ -887,7 +888,20 @@ export const NewsOut = z.strictObject({
         at: iso,
       }),
     ),
-  }).describe("Terminal decisions: rejections and supersessions, never advances."),
+  }).describe("Terminal decisions: rejections and supersessions, never advances. The most notable `limit` of them; `total` says how many there were."),
+  provenance: z.strictObject({
+    total: z.number().int(),
+    corrections: z.array(
+      z.strictObject({
+        entry: ListRow,
+        was: z.string().nullable().describe("What the origin had been. 'ledger' → 'external' is the correction that matters."),
+        origin: z.string().nullable().describe("What the origin was set to. 'external' means the result was established outside this ledger."),
+        origin_source: z.string().nullable().describe("What established it, when the origin is external."),
+        note: z.string().nullable(),
+        at: iso,
+      }),
+    ),
+  }).describe("Entries whose custody was corrected in this window. A move to origin 'external' is the ledger saying a result it was carrying as its own was established elsewhere, so a summary must credit the source rather than headline the entry as ours."),
   questions: z.array(
     ListRow.extend({
       in_programmes: z.array(z.strictObject({ id: z.string(), title: z.string() })),

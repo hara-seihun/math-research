@@ -1470,6 +1470,20 @@ call related '{"scan":true,"kind":"theorem","threshold":0.3,"limit":1}' \
   | python3 -c 'import sys,json; d=json.load(sys.stdin); assert len(d["pairs"])==1 and d["matched"]>=1, d' \
   || fail "a scan reported its page size as the number of pairs it found"
 
+# Contract: a templated slice says so instead of handing back a ranking of its
+# own boilerplate. Amendments and reviews are near-identical wording around a
+# little content, so nearly every pair clears any floor, and an agent that
+# believes that number reads two hundred thousand meaningless pairs.
+for i in 1 2 3 4 5 6 7 8; do
+  call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"boiler $i\",\"summary\":\"s\",\"content\":\"Standing hypotheses. Throughout this note G denotes a finite group, p a prime dividing the order of G, and all modules are finitely generated over a field of characteristic p. We follow the conventions of the previous notes in this series without further comment. In this note we record the case $i.\"}" > /dev/null
+done
+call related '{"scan":true,"kind":"theorem","threshold":0.3,"limit":3}' | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+assert d["matched"] > d["compared"] * 0.5, d
+assert "templated" in d["note"], d
+' || fail "a scan of templated entries ranked its own boilerplate without saying so"
+
 # A scan whose slice is empty is an answer, not an error: the cleanup lane
 # pages until it runs out and must be able to tell drained from broken.
 call related '{"scan":true,"kind":"theorem","offset":100000}' \

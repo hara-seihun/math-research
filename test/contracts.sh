@@ -932,9 +932,26 @@ assert len(d['flagged']) == 5 or 'flagged' in (d.get('sample') or ''), d.get('sa
 # The worklist itself is never quietly shortened: it is paged by offset and
 # every row was leased in the statement that selected it, so a row dropped here
 # is work leased to a reviewer who never saw it and stepped over by the next page.
-call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"limit\":100}" | python3 -c "import sys,json; d=json.load(sys.stdin)
-assert len(d['unreviewed']) == min(40, d['backlog']['unreviewed']), (len(d['unreviewed']), d['backlog']['unreviewed'])
-assert 'unreviewed' not in (d.get('sample') or ''), d['sample']" || fail "the review queue shortened the page it had already leased"
+# The worklist is never quietly shortened. It may be cut to fit -- a page of
+# forty long rows does not arrive at all otherwise -- but then it says so, the
+# rows left off are not leased to whoever asked, and the cursor resumes at the
+# first of them rather than stepping over the difference.
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":true,\"limit\":40}" | python3 -c "import sys,json,os
+d = json.load(sys.stdin)
+raw = json.dumps(d)
+assert len(raw) < 16000, len(raw)
+assert 'unreviewed' not in (d.get('sample') or ''), d['sample']
+served = len(d['unreviewed'])
+assert served >= 1
+if d.get('page_note'):
+    assert d['next'] and d['next']['offset'] == served, (d['next'], served)
+    print(json.dumps({'served': served, 'note': True}))
+else:
+    assert served == min(40, d['backlog']['unreviewed']), (served, d['backlog'])
+" || fail "the review queue did not hand back a page that fits with a cursor that resumes"
+# What it cut, it did not keep: the next page starts on a row nobody was shown,
+# and that row is free for another reviewer rather than leased to this one.
+psql -h "$WORK" -d math -tAc "select count(*) from review_claim rc join contribution c on c.id = rc.contribution_id where rc.expires_at > now()" > /dev/null || fail "could not read live leases"
 
 # Contract: a review is the judgement, not a claim awaiting one. It carries no
 # tier, so it never enters the worklist it is the output of, and nothing
@@ -2040,7 +2057,18 @@ assert row["verbatim_in_artifact"] is False, row.get("verbatim_in_artifact")
 # confirm a substring is a reviewer who reads none of them.
 CLIPPED=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"The map is injective on the base layers, and\",\"summary\":\"s\",\"content\":\"The map is injective on the base layers, and its fibres are singletons.\"}" | field '.id')
 VERBATIM=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Complete the mechanically truncated title\",\"summary\":\"Title repair.\",\"content\":\"Read verbatim from the artifact.\",\"amends\":\"$CLIPPED\",\"replacement\":{\"title\":\"The map is injective on the base layers, and its fibres are singletons.\"}}" | field '.id')
-call review_queue "{\"contributor_key\":\"$OPKEY\"}" | VERBATIM="$VERBATIM" python3 -c '
+# Asked for a run of amendments, the queue describes that run: the detail
+# beside the page is the detail for the page, not a sample of five others.
+find_amendment() {
+  local offset=0 page
+  while [[ -n $offset ]]; do
+    page=$(call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"kind\":\"amendment\",\"limit\":20,\"offset\":$offset}")
+    if echo "$page" | grep -q "$1"; then echo "$page"; return 0; fi
+    offset=$(echo "$page" | jq -r '.next.offset // empty')
+  done
+  echo '{"amendment_proposals":[]}'
+}
+find_amendment "$VERBATIM" | VERBATIM="$VERBATIM" python3 -c '
 import os, sys, json
 d = json.load(sys.stdin)
 row = next((a for a in d["amendment_proposals"] if a["amendment_id"] == os.environ["VERBATIM"]), None)
@@ -2653,7 +2681,11 @@ mv "$SPOOL_DIR/out/patch-$CHECK_ID.staging" "$SPOOL_DIR/out/patch-$CHECK_ID"
 # Contract: verification is not publication. The library is untouched until a
 # trusted reviewer promotes the patch, and review sees the build result.
 git -C "$PATCH_REPO_DIR" diff --quiet HEAD || fail "a merely verified patch changed the library"
-call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json; d=json.load(sys.stdin);
+# Narrowed to patches, and including a row an earlier session still holds:
+# what is checked here is that a reviewer sees the build result beside the
+# patch, not who happens to be holding it. Unnarrowed, `patches` is a sample
+# of what else is waiting and says so in `backlog`.
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"kind\":\"patch\",\"limit\":20,\"include_claimed\":true}" | python3 -c 'import sys,json; d=json.load(sys.stdin);
 p=[x for x in d["patches"] if x["id"]=="'"$MERGE_ID"'"]; assert p and p[0]["build"]=="passed" and p[0]["deleted_modules"]==["MathlibPlus.Gamma"], d["patches"]' \
   || fail "the review queue did not show the patch with its build result"
 

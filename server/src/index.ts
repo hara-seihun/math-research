@@ -2848,6 +2848,12 @@ defineTool(
     // at the same instant and the conflicting insert refuses the row that is
     // already held, so the loser never sees it rather than seeing it twice.
     const taking = claim && who.identityId !== null;
+    // The same list row every other read door returns, plus what only a
+    // reviewer needs. Named here because the page is weighed before it is
+    // sent, and a row weighed in one shape and sent in another is a page that
+    // does not fit after all.
+    const queueRow = (r: { id: string; reviews: number; claimed_until: Date | null }) =>
+      ({ ...listRow(r), reviews: r.reviews ?? 0, claimed_until: r.claimed_until });
     const rows = await sql<{
       id: string; kind: string; title: string; summary: string; tier: number; notability: number;
       created_at: Date; lean_verified: boolean; reviews: number; claimed_until: Date | null;
@@ -2883,7 +2889,25 @@ defineTool(
       order by cand.reviewed asc, c.notability desc, c.created_at asc`;
     // A row the insert refused was taken by someone else between the scan and
     // the write. It is theirs; do not hand it out as well.
-    const unreviewed = taking ? rows.filter((r) => r.claimed_until !== null) : rows;
+    const won = taking ? rows.filter((r) => r.claimed_until !== null) : rows;
+    // A page of forty edge rows is 10 KB and forty long-titled entries more
+    // than that, and the answer carrying them has to arrive whole or it does
+    // not arrive at all -- the reviewer asking for the largest page the door
+    // advertises got a truncation notice and no work. So the page is fitted
+    // here, where it is still honest to do it: rows that will not fit are
+    // handed back rather than left leased to a reviewer who never saw them,
+    // and `next` counts what was actually served, so the following page starts
+    // exactly where this one stopped instead of stepping over the difference.
+    const WORKLIST_BUDGET = RESPONSE_TARGET - 5_000;
+    const unreviewed = [...won];
+    const weight = () => JSON.stringify(unreviewed.map(queueRow)).length;
+    const dropped: string[] = [];
+    while (unreviewed.length > 1 && weight() > WORKLIST_BUDGET) dropped.push(unreviewed.pop()!.id);
+    if (dropped.length && taking) {
+      await sql.begin(async (tx) => {
+        await releaseClaims(tx, dropped);
+      });
+    }
     // Everything below the worklist is context, not the page that was asked
     // for, so it gets its own small bound rather than the caller's. Sharing
     // one `limit` across six sections meant asking for a hundred entries also
@@ -2896,6 +2920,15 @@ defineTool(
     // "there is also patch work waiting". Five of each is enough to see what
     // is there, and `backlog` counts the rest.
     const side = Math.min(limit, 5);
+    // Except when the caller narrowed the page to that very kind. `kind` is
+    // how a reviewer takes a run of one sort of work, and a page of amendments
+    // beside an unrelated sample of five other amendments is the detail for
+    // the wrong rows: what each one changes is the whole reason the section
+    // exists. Asked for a run, the section describes the run.
+    const pageIds = unreviewed.map((r) => r.id);
+    const focus = (sectionKind: string) => (kind === sectionKind ? pageIds : null);
+    const focusedAmendments = focus("amendment");
+    const focusedPatches = focus("patch");
     // A queue row names a patch; it is not the patch. Eight module paths were
     // a third of its weight.
     const sideModules = (modules: string[] | null): string[] | null =>
@@ -2937,8 +2970,9 @@ defineTool(
       join contribution tgt on tgt.id = e.dst
       join artifact ta on ta.hash = tgt.artifact_hash
       where ${amendmentWhere}
+        and (${focusedAmendments}::uuid[] is null or ac.id = any (${focusedAmendments}::uuid[]))
       order by tgt.notability desc, e.created_at asc
-      limit ${side}`).map((a) => {
+      limit ${focusedAmendments ? focusedAmendments.length : side}`).map((a) => {
       const proposed = (a.proposed ?? {}) as { title?: string; summary?: string; names?: string[] };
       const changes: Record<string, unknown> = {};
       if (proposed.title !== undefined) changes.title = changeView(a.target_title, proposed.title);
@@ -3036,8 +3070,9 @@ defineTool(
                          order by id desc limit 1) v on true
       left join patch_publication p on p.contribution_id = c.id
       where ${patchWhere}
+        and (${focusedPatches}::uuid[] is null or c.id = any (${focusedPatches}::uuid[]))
       order by c.tier desc, c.created_at asc
-      limit ${side}`;
+      limit ${focusedPatches ? focusedPatches.length : side}`;
     const [counts] = await sql<{
       unreviewed: number; by_kind: Record<string, number>; awaiting_decision: number; claimed_by_others: number;
       flagged: number; refactor_proposals: number; amendment_proposals: number; impact_assessment_proposals: number;
@@ -3076,15 +3111,17 @@ defineTool(
                 where ${impactWhere})::int as impact_assessment_proposals,
              (select count(*) from contribution c where ${askingWhere})::int as asking_closures,
              (select count(*) from contribution c where ${patchWhere})::int as patches`;
-    // What this reviewer holds that is *not* on the page in front of them. A
-    // claiming call leases every row it hands out, so listing those again
-    // under `your_claims` printed the whole worklist twice -- 2.4 KB of exact
-    // duplication in an answer that has to fit in 13 KB. What a reviewer
-    // cannot see from the page is what they took on an earlier one and have
-    // not decided; that is the list worth carrying.
+    // What this reviewer holds that is *not* on the page in front of them, and
+    // not many of those either. A claiming call leases every row it hands out,
+    // so listing them again under `your_claims` printed the whole worklist
+    // twice; and a session that has been working a while holds dozens, which
+    // at 7 KB was most of the answer -- spent on rows the reviewer took
+    // precisely because they had already read them. What is worth carrying is
+    // the few they have left undecided, and the count of the rest.
     const onThisPage = new Set(unreviewed.map((r) => r.id));
     const allHeld = await claimsHeldBy(mine);
-    const held = allHeld.filter((h) => !onThisPage.has(h.id));
+    const earlier = allHeld.filter((h) => !onThisPage.has(h.id));
+    const held = earlier.slice(0, 10);
     const tip = !include_claimed && unreviewed.length < limit && (counts?.claimed_by_others ?? 0) > 0
       ? `${counts!.claimed_by_others} more matching entries are held by other reviewers right now and were left off your page. They come back if their reviewer does not decide them.`
       : undefined;
@@ -3092,11 +3129,24 @@ defineTool(
       // The same list row every other read door returns, plus what only a
       // reviewer needs. A bespoke shape here is what let 2000-character
       // summaries into a page of twenty.
-      unreviewed: unreviewed.map((r) => ({ ...listRow(r), reviews: r.reviews ?? 0, claimed_until: r.claimed_until })),
-      next: unreviewed.length === limit ? { offset: offset + limit } : null,
+      unreviewed: unreviewed.map(queueRow),
+      // What was served, not what was asked for: a page cut to fit still has
+      // to hand back a cursor that resumes at the first row nobody was shown.
+      // Including on the last page -- a short page that was also cut still has
+      // rows behind it, and ending the walk there is how a reviewer's paging
+      // loop would step over them and report the queue empty.
+      next: won.length === limit || dropped.length ? { offset: offset + unreviewed.length } : null,
+      ...(dropped.length
+        ? { page_note: `${dropped.length} more matching entries were left off this page to keep the answer inside what a client will hold, and are not leased to you. next.offset resumes at the first of them.` }
+        : {}),
       your_claims: held,
       ...(allHeld.length > held.length
-        ? { your_claims_note: `${allHeld.length - held.length} more leases you hold are the rows on this page; only what you took earlier and have not decided is listed here.` }
+        ? {
+            your_claims_note:
+              `you hold ${allHeld.length} leases: ${allHeld.length - earlier.length} are the rows on this page` +
+              (earlier.length > held.length ? `, and ${earlier.length} were taken earlier, of which ${held.length} are listed here` : "") +
+              ". q_review_claims lists every one of them; review_claim({action:'release'}) hands back what you are not going to decide.",
+          }
         : {}),
       ...(tip ? { tip } : {}),
       backlog: counts ?? {
@@ -3135,9 +3185,9 @@ defineTool(
     // was leased in the statement that selected it, so a row dropped here
     // would be work leased to a reviewer who was never shown it and stepped
     // over by the next page.
-    const dropped = fitToBudget(packet, { keep: ["unreviewed", "your_claims"] });
-    return structured(ReviewQueueOut, dropped
-      ? { ...packet, sample: `${dropped}. backlog counts what is really waiting; ask again with a smaller limit, or with kind to take a run of one sort.` }
+    const shortened = fitToBudget(packet, { keep: ["unreviewed"] });
+    return structured(ReviewQueueOut, shortened
+      ? { ...packet, sample: `${shortened}. backlog counts what is really waiting; ask again with kind to take a run of one sort.` }
       : packet);
   },
 );

@@ -1018,6 +1018,9 @@ export const NewsOut = z.strictObject({
 
 
 export const ReviewQueueOut = z.strictObject({
+  page_note: z
+    .string().optional()
+    .describe("Present when the page was cut to fit what a client will hold. The rows left off are not leased to you and `next.offset` resumes at the first of them."),
   your_claims_note: z
     .string().optional()
     .describe("Present when leases you hold were left off `your_claims` because they are the rows on this page already."),

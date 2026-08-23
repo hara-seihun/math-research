@@ -444,14 +444,39 @@ function acceptRefAliases<S extends z.ZodType>(schema: S): z.ZodType {
   }, schema);
 }
 
+/** The advertised output schema, opened up.
+ *
+ *  A client caches a tool's output schema when it lists, and this server is
+ *  stateless HTTP behind several instances, so there is no channel on which to
+ *  tell a session already in flight that the shape moved. A closed schema
+ *  therefore makes every added field a break: sessions that listed before the
+ *  deploy reject the answer to a call that in fact succeeded, and retry it. So
+ *  what goes on the wire says these fields are here, not that nothing else can
+ *  be. The zod objects stay strict, which is where the contract suite checks
+ *  that a response is exactly what it claims to be. Fields may be added
+ *  freely; removing or renaming one still needs the sessions to turn over. */
+const openOutput = (schema: z.ZodType): z.ZodType =>
+  schema instanceof z.ZodObject ? z.object(schema.shape).catchall(z.unknown()) : schema;
+
 function defineTool<S extends z.ZodType>(
   name: string,
   config: ToolConfig<S>,
   handler: (args: z.infer<S>, extra: never) => Promise<unknown>,
 ): void {
   const inputSchema = acceptRefAliases(config.inputSchema) as S;
-  TOOLS.push({ name, config: { ...config, inputSchema }, handler: guard(name, handler as ToolHandler) });
+  if (config.outputSchema) declared.push(config.outputSchema);
+  const outputSchema = config.outputSchema ? openOutput(config.outputSchema) : undefined;
+  TOOLS.push({
+    name,
+    config: { ...config, inputSchema, ...(outputSchema ? { outputSchema } : {}) },
+    handler: guard(name, handler as ToolHandler),
+  });
 }
+
+/** The strict schema each tool was written against, which is what a handler
+ *  hands to `structured` and what the contract suite validates. The opened
+ *  copy above is only what goes on the wire. */
+const declared: z.ZodType[] = [];
 
 function buildServer(): McpServer {
   const server = new McpServer(
@@ -3322,7 +3347,7 @@ defineTool(
 // Only the schemas that reach a client through tools/list are owed a
 // structuredContent twin on the wire. Registered from the tools themselves,
 // after every defineTool above has run.
-markAdvertised(TOOLS.map((t) => t.config.outputSchema).filter(Boolean) as never[]);
+markAdvertised(declared as never[]);
 
 
 // --- Resources and prompts ------

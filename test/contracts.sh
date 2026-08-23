@@ -1602,6 +1602,22 @@ for tool in $REGISTERED; do
   echo "$ANSWER" | grep -q '"error"' && fail "$tool answered with an error: $(echo "$ANSWER" | head -c 300)"
 done
 
+# Contract: an advertised output schema is open. A client caches these when it
+# lists, and this server is stateless HTTP behind several instances, so there
+# is no way to tell a session already in flight that a shape moved. Closed
+# schemas made every added field a break: after one deploy, sessions that had
+# listed beforehand rejected the answer to `set_tier` calls that had in fact
+# succeeded, and retried them. Growing the answer must stay free.
+curl -sf --max-time 10 -X POST "$MCP" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | sed -n 's/^data: //p' | python3 -c 'import sys,json
+tools = json.loads(sys.stdin.read())["result"]["tools"]
+closed = [t["name"] for t in tools if t.get("outputSchema", {}).get("additionalProperties") is False]
+assert not closed, f"closed output schemas: {closed}"
+assert any("outputSchema" in t for t in tools), "no tool advertises an output schema at all"' \
+  || fail "a tool advertises a closed output schema, so adding a field breaks every live session"
+
 # ——— A stranger with only the URL can find everything ————————————————————
 # The whole consumer story is: someone is handed https://…/mcp and nothing
 # else. So the three MCP surfaces are contracts rather than decoration. A client that

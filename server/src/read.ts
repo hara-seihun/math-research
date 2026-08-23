@@ -114,6 +114,12 @@ export const LIST_SUMMARY = 160;
  *  a list it is there to tell a reader which row to open, so it is a headline
  *  too. Ten untrimmed promotion notes were 31 KB of a 96 KB `news` packet. */
 export const LIST_NOTE = 240;
+/** An edge row names two entries, and a statement entry's title can be a
+ *  displayed formula. Left whole, a page of twenty-five links ran past the
+ *  output limit of the clients reading it, which truncated the payload
+ *  mid-row and handed a reviewer a uuid one character short. An endpoint is
+ *  identified here and read in full by id. */
+export const LINK_ENDPOINT_TITLE = 100;
 
 export const trim = (text: string | null, limit = LIST_SUMMARY): string | null => {
   if (!text) return text;
@@ -152,6 +158,17 @@ export function beyondTitle(title: string, summary: string | null, limit = LIST_
   return rest ? trim(rest, limit) : null;
 }
 
+type LinkEndpoint = { id: string; kind: string; title: string; tier: number; status: string };
+
+/** An edge's assertion, with each endpoint named rather than quoted whole. */
+export const linkRow = (link: Record<string, unknown>) => {
+  const endpoint = (side: unknown) => {
+    const e = side as LinkEndpoint;
+    return { ...e, title: trim(e.title, LINK_ENDPOINT_TITLE) ?? e.title };
+  };
+  return { ...link, src: endpoint(link.src), dst: endpoint(link.dst) };
+};
+
 /** One list row: the identifying facts, nothing that needs paging. */
 export function listRow(r: Record<string, unknown>) {
   const summary = beyondTitle(r.title as string, r.summary as string | null);
@@ -177,9 +194,10 @@ export function listRow(r: Record<string, unknown>) {
   if (r.status && r.status !== "active") out.status = r.status;
   if (r.created_at) out.created_at = r.created_at;
   if (r.board_at) out.board_at = r.board_at;
-  for (const extra of ["rel", "edge_tier", "joined_at", "matched", "similarity", "answers", "settled_by", "existing_links", "link"]) {
+  for (const extra of ["rel", "edge_tier", "joined_at", "matched", "similarity", "answers", "settled_by", "existing_links"]) {
     if (r[extra] !== undefined && r[extra] !== null) out[extra] = r[extra];
   }
+  if (r.link) out.link = linkRow(r.link as Record<string, unknown>);
   return out;
 }
 

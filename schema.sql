@@ -1158,11 +1158,16 @@ begin
     returning c.id, c.status
   )
   -- The event ledger says what happened even when nobody called a tool named
-  -- for it: the identity is null because the graph moved, not a person.
+  -- for it: the identity is null because the graph moved, not a person. It
+  -- carries a note like every other decision, because a reader meeting this in
+  -- `news` is owed a reason and not a null.
   insert into event (kind, contribution_id, payload)
   select case when m.status = 'superseded' then 'superseded' else 'restored' end, m.id,
          jsonb_build_object(
            'derived', true,
+           'note', case when m.status = 'superseded'
+                   then 'An accepted supersedes link points here, so this entry is retired for as long as that link stands.'
+                   else 'Nothing the corpus accepts supersedes this entry any more, so it is active again.' end,
            'by', (select e.src from edge e
                     join contribution ec on ec.id = e.contribution_id
                    where e.dst = m.id and e.rel = 'supersedes' and ec.status = 'active' and ec.tier >= 2

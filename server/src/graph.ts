@@ -1,7 +1,7 @@
 import type { TransactionSql } from "postgres";
 import { onBoard, sql, windowColumn, withoutExternalResults } from "./db.ts";
 import { sha256hex } from "./identity.ts";
-import { rankBySimilarity } from "./ncd.ts";
+import { clusterBySimilarity, rankBySimilarity } from "./ncd.ts";
 
 /** The handle a sql.begin callback receives. Spelled out, because
  *  sql.begin is overloaded and inferring it lands on `never`. */
@@ -322,6 +322,8 @@ export type RelatedArgs = { id?: string; text?: string; method: "ncd" | "lexical
 
 export async function related(args: RelatedArgs) {
   let queryText: string;
+  /** The body alone, which is what compression distance compares. */
+  let ncdQuery: string;
   /** The title line, for the lexical probe. */
   let aboutText: string;
   let selfId: string | null = null;
@@ -334,9 +336,11 @@ export async function related(args: RelatedArgs) {
     selfId = args.id;
     embedded = row.embedded;
     queryText = `${row.title}\n${row.summary}\n${row.content}`;
+    ncdQuery = row.content;
     aboutText = `${row.title}\n${row.summary}`;
   } else if (args.text) {
     queryText = args.text;
+    ncdQuery = args.text;
     aboutText = args.text;
   } else {
     return { error: "pass an id or some text to find things related to." };
@@ -422,7 +426,12 @@ export async function related(args: RelatedArgs) {
     const byId = new Map(
       (await rankBySimilarity({
         mode: "prose",
-        query: queryText,
+        // Compression distance compares like with like. Candidates are scored
+        // on their body alone, so an entry used as the query is scored on its
+        // body alone too: charging C(x) for a title and summary no candidate
+        // paid for made the distance asymmetric and pushed real duplicates
+        // down the ranking.
+        query: ncdQuery,
         candidates: candidates.map((c) => ({ id: c.id, text: c.content ?? "" })),
       })).map((s) => [s.id, s.similarity]),
     );
@@ -445,4 +454,115 @@ export async function related(args: RelatedArgs) {
     return { method: args.method, related: top.map((t) => ({ ...t, existing_links: byOther.get(t.id) ?? [] })) };
   }
   return { method: args.method, related: top };
+}
+
+// --- Sweeping the corpus for repeated work ------
+// `related` answers "what is near this one?", which is the question you ask
+// holding an entry. Consolidation asks the other one: which entries in this
+// slice of the corpus are saying the same thing as each other, nobody in
+// particular being the query. Pairwise that is quadratic in the slice, so the
+// worker buckets by shingle sketch over the normalized form first and pays
+// compression distance only inside a bucket, exactly as the Lean scan does.
+//
+// The slice is bounded and paged rather than corpus-wide in one call, because
+// the whole active corpus is ~58k bodies and normalizing them is seconds of
+// CPU. Pages run in creation order: duplicates here overwhelmingly come from
+// one campaign filing the same result twice within an hour, so time is where
+// the locality is, and a caller who wants topical locality passes `topic`.
+
+export type DuplicateScanArgs = {
+  kind?: string | string[];
+  state?: string;
+  topic?: string;
+  front?: string;
+  min_tier?: number;
+  since?: Date;
+  threshold: number;
+  limit: number;
+  offset: number;
+};
+
+/** How many entries one page of the sweep normalizes and buckets. Measured by
+ *  `test/similarity-bench.ts --task=sweep`: 1.1s of worker time and ~10 MB of
+ *  bodies at this corpus's lengths, so six pages cover everything active. */
+const SCAN_PAGE = 12000;
+
+type ScanRow = Record<string, unknown> & { id: string; content: string | null };
+
+export async function scanDuplicateEntries(args: DuplicateScanArgs) {
+  const kinds = args.kind === undefined ? null : Array.isArray(args.kind) ? args.kind : [args.kind];
+  const rows = await sql<ScanRow[]>`
+    select p.id, p.kind, p.title, p.summary, p.tier, p.state, p.tags, p.names, p.created_at,
+           p.notability, p.lean_verified, p.origin, p.origin_source, left(a.content, 4000) as content
+    from (
+      select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.tags, c.names, c.created_at,
+             c.notability, c.lean_verified, c.origin, c.origin_source, c.artifact_hash
+      from contribution c
+      where c.kind <> 'edge' and c.status = 'active'
+        and (${kinds}::text[] is null or c.kind = any(${kinds}))
+        and (${args.state ?? null}::text is null or c.state = ${args.state ?? null})
+        and (${args.topic ?? null}::text is null or c.tags @> array[${args.topic ?? null}]::text[])
+        and (${args.min_tier ?? null}::int is null or c.tier >= ${args.min_tier ?? 0})
+        and (${args.since ?? null}::timestamptz is null or c.created_at >= ${args.since ?? null})
+        and (${args.front ?? null}::uuid is null or exists (
+              select 1 from edge e join contribution ec on ec.id = e.contribution_id
+              where e.src = c.id and e.dst = ${args.front ?? null}::uuid
+                and e.rel = 'in-front' and ec.status = 'active'))
+      order by c.created_at, c.id
+      limit ${SCAN_PAGE} offset ${args.offset}
+    ) p join artifact a on a.hash = p.artifact_hash`;
+
+  if (rows.length === 0) {
+    return {
+      scanned: 0,
+      compared: 0,
+      threshold: args.threshold,
+      pairs: [],
+      note: "nothing active matched those filters, or the offset is past the end of the slice.",
+    };
+  }
+
+  const index = new Map(rows.map((row, i) => [String(i), row]));
+  const { pairs, compared } = await clusterBySimilarity({
+    mode: "prose",
+    units: rows.map((row, i) => ({ id: String(i), text: row.content ?? "" })),
+    threshold: args.threshold,
+    limit: args.limit,
+  });
+
+  // A pair the corpus already knows about is not a finding. Whatever links
+  // exist between the two are reported on the pair, so a sweep run again next
+  // week skips what the last one already consolidated instead of proposing it
+  // a second time.
+  const ids = [...new Set(pairs.flatMap((p) => [index.get(p.a)!.id, index.get(p.b)!.id]))];
+  const linked = ids.length
+    ? await sql<{ src: string; dst: string; rel: string; edge_tier: number }[]>`
+        select e.src, e.dst, e.rel, ec.tier as edge_tier
+        from edge e join contribution ec on ec.id = e.contribution_id
+        where ec.status = 'active' and e.src = any(${ids}::uuid[]) and e.dst = any(${ids}::uuid[])`
+    : [];
+  const between = new Map<string, { rel: string; edge_tier: number }[]>();
+  for (const e of linked) {
+    for (const key of [`${e.src}|${e.dst}`, `${e.dst}|${e.src}`]) {
+      (between.get(key) ?? between.set(key, []).get(key)!).push({ rel: e.rel, edge_tier: e.edge_tier });
+    }
+  }
+
+  const scored = pairs.map((pair) => {
+    const a = index.get(pair.a)!;
+    const b = index.get(pair.b)!;
+    const existing = between.get(`${a.id}|${b.id}`) ?? [];
+    return { similarity: pair.similarity, a, b, ...(existing.length ? { existing_links: existing } : {}) };
+  });
+
+  return {
+    scanned: rows.length,
+    compared,
+    threshold: args.threshold,
+    pairs: scored,
+    ...(rows.length === SCAN_PAGE ? { next_offset: args.offset + SCAN_PAGE } : {}),
+    note: scored.length
+      ? "These pairs share structure after alpha normalization, which is an attention list and not a proof that they say the same thing. Read both before proposing anything. Where they are two tellings of one result, the repair is one entry superseding both; where they are rungs of one ladder, it is the general statement they are all instances of."
+      : "Nothing in this page scored above the threshold. Lower it to see weaker echoes, or page on with next_offset.",
+  };
 }

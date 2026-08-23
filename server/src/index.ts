@@ -140,13 +140,14 @@ const refParam = z
 
 /** How much of a body `get` hands back before it starts paging.
  *
- *  Every artifact but a few dozen is under this, so almost nothing pages and
- *  the ones that do were the ones costing a reader their whole answer: a
- *  66 KB body made an 86 KB response, past what several clients keep, and the
- *  reviewer got a truncation notice pointing at a temp file instead of the
- *  entry. A body that long is read in pages or in SQL, not carried whole into
- *  a context by accident. */
-const CONTENT_PAGE = 24_000;
+ *  Set against what clients actually keep, not against what the corpus holds:
+ *  a common default drops any single tool result over 16 KB and hands the
+ *  reader a notice pointing at a temp file instead of the entry, which is what
+ *  a 66 KB body did. At 8 KB, 99.7% of the bodies here still arrive whole and
+ *  the response around them stays inside that budget; the few hundred that
+ *  page were the ones costing a reader their whole answer. `content_range`
+ *  says so out loud, and q_artifacts.content is there for reading one in full. */
+const CONTENT_PAGE = 8_000;
 const MAX_CONTENT = 200_000;
 
 /** Work state, for every kind that carries one. Questions derive open /

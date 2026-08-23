@@ -2346,7 +2346,12 @@ defineTool(
       include_claimed: z
         .boolean().default(false)
         .describe("Also show entries another reviewer holds right now. For seeing what the fleet is working on; taking one is still refused."),
-      ...pageParams(100, 20),
+      // A queue row names two entries where a search row names one, so the
+      // page that fits is smaller here than elsewhere: forty rows is about
+      // thirty kilobytes, and clients truncate a tool result well before a
+      // hundred of them arrive. `next` pages, and a lease you cannot work
+      // through in the time you hold it helps nobody anyway.
+      ...pageParams(40, 20),
     }),
   },
   async ({ contributor_key, kind, max_tier, claim, claim_minutes, include_claimed, limit, offset }) => {
@@ -2489,7 +2494,7 @@ defineTool(
         select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
         from verification v join contribution c on c.id = v.contribution_id
         where v.outcome in ('failed', 'inconclusive')
-        order by v.updated_at desc limit 20`
+        order by v.updated_at desc limit ${side}`
     ).map((f) => ({ ...f, reason: trim(f.reason, LIST_NOTE) }));
     // Public contradiction as a review signal. Anyone at all can say "this is
     // wrong" by linking a refutes/disputes edge, and it lands in front of a

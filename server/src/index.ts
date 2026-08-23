@@ -3645,10 +3645,15 @@ const guideUri = (name: string) => `${PUBLIC_URL}/guides/${name}.md`;
 // localhost-only origins even when allowedHosts includes the public hostname;
 // list both explicitly. (The runtime supports allowedOrigins; its published
 // option type in this release has not caught up yet.)
+//
+// `mathvm` and its bridge address are how the agent fleet on the host machine
+// reaches this server: the guest is one hop away on a private NAT bridge, and
+// sending every call out to Cloudflare and back cost 150 ms instead of 12 and
+// made a tunnel reconnect look to a working agent like the ledger going down.
 const app = createMcpExpressApp({
   host: "127.0.0.1",
-  allowedHosts: ["lemma.ing", "www.lemma.ing", "math.seihun.com", "localhost", "127.0.0.1"],
-  allowedOrigins: ["lemma.ing", "www.lemma.ing", "math.seihun.com", "localhost", "127.0.0.1"],
+  allowedHosts: ["lemma.ing", "www.lemma.ing", "math.seihun.com", "localhost", "127.0.0.1", "mathvm", "192.168.83.10"],
+  allowedOrigins: ["lemma.ing", "www.lemma.ing", "math.seihun.com", "localhost", "127.0.0.1", "mathvm", "192.168.83.10"],
 } as Parameters<typeof createMcpExpressApp>[0] & { allowedOrigins: string[] });
 
 // math.seihun.com stays in the lists above because clients are pinned to it,

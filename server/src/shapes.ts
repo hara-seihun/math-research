@@ -882,9 +882,14 @@ export const NewsOut = z.strictObject({
     total: z.number().int(),
     decisions: z.array(
       z.strictObject({
-        decision: z.string().describe("retracted | superseded | refactor-applied | refactor-rejected | flagged"),
+        decision: z.string().describe("retracted | rejected | restored | superseded | refactor-applied | refactor-rejected | flagged"),
         entry: ListRow,
         note: z.string().nullable(),
+        by: z
+          .strictObject({ id: z.string(), title: z.string() })
+          .optional()
+          .describe("What replaced it. For a supersession this is the reason, and most of them carry no note."),
+        derived: z.literal(true).optional().describe("Nobody decided this one directly: a refactor moved the corpus and this entry followed."),
         at: iso,
       }),
     ),

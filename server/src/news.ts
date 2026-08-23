@@ -184,8 +184,16 @@ export async function newsPacket(from: number, head: number, questions: number, 
     sql`
     select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source,
            c.names, c.created_at, c.status,
-           event.kind as decision, event.payload->>'note' as note, event.created_at as at
+           event.kind as decision, event.payload->>'note' as note, event.created_at as at,
+           -- Most supersessions and restorations are derived: a refactor moved
+           -- the corpus and the entry followed, so there is no note to give
+           -- and the reason is the entry that replaced this one. Reading the
+           -- note alone, as this did, they printed as a title and an empty
+           -- dash: a terminal decision reported with no reason at all.
+           b.id as by_id, b.title as by_title,
+           (event.payload->>'derived' = 'true') as derived
     from event join contribution_overview c on c.id = event.contribution_id
+    left join contribution b on b.id = (event.payload->>'by')::uuid
     where ${window} and event.kind = any (${TERMINAL_KINDS})
     ${BY_WEIGHT} limit ${limit}`,
     sql<{ n: number }[]>`
@@ -373,7 +381,10 @@ export async function newsPacket(from: number, head: number, questions: number, 
     terminal: {
       total: terminalTotal!.n,
       decisions: terminal.map((row) => ({
-        decision: row.decision, entry: listRow(row), note: trim(row.note as string | null, LIST_NOTE), at: row.at,
+        decision: row.decision, entry: listRow(row), note: trim(row.note as string | null, LIST_NOTE),
+        ...(row.by_id ? { by: { id: row.by_id, title: row.by_title } } : {}),
+        ...(row.derived ? { derived: true } : {}),
+        at: row.at,
       })),
     },
     provenance: {

@@ -2848,12 +2848,23 @@ defineTool(
     // at the same instant and the conflicting insert refuses the row that is
     // already held, so the loser never sees it rather than seeing it twice.
     const taking = claim && who.identityId !== null;
+    /** Whether every row on this page is spelled out in a section beside it. */
+    const described = kind === "amendment" || kind === "patch";
     // The same list row every other read door returns, plus what only a
     // reviewer needs. Named here because the page is weighed before it is
     // sent, and a row weighed in one shape and sent in another is a page that
     // does not fit after all.
-    const queueRow = (r: { id: string; reviews: number; claimed_until: Date | null }) =>
-      ({ ...listRow(r), reviews: r.reviews ?? 0, claimed_until: r.claimed_until });
+    const queueRow = (r: { id: string; reviews: number; claimed_until: Date | null }) => {
+      const row = { ...listRow(r), reviews: r.reviews ?? 0, claimed_until: r.claimed_until };
+      // On a narrowed page of proposals the row beneath and the detail beside
+      // it are the same entry, and the proposals of one repair campaign share
+      // a title and a summary word for word: 731 of them read "Complete the
+      // mechanically truncated title". Printing that boilerplate twice a row
+      // cost a fifth of the answer and told the reviewer nothing the detail
+      // does not say better.
+      if (described) delete (row as { summary?: unknown }).summary;
+      return row;
+    };
     const rows = await sql<{
       id: string; kind: string; title: string; summary: string; tier: number; notability: number;
       created_at: Date; lean_verified: boolean; reviews: number; claimed_until: Date | null;

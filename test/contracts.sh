@@ -2689,6 +2689,10 @@ assert all(r['kind'] == 'amendment' for r in d['unreviewed']), [r['kind'] for r 
 served = {r['id'] for r in d['unreviewed']}
 detail = {a['amendment_id'] for a in d['amendment_proposals']}
 assert detail == served, (sorted(detail), sorted(served))
+# and the row is not the detail written out twice: these proposals share a
+# title and a summary word for word, and the detail beside them says what
+# each one actually does.
+assert all('summary' not in r for r in d['unreviewed']), d['unreviewed'][0]
 for empty in ('flagged', 'patches', 'asking_closures', 'recent_verification_failures'):
     assert not d.get(empty), (empty, d.get(empty))
 # and the counts still describe the whole backlog, not this page

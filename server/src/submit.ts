@@ -96,13 +96,8 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
     notes.push("your signature checks out against your registered public key, and is recorded as an authorship verification anyone can re-check.");
   }
 
-  // Exact duplicates attach as a new contribution over the same artifact
-  // only if titled differently by a different identity; the common case
-  // (same content resubmitted) just points at the original.
-  const [existing] = await sql<{ id: string }[]>`
-    select id from contribution where artifact_hash = ${hash} and status = 'active' limit 1`;
-
   const minted: { id: string; term: string }[] = [];
+  let existing: { id: string } | undefined;
   const result = await sql.begin(async (tx) => {
     await tx`insert into artifact (hash, media_type, content, size_bytes)
              values (${hash}, ${mediaType}, ${content}, ${Buffer.byteLength(content)})
@@ -154,6 +149,20 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
       });
       minted.push({ id: def!.id, term: d.term });
     }
+    // Resubmitted work points at the original. Sameness is the artifact *and*
+    // what the entry proposes to do, because a proposal's body is the author's
+    // prose and its payload -- which entry, retitled to what; which entry,
+    // scored how -- is structured metadata. On artifact_hash alone, a batch of
+    // template amendments retitling hundreds of different entries called
+    // itself one duplicated entry: 752 false `duplicates` edges that a
+    // reviewer rejected by hand, twice, in one day.
+    [existing] = await tx<{ id: string }[]>`
+      select c.id from contribution c, contribution n
+      where n.id = ${contribution!.id}
+        and c.artifact_hash = ${hash} and c.status = 'active' and c.id <> n.id
+        and c.metadata -> 'amendment' is not distinct from n.metadata -> 'amendment'
+        and c.metadata -> 'impact' is not distinct from n.metadata -> 'impact'
+      order by c.created_at limit 1`;
     if (existing) {
       await createEdge(tx, { identityId, src: contribution!.id, dst: existing.id, rel: "duplicates", note: "identical artifact" });
     }

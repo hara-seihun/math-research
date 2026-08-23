@@ -54,6 +54,14 @@ trap cleanup EXIT
 initdb -D "$WORK/data" -A trust -U "$PGUSER" > /dev/null
 pg_ctl -D "$WORK/data" -o "-k $WORK -c listen_addresses=" -s -w start
 createdb -h "$WORK" math
+# Production is never a fresh database: it is the schema that is deployed now,
+# and this file has to land on that one. So the shape the deploy will meet is
+# built first, from the schema on main, and the migration runs over it. A
+# rename or a rewritten constraint that only works on an empty new database
+# fails in production and nowhere else.
+DEPLOYED=$(git show origin/main:schema.sql 2> /dev/null || git show main:schema.sql)
+[[ -n $DEPLOYED ]] || fail "no main to migrate from: this suite applies the deployed schema first"
+psql -q -v ON_ERROR_STOP=1 -h "$WORK" -d math <<< "$DEPLOYED"
 psql -q -v ON_ERROR_STOP=1 -h "$WORK" -d math -f schema.sql
 # Production applies schema.sql over an existing deployment. A fresh database
 # cannot catch view-column-order and other CREATE OR REPLACE upgrade failures,
@@ -831,21 +839,35 @@ call trails '{"include_stale":true}' | python3 -c 'import sys,json;ts=json.load(
 # attached call history goes only to the readers who act on reports.
 SESS=$(new_session)
 SESSION=$SESS call search '{"query":"a search that disappointed me"}' > /dev/null
-PR=$(SESSION=$SESS call report_problem '{"problem":"search found nothing and I could not tell whether that was me or it","tool":"search"}')
+PR=$(SESSION=$SESS call feedback '{"problem":"search found nothing and I could not tell whether that was me or it","tool":"search"}')
 PRID=$(echo "$PR" | field '.id')
 [[ -n $PRID ]] || fail "a problem report was refused"
-call report_problem '{}' | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];assert p["status"]=="open" and "context" not in p' \
+call feedback '{}' | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];assert p["status"]=="open" and p["kind"]=="problem" and "context" not in p' \
   || fail "an open report did not read back, or leaked its reporter's calls"
-call report_problem "{\"contributor_key\":\"$OPKEY\"}" \
+call feedback "{\"contributor_key\":\"$OPKEY\"}" \
   | python3 -c 'import sys,json;r=json.load(sys.stdin);p=[x for x in r["reports"] if x["id"]=='"$PRID"'][0];c=p["context"]["recent_calls"][0];assert c["tool"]=="search" and c["args"]["query"]=="a search that disappointed me"' \
   || fail "the server did not attach what the reporter was doing, or logged their arguments as an opaque string"
-call report_problem "{\"resolve\":$PRID,\"outcome\":\"fixed\"}" | grep -q '"error"' || fail "an untrusted caller resolved a report"
-call report_problem "{\"contributor_key\":\"$OPKEY\",\"resolve\":$PRID,\"outcome\":\"fixed\",\"resolution\":\"search now says what it looked for\"}" \
+call feedback "{\"resolve\":$PRID,\"outcome\":\"fixed\"}" | grep -q '"error"' || fail "an untrusted caller resolved a report"
+call feedback "{\"contributor_key\":\"$OPKEY\",\"resolve\":$PRID,\"outcome\":\"fixed\",\"resolution\":\"search now says what it looked for\"}" \
   | field '.ok' > /dev/null || fail "a trusted reader could not resolve a report"
-call report_problem '{}' | python3 -c 'import sys,json;assert all(x["id"]!='"$PRID"' for x in json.load(sys.stdin)["reports"])' \
+call feedback '{}' | python3 -c 'import sys,json;assert all(x["id"]!='"$PRID"' for x in json.load(sys.stdin)["reports"])' \
   || fail "a resolved report is still waiting on someone"
-call report_problem '{"include_resolved":true}' | python3 -c 'import sys,json;p=[x for x in json.load(sys.stdin)["reports"] if x["id"]=='"$PRID"'][0];assert p["status"]=="fixed" and p["resolution"]' \
+call feedback '{"include_resolved":true}' | python3 -c 'import sys,json;p=[x for x in json.load(sys.stdin)["reports"] if x["id"]=='"$PRID"'][0];assert p["status"]=="fixed" and p["resolution"]' \
   || fail "a reporter cannot see what came of their report"
+
+# Contract: the same door takes what is missing, not only what is broken, and
+# the two are told apart when read back. A suggestion filed as a problem is a
+# wish nobody triages as a wish.
+WISH=$(call feedback '{"suggestion":"there is no relation that means counterexample-to and I had to use disproves","tool":"link"}' | field '.id')
+[[ -n $WISH ]] || fail "a suggestion was refused"
+call feedback '{"kind":"suggestion"}' \
+  | python3 -c 'import sys,json;r=json.load(sys.stdin);ids=[x["id"] for x in r["reports"]];assert ids==['"$WISH"'] and r["open_suggestions"]==1' \
+  || fail "suggestions do not read back on their own, or are counted with the bugs"
+call feedback '{"kind":"problem"}' | python3 -c 'import sys,json;assert all(x["id"]!='"$WISH"' for x in json.load(sys.stdin)["reports"])' \
+  || fail "a suggestion is listed as a problem"
+call feedback '{"problem":"a","suggestion":"b"}' | grep -q '"error"' || fail "one call filed a problem and a suggestion at once"
+call feedback "{\"contributor_key\":\"$OPKEY\",\"resolve\":$WISH,\"outcome\":\"fixed\",\"resolution\":\"the relation exists now\"}" \
+  | field '.ok' > /dev/null || fail "a suggestion could not be closed out"
 
 # Contract: search is dash/accent-insensitive and degrades to fuzzy, so a
 # hyphen query finds an en-dash title (the de Bruijn–Newman discovery failure).
@@ -1586,6 +1608,22 @@ for e in ev:
 ' || fail "get did not distill the amendment event payload"
 # A second proposal remains pending for the every-door contract below, which
 # rejects it and thereby exercises the other terminal decision.
+# Contract: sameness is the artifact *and* what the entry proposes to do. A
+# template amendment's body is boilerplate and its payload is metadata, so a
+# batch of identically-worded retitlings of different entries is not one
+# duplicated entry -- on artifact_hash alone this filed hundreds of false
+# `duplicates` edges a reviewer then rejected by hand.
+TWIN_A=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"first hard-capped title\",\"summary\":\"s\",\"content\":\"Body A.\"}" | field '.id')
+TWIN_B=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"second hard-capped title\",\"summary\":\"s\",\"content\":\"Body B.\"}" | field '.id')
+TEMPLATE='"kind":"amendment","title":"Replace a hard-capped title","summary":"Template amendment.","content":"The stored title was truncated; this restores it."'
+call submit "{\"contributor_key\":\"$KEY\",$TEMPLATE,\"amends\":\"$TWIN_A\",\"replacement\":{\"title\":\"The first title, restored in full\"}}" > /dev/null
+call submit "{\"contributor_key\":\"$KEY\",$TEMPLATE,\"amends\":\"$TWIN_B\",\"replacement\":{\"title\":\"The second title, restored in full\"}}" \
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);assert not d.get("duplicate_of"), d.get("duplicate_of")' \
+  || fail "two amendments over different entries were called duplicates of each other"
+call submit "{\"contributor_key\":\"$KEY\",$TEMPLATE,\"amends\":\"$TWIN_B\",\"replacement\":{\"title\":\"The second title, restored in full\"}}" \
+  | python3 -c 'import sys,json;assert json.load(sys.stdin).get("duplicate_of")' \
+  || fail "the same amendment filed twice over the same entry was not linked to the original"
+
 AMEND_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Unhelpful amendment\",\"summary\":\"Reject me.\",\"content\":\"No improvement.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Thing\"}}" | field '.id')
 
 # Contract: world-facing impact is a reviewed, explained signal separate from
@@ -1711,7 +1749,7 @@ declare -A DOORS=(
   [my_submissions]="{\"contributor_key\":\"$KEY\"}"
   [trail]="{\"contributor_key\":\"$KEY\",\"title\":\"every door\",\"note\":\"n\"}"
   [trails]='{}'
-  [report_problem]='{}'
+  [feedback]='{}'
   [guides]='{}'
   [news]='{}'
   [set_tuning]="{\"contributor_key\":\"$OPKEY\",\"notability_weights\":{},\"note\":\"no-op\"}"

@@ -2678,6 +2678,22 @@ EOF
 mv "$SPOOL_DIR/out/patch-$CHECK_ID.staging" "$SPOOL_DIR/out/patch-$CHECK_ID"
 [[ $(await_verification "$MERGE_V") == passed ]] || fail "a patch that builds did not pass"
 
+# Contract: a narrowed page carries the detail that belongs to it and nothing
+# about other work. Twenty amendments to decide came with the detail for two,
+# because five sections about patches, flags and closures had taken the room.
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"kind\":\"amendment\",\"limit\":10}" | python3 -c "import sys,json
+d = json.load(sys.stdin)
+assert d['unreviewed'], 'no amendments on the amendment page'
+assert all(r['kind'] == 'amendment' for r in d['unreviewed']), [r['kind'] for r in d['unreviewed']]
+# Every row handed over is described beside it, and nothing else is.
+served = {r['id'] for r in d['unreviewed']}
+detail = {a['amendment_id'] for a in d['amendment_proposals']}
+assert detail == served, (sorted(detail), sorted(served))
+for empty in ('flagged', 'patches', 'asking_closures', 'recent_verification_failures'):
+    assert not d.get(empty), (empty, d.get(empty))
+# and the counts still describe the whole backlog, not this page
+assert d['backlog']['patches'] >= 1, d['backlog']" || fail "a narrowed queue page did not carry its own detail"
+
 # Contract: verification is not publication. The library is untouched until a
 # trusted reviewer promotes the patch, and review sees the build result.
 git -C "$PATCH_REPO_DIR" diff --quiet HEAD || fail "a merely verified patch changed the library"

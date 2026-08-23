@@ -2929,13 +2929,19 @@ defineTool(
     const focus = (sectionKind: string) => (kind === sectionKind ? pageIds : null);
     const focusedAmendments = focus("amendment");
     const focusedPatches = focus("patch");
+    // And a narrowed page carries only the section that belongs to it. The
+    // sections exist to say what else is waiting; `kind` says the reviewer has
+    // already chosen what they are working on, and `backlog` still counts the
+    // rest. Twenty amendments to decide arrived with the detail for two of
+    // them, because five sections about other work had taken the room.
+    const wants = (sectionKind: string | null) => kind === undefined || kind === sectionKind;
     // A queue row names a patch; it is not the patch. Eight module paths were
     // a third of its weight.
     const sideModules = (modules: string[] | null): string[] | null =>
       modules === null || modules.length <= 4 ? modules : [...modules.slice(0, 4), `+${modules.length - 4} more`];
     const proposalWhere = sql`
       e.rel = 'supersedes' and ec.status = 'active' and ec.tier = 0 and rc.status = 'active'`;
-    const proposals = await sql`
+    const proposals = !wants("refactor") ? [] : await sql`
       select e.contribution_id as refactor_edge, e.src as refactor_id, e.dst as target_id,
              rc.title as refactor_title, ec.identity_id as by, e.created_at as proposed_at
       from edge e
@@ -2951,7 +2957,7 @@ defineTool(
     // a `get` per row. Most of these say "the importer clipped this title
     // mid-sentence, here is the sentence": that claim is a substring test, and
     // 659 of them arrived in one afternoon.
-    const amendments = (await sql<{
+    const amendments = !wants("amendment") ? [] : (await sql<{
       amendment_edge: string; amendment_id: string; target_id: string; amendment_title: string;
       target_title: string; target_summary: string; proposed: Record<string, unknown>;
       title_verbatim: boolean | null; summary_verbatim: boolean | null; by: string; proposed_at: Date;
@@ -2994,7 +3000,7 @@ defineTool(
     const impactWhere = sql`
       e.rel = 'assesses-impact' and ec.status = 'active' and ec.tier = 0
         and ac.status = 'active' and ac.kind = 'impact-assessment' and tgt.status = 'active'`;
-    const impactAssessments = await sql`
+    const impactAssessments = !wants("impact-assessment") ? [] : await sql`
       select e.contribution_id as assessment_edge, e.src as assessment_id, e.dst as target_id,
              ac.title as assessment_title, tgt.title as target_title,
              (ac.metadata->'impact') - 'target' as proposed,
@@ -3006,7 +3012,8 @@ defineTool(
       where ${impactWhere}
       order by tgt.notability desc, e.created_at asc
       limit ${side}`;
-    const failures = (
+    // Build failures travel with patch work rather than with everything else.
+    const failures = !wants("patch") ? [] : (
       await sql<{ contribution_id: string; title: string; outcome: string; reason: string | null; updated_at: Date }[]>`
         select v.contribution_id, c.title, v.outcome, v.detail->>'reason' as reason, v.updated_at
         from verification v join contribution c on c.id = v.contribution_id
@@ -3022,7 +3029,7 @@ defineTool(
       e.rel in ('refutes', 'disputes') and ec.status = 'active'
         and o.status = 'active' and c.status = 'active' and c.tier <= 2
         and c.kind not in ('problem', 'conjecture', 'front', 'route', 'edge')`;
-    const flagged = await sql`
+    const flagged = kind !== undefined ? [] : await sql`
       select c.id, c.kind, c.title, c.tier, o.id as objection_id, o.title as objection_title,
              e.rel, ec.identity_id as by, e.created_at as raised_at
       from edge e
@@ -3037,7 +3044,7 @@ defineTool(
     // are off it until someone amends the headline to say what was found.
     // An answer nobody can read from the board is not published.
     const askingWhere = sql`c.status = 'active' and (${certified()}) and not (${statesAFinding()})`;
-    const askingClosures = await sql`
+    const askingClosures = kind !== undefined ? [] : await sql`
       select c.id, c.kind, c.title, c.tier, c.state, c.notability, ${impactScore()} as impact_score,
              s.title as settled_by
       from contribution c
@@ -3058,7 +3065,7 @@ defineTool(
     // `publication_detail` repeated the module list the row already carries,
     // twice over on a wide patch. What it adds is the installed count and the
     // head commit; the rest is the same fact wearing a second hat.
-    const patches = await sql`
+    const patches = !wants("patch") ? [] : await sql`
       select c.id, c.title, c.summary, c.tier, c.identity_id as by, c.created_at as submitted_at,
              v.outcome as build, v.detail->>'base_commit' as base_commit, v.detail->>'reason' as reason,
              v.detail->'changed_modules' as changed_modules, v.detail->'deleted_modules' as deleted_modules,

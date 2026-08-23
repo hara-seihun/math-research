@@ -55,7 +55,11 @@ export type ClaimRow = {
 };
 
 /** The live leases this reviewer holds, so a session that has forgotten what
- *  it took can see its own worklist -- its own, not its whole fleet's. */
+ *  it took can see its own worklist -- its own, not its whole fleet's: forty
+ *  concurrent sessions under one key would each carry the other thirty-nine's
+ *  pages in every answer. A reviewer that reconnected and lost sight of what
+ *  it was holding finds it in q_review_claims by identity, and takes it back
+ *  with review_claim. */
 export async function claimsHeldBy(claimant: string | null, limit = 50) {
   if (!claimant) return [];
   return await sql<{ id: string; title: string; kind: string; tier: number; expires_at: Date }[]>`
@@ -71,7 +75,14 @@ export async function claimsHeldBy(claimant: string | null, limit = 50) {
  *  moment is the entire scenario this exists for. The conflicting insert
  *  updates only when the existing lease has expired or is already this
  *  reviewer's, so a row held by someone else simply does not come back and the
- *  loser of the race is told who holds it rather than handed a duplicate. */
+ *  loser of the race is told who holds it rather than handed a duplicate.
+ *
+ *  "Already this reviewer's" means the session or the identity behind it. The
+ *  session is what keeps a fleet's pages disjoint, but a reviewer whose
+ *  connection drops comes back as a new session holding nothing, and its own
+ *  claimed page then refused to be decided or released for the length of the
+ *  lease. Asking for your own identity's row by name is how you take it back;
+ *  the worklist still never hands it to a sibling session unasked. */
 export async function claimEntries(
   identityId: string,
   ids: string[],
@@ -89,6 +100,7 @@ export async function claimEntries(
           claimed_at = now(), expires_at = excluded.expires_at
       where review_claim.expires_at <= now()
          or review_claim.claimant = excluded.claimant
+         or review_claim.identity_id = excluded.identity_id
     returning contribution_id, expires_at`;
   return new Map(rows.map((r) => [r.contribution_id, r.expires_at]));
 }
@@ -112,7 +124,13 @@ export async function holdersOf(ids: string[]): Promise<Map<string, ClaimRow>> {
  *  One reviewer watched sixteen of the twenty-five rows they had just leased
  *  get decided by other sessions inside ten seconds, and another promoted
  *  three edges a colleague had rejected sixty seconds earlier. A lease that
- *  half the writers ignore is not a lease. */
+ *  half the writers ignore is not a lease.
+ *
+ *  Somebody else is another *session*, including a sibling of your own fleet:
+ *  the sixteen were decided under the same contributor key as the reviewer
+ *  reading them. What a reconnecting reviewer does instead of overriding is
+ *  claim its own row back by name, which review_claim allows for your own
+ *  identity and the refusal below says so. */
 export async function heldByOthers(identityId: string, ids: string[]): Promise<Map<string, ClaimRow>> {
   const mine = claimantOf(identityId);
   const held = await holdersOf(ids);

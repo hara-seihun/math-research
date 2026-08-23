@@ -1017,7 +1017,7 @@ export const ReviewQueueOut = z.strictObject({
         expires_at: iso,
       }),
     )
-    .describe("Every entry this reviewing session currently holds, including ones taken in an earlier call. A lease belongs to the session, not to the key, so a fleet's other sessions are not listed here."),
+    .describe("Every entry this reviewing session currently holds, including ones taken in an earlier call. A lease belongs to the session, not to the key, so a fleet's other sessions are not listed here \u2014 if you have reconnected and lost sight of a page you took, q_review_claims has it under your identity_id and review_claim takes it back."),
   tip: z.string().optional(),
   backlog: z.strictObject({
     unreviewed: z.number().int().describe("Every entry matching the queue, not just this page: everything active at or under max_tier, of every kind including links, whoever wrote it, including the read-but-undecided ones counted again in awaiting_decision."),
@@ -1167,6 +1167,9 @@ export const SetTierOut = z.strictObject({
       }),
     )
     .describe("Every entry this call moved: all of them, because a page a verdict door cannot carry whole is refused whole."),
+  note_to_reviewer: z
+    .string().optional()
+    .describe("Something about what you just decided that the tier alone does not finish — a refactor proposal whose supersedes edge is still pending, so the fold has not happened."),
 });
 
 export const SetTuningOut = z.strictObject({
@@ -1221,7 +1224,9 @@ export const ReviewClaimOut = z.strictObject({
       ref: z.string(),
       id: z.string().nullable(),
       title: z.string().nullable(),
-      state: z.enum(["claimed", "released", "held-by-another", "not-held", "unknown"]),
+      state: z
+        .enum(["claimed", "released", "held-by-another", "not-held", "unknown"])
+        .describe("A lease your own identity holds under an earlier session comes back as 'claimed': asking for it by name is how a reviewer that reconnected picks its page up again."),
       holder: z.string().nullable(),
       until: iso.nullable(),
     }),

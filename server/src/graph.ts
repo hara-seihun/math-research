@@ -195,6 +195,44 @@ export async function refreshAround(ids: string[]): Promise<void> {
 // metadata) plus the structural sidecar row. Same identity asserting the same
 // (src,dst,rel) twice is idempotent; different identities asserting it are
 // independent contributions, which is the signal that a link is corroborated.
+/** Assertions the vocabulary cannot carry, refused where they are made so the
+ *  answer teaches the right relation instead of arriving as a reviewer's
+ *  rejection weeks later.
+ *
+ *  Kept to the cases where the relation names a *kind* of endpoint and the
+ *  endpoint is a different kind, because that is a claim the graph reads
+ *  structurally and nobody meant: `in-front` is membership of a research
+ *  front, and 335 of them pointed at a problem instead, of which reviewers had
+ *  already thrown out 323 one at a time while splitting on whether the twelve
+ *  survivors were idiomatic. What those edges meant was that the work bears on
+ *  the problem, which is `attacks` or `about`. */
+export async function vetEdge(
+  q: Tx | typeof sql,
+  e: { dst: string; rel: string },
+): Promise<string | null> {
+  if (e.rel !== "in-front" && e.rel !== "reviews") return null;
+  const [target] = await q<{ kind: string; title: string }[]>`
+    select kind, title from contribution where id = ${e.dst}`;
+  if (!target) return null;
+  if (e.rel === "reviews" && target.kind === "review") {
+    return (
+      "a review is not reviewed: it is already the judgement. " +
+      "To disagree with a reading, review the entry it is about and say so there."
+    );
+  }
+  if (e.rel === "in-front" && target.kind !== "front") {
+    return (
+      `in-front is membership of a research front, and "${target.title}" is a ${target.kind}. ` +
+      "If this work bears on it, that is `attacks` when the work goes after it and `about` when the work concerns it; " +
+      "if you meant a front that does not exist yet, submit one and put both in it."
+    );
+  }
+  return null;
+}
+
+/** Relations that put their target back in front of a reviewer. */
+const REOPENS_REVIEW = new Set(["reviews", "refutes", "disputes", "repairs", "amends"]);
+
 export async function createEdge(
   tx: Tx,
   e: { identityId: string | null; src: string; dst: string; rel: string; note?: string; metadata?: Record<string, unknown> },
@@ -221,6 +259,12 @@ export async function createEdge(
   await tx`insert into event (kind, contribution_id, identity_id, payload)
            values ('submitted', ${c!.id}, ${e.identityId},
                    ${tx.json({ kind: "edge", src: e.src, dst: e.dst, rel: e.rel } as never)})`;
+  // A reading or an objection is new evidence about the target, so whatever a
+  // reviewer decided before it arrived was decided without it. Back on the
+  // worklist; `reviewed_at` is what keeps everything else off.
+  if (REOPENS_REVIEW.has(e.rel)) {
+    await tx`update contribution set reviewed_at = null where id = ${e.dst} and reviewed_at is not null`;
+  }
   return { id: c!.id };
 }
 

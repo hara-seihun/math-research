@@ -32,7 +32,7 @@ import { mountOAuth } from "./oauth.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
-import { searchContributions, related, scanDuplicateEntries, neighbourhood, rejectedLinks, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
+import { searchContributions, related, scanDuplicateEntries, neighbourhood, rejectedLinks, createEdge, vetEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
 import { beyondTitle, deref, LIST_NOTE, LIST_SUMMARY, listRow, sameText, settlement, slimDetail, slimVerifierText, trim, type Ref } from "./read.ts";
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FeedbackKind, FeedbackOut, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
@@ -245,7 +245,10 @@ async function verdictTargets(
       ref: t.ref,
       error:
         `another reviewer is reading this one right now (lease until ${holder.expires_at.toISOString()}). ` +
-        "It comes back when they decide it or their lease runs out; review_claim tells you what you hold.",
+        "It comes back when they decide it or their lease runs out." +
+        (holder.identity_id === identityId
+          ? " That reviewer is you, under an earlier session — a dropped connection leaves the page behind. review_claim on these refs hands it back to this session, and then you can decide it."
+          : " review_claim tells you what you hold."),
     });
     return false;
   });
@@ -2106,18 +2109,8 @@ defineTool(
     const to = await refOr(dstRef);
     if ("failed" in to) return to.failed;
     const [src, dst] = [from.id, to.id];
-    // The regress the schema forbids, refused here so the answer teaches
-    // rather than arriving as a constraint violation.
-    if (rel === "reviews") {
-      const [target] = await sql<{ kind: string }[]>`select kind from contribution where id = ${dst}`;
-      if (target?.kind === "review") {
-        return fail({
-          error:
-            "a review is not reviewed: it is already the judgement. " +
-            "To disagree with a reading, review the entry it is about and say so there.",
-        });
-      }
-    }
+    const wrongShape = await vetEdge(sql, { dst, rel });
+    if (wrongShape) return fail({ error: wrongShape });
     const meta = { ...(model_name ? { model_name } : {}), ...(operator ? { operator } : {}) };
     const created = await sql.begin((tx) => createEdge(tx, { identityId, src, dst, rel, note, metadata: meta }));
     if (!("id" in created) && created.skipped === "self-link") return fail({ error: "can't link something to itself." });
@@ -2717,6 +2710,9 @@ defineTool(
       include_claimed: z
         .boolean().default(false)
         .describe("Also show entries another reviewer holds right now. For seeing what the fleet is working on; taking one is still refused."),
+      include_decided: z
+        .boolean().default(false)
+        .describe("Also show entries a reviewer already ruled on and nothing has happened to since — mostly T1 holds, confirmed as sound and left short of canon. They are out by default because handing one to the next reviewer buys a second reading of a settled question; ask for them when you are looking for canon candidates rather than working the backlog."),
       // A queue row names two entries where a search row names one, so the
       // page that fits is smaller here than elsewhere: forty rows is about
       // thirty kilobytes, and clients truncate a tool result well before a
@@ -2725,10 +2721,10 @@ defineTool(
       ...pageParams(40, 20),
     }),
   },
-  async ({ contributor_key, kind, max_tier, claim, claim_minutes, include_claimed, limit, offset }) => {
+  async ({ contributor_key, kind, max_tier, claim, claim_minutes, include_claimed, include_decided, limit, offset }) => {
     const who = await trustedCheck(contributor_key);
     if (!who.ok) return fail({ error: who.refusal });
-    logRequest("review_queue", who.identityId, { kind, max_tier, offset, claim });
+    logRequest("review_queue", who.identityId, { kind, max_tier, offset, claim, include_decided });
     sweepExpiredClaims();
     const mine = who.identityId ? claimantOf(who.identityId) : null;
     // One predicate, used for the page and for the backlog count, so the
@@ -2737,6 +2733,7 @@ defineTool(
     // what a reviewer should say in the note, not what the queue offers.
     const queued = sql`
       c.status = 'active' and c.tier <= ${max_tier}
+        and (${include_decided} or c.reviewed_at is null)
         and (${kind ?? null}::text is null or c.kind = ${kind ?? null})`;
     // Another reviewer's live lease takes the row off your page; your own does
     // not, so a session that asks twice gets its own work back.
@@ -3066,6 +3063,11 @@ defineTool(
         update contribution c
            set tier = ${tier},
                status = case when c.status = 'rejected' and ${tier} >= 1 then 'active' else c.status end,
+               -- This is the verdict, including "confirmed, and it stays at
+               -- T1". The worklist stops offering it until something happens
+               -- to it, because handing a ruled-on entry to the next reviewer
+               -- buys a second reading of a settled question.
+               reviewed_at = now(),
                updated_at = now()
           from (select id, status from contribution where id = any (${moving}::uuid[])) prev
          where c.id = prev.id returning c.id, c.status, prev.status as was`;
@@ -3083,9 +3085,24 @@ defineTool(
       return new Set(back);
     });
     await refreshAround(moving);
+    // A refactor entry is a proposal, and promoting it is not what folds the
+    // corpus: the supersedes edge beside it is, and that edge is a separate
+    // row a reviewer is unlikely to meet. Someone verified a fold in full,
+    // promoted it, and left the edge pending at T0, so the fold never
+    // happened and nothing said so. Twice, on two different folds.
+    const pendingFolds = await sql<{ refactor_id: string; edge_id: string; targets: number }[]>`
+      select e.src as refactor_id, min(e.contribution_id::text) as edge_id, count(*)::int as targets
+      from edge e join contribution ec on ec.id = e.contribution_id
+      where e.src = any (${moving}::uuid[]) and e.rel = 'supersedes'
+        and ec.status = 'active' and ec.tier = 0
+      group by e.src`;
+    const folds = pendingFolds.length
+      ? `${pendingFolds.length === 1 ? "One of these is a refactor proposal whose" : `${pendingFolds.length} of these are refactor proposals whose`} supersedes ${pendingFolds.length === 1 ? "edge is" : "edges are"} still pending, so nothing has been folded yet. apply_refactor(refactor: <id>, decision: 'approve') is what retires the targets; promoting the proposal only says its argument is sound.`
+      : null;
     return structured(SetTierOut, {
       ok: true, tier, note,
       decided: movable.map((m) => ({ id: m.id, title: m.title, ...(restored.has(m.id) ? { restored: true } : {}) })),
+      ...(folds ? { note_to_reviewer: folds } : {}),
     });
   },
 );
@@ -3271,9 +3288,14 @@ defineTool(
         select id, title from contribution where id = any (${ids}::uuid[])`).map((r) => [r.id, r.title]),
     );
     if (action === "release") {
+      // Yours by identity, not by session. A reviewer who reconnects gets a
+      // new session id and was answered `not-held` for the page they were
+      // still holding, with no way to hand it back and no way to decide it
+      // either: they waited out the lease. Handing back your own work is
+      // never the operation that needs protecting.
       const released = await sql<{ contribution_id: string }[]>`
         delete from review_claim
-        where contribution_id = any (${ids}::uuid[]) and claimant = ${claimantOf(who.identityId)}
+        where contribution_id = any (${ids}::uuid[]) and identity_id = ${who.identityId}
         returning contribution_id`;
       const gone = new Set(released.map((r) => r.contribution_id));
       return structured(ReviewClaimOut, {
@@ -3499,8 +3521,11 @@ defineTool(
     }
     await sql.begin(async (tx) => {
       if (decision === "approve") {
+        // An amended entry is not the entry a reviewer ruled on, so it is
+        // queue work again.
         await tx`update contribution
-                 set title = ${next.title}, summary = ${next.summary}, names = ${next.names}::text[], updated_at = now()
+                 set title = ${next.title}, summary = ${next.summary}, names = ${next.names}::text[],
+                     reviewed_at = null, updated_at = now()
                  where id = ${row.target_id}`;
         await tx`update contribution set tier = 2, updated_at = now()
                  where id in (${amendment_id}, ${row.edge_id})`;

@@ -836,11 +836,25 @@ create index if not exists feedback_status_idx on feedback (status, id desc);
 
 -- The one public shape of a contribution, including the derived lean_verified
 -- property, so no query re-derives it ad hoc.
+-- When a reviewer last ruled on this entry, and null when nobody has or when
+-- something has happened to it since. The reviewer worklist is what awaits a
+-- verdict, and "confirmed at T1, not canon" is a verdict -- but the queue only
+-- knew about tiers, so a held entry came straight back and the next reviewer
+-- read it again. Two of them filed the same report within nine seconds, having
+-- each just re-read a page the other had ruled on.
+--
+-- Cleared by everything that gives a reviewer something new to read: an
+-- applied amendment, a kernel result, a reading or an objection filed against
+-- it. Then it is queue work again, and until then it is decided.
+alter table contribution add column if not exists reviewed_at timestamptz;
+create index if not exists contribution_undecided_idx on contribution (tier)
+  where status = 'active' and reviewed_at is null;
+
 create or replace view contribution_overview as
 select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.identity_id,
        c.artifact_hash, c.metadata, c.notability, c.tags, c.names, c.created_at, c.updated_at, c.search,
        c.lean_verified, c.state, c.impact_reach, c.impact_advance, c.impact_closure, c.impact_assessments,
-       c.origin, c.origin_source, c.board_at
+       c.origin, c.origin_source, c.board_at, c.reviewed_at
 from contribution c;
 
 -- ——— Tunable policy ————————————————————————————————————————————————————
@@ -871,6 +885,21 @@ create or replace function normalize_ref(t text) returns text language sql immut
                                pg_catalog.regexp_replace(coalesce(t, ''), '[‐-―−]', '-', 'g')))
 $$;
 create index if not exists contribution_ref_title_idx on contribution (normalize_ref(title));
+
+-- The tiers already ruled on before the reviewed_at column existed. Once: after
+-- this the
+-- column is maintained by the doors, and re-running would re-decide entries
+-- something has since re-opened.
+do $$
+begin
+  if not exists (select 1 from config where key = 'reviewed_at_backfilled') then
+    update contribution c set reviewed_at = v.at
+      from (select contribution_id, max(created_at) as at from event
+             where kind = 'tier-changed' group by contribution_id) v
+     where v.contribution_id = c.id and c.reviewed_at is null;
+    insert into config (key, value) values ('reviewed_at_backfilled', to_jsonb(now()));
+  end if;
+end $$;
 
 -- Topic inheritance. A one-line extracted statement rarely names its own
 -- field, but the write-up it came from does, and a classification cell's

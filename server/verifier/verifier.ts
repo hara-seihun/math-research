@@ -226,6 +226,10 @@ async function record(id: number, contributionId: string, result: string, detail
     await tx`insert into event (kind, contribution_id, payload)
              values ('verification', ${contributionId},
                      ${tx.json({ method: "lean-kernel", outcome: result, ...detail } as never)})`;
+    // What the kernel says is new evidence, and a reviewer who ruled before it
+    // landed ruled without it. Back on the worklist.
+    await tx`update contribution set reviewed_at = null
+             where id = ${contributionId} and reviewed_at is not null`;
   });
 }
 

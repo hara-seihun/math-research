@@ -609,6 +609,50 @@ call review_claim "{\"contributor_key\":\"$TKEY\",\"refs\":[\"$HOLD\"]}" \
 psql -q -h "$WORK" -d math -c "update review_claim set expires_at = now() - interval '1 minute' where contribution_id = '$HOLD'"
 lease_queue "\"$OPKEY\"" ',"limit":10' | ids_of | grep -q "$HOLD" || fail "an expired lease still held an entry out of the queue"
 
+batch_subject() { call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"batch subject $1\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id'; }
+in_queue() { # id [extra json] -> 0 when the worklist offers it, 1 when it does not
+  local offset=0 page
+  while [[ -n $offset ]]; do
+    page=$(call review_queue "{\"contributor_key\":\"$OPKEY\",\"kind\":\"result\",\"limit\":50,\"offset\":$offset${2:-}}")
+    if echo "$page" | jq -e --arg id "$1" '.unreviewed[]? | select(.id==$id)' > /dev/null; then return 0; fi
+    offset=$(echo "$page" | jq -r '.next.offset // empty')
+  done
+  return 1
+}
+# Contract: a verdict takes an entry off the worklist, including "confirmed,
+# and it stays at T1". The queue knew only about tiers, so a held entry came
+# straight back and the next reviewer read it again; two of them filed the same
+# report nine seconds apart, each having just re-read what the other ruled on.
+DECIDED=$(batch_subject "decided subject")
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$DECIDED\",\"tier\":1,\"note\":\"sound, held short of canon\"}" | field '.ok' > /dev/null
+! in_queue "$DECIDED" || fail "an entry a reviewer had ruled on came straight back to the worklist"
+in_queue "$DECIDED" ',"include_decided":true,"max_tier":1' \
+  || fail "a reviewer looking for canon candidates could not see what had been held at T1"
+# ...and something new to read puts it back.
+REVIEWER=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"review\",\"title\":\"a reading of the held entry\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$REVIEWER\",\"dst\":\"$DECIDED\",\"rel\":\"reviews\",\"note\":\"there is more to say\"}" | field '.ok' > /dev/null
+in_queue "$DECIDED" ',"max_tier":1' || fail "a reading filed against a decided entry did not put it back on the worklist"
+
+# Contract: in-front is membership of a research front, and the door says so.
+# 335 of them pointed at a problem instead; reviewers threw out 323 one at a
+# time and split over the rest, which is a vocabulary gap paid for by hand.
+FRONT_P=$(batch_subject "front target problem")
+call link "{\"contributor_key\":\"$KEY\",\"src\":\"$DECIDED\",\"dst\":\"$FRONT_P\",\"rel\":\"in-front\",\"note\":\"membership of a non-front\"}" \
+  | field '.error' | grep -qi "attacks" || fail "in-front to something that is not a front was accepted, or refused without naming the relation that fits"
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"submitted with a bad membership\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$FRONT_P\",\"rel\":\"in-front\"}]}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert d['ok'] and any('in-front' in n for n in d.get('notes', [])), d" \
+  || fail "a submission's bad membership link was made anyway, or dropped in silence"
+
+# Contract: promoting a refactor proposal is not what folds the corpus, and the
+# reviewer hears about the edge that is. Two verified folds were promoted and
+# left pending, so neither fold happened and nothing said so.
+FOLD_TGT=$(batch_subject "fold target")
+FOLD=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"refactor\",\"title\":\"a fold worth applying\",\"summary\":\"s\",\"content\":\"c.\",\"supersedes\":[\"$FOLD_TGT\"]}" | field '.id')
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$FOLD\",\"tier\":2,\"note\":\"verified in full\"}" \
+  | field '.note_to_reviewer' | grep -q "apply_refactor" \
+  || fail "promoting a refactor proposal did not point at the door that carries the fold"
+
 # Contract: the two corpus views cover the whole corpus between them. q_entries
 # is the mathematics and excludes links, which is right and was silent: a
 # reviewer auditing a queue page of live edges by id prefix here got an empty
@@ -643,7 +687,6 @@ assert thrown['edge_id'] == '$VIEW_E' and thrown['rejection']['reason'] == 'unsu
 # a reviewer `ok: true` for a batch that went nowhere, which is how a page of
 # verdicts was silently lost over one mistyped id. One bad ref refuses the
 # call, names itself, and leaves every other row exactly where it was.
-batch_subject() { call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"batch subject $1\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id'; }
 BATCH1=$(batch_subject one)
 BATCH2=$(batch_subject two)
 BATCH3=$(batch_subject three)
@@ -680,6 +723,31 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BATCH3\",\"tier\":2,\"
   || fail "a verdict door decided an entry another reviewer was holding"
 SESSION=$HELD_S call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BATCH3\",\"tier\":2,\"note\":\"mine to decide\"}" \
   | field '.ok' > /dev/null || fail "the holder of a lease could not decide what it was holding"
+
+# Contract: a reviewer who reconnects can still decide and release the page it
+# took. Binding verdicts to the session as well as the hand-out stranded a
+# reviewer whose connection dropped: a new session id, sixty minutes of its own
+# claimed rows refusing to be decided, and `release` answering not-held.
+RECON=$(batch_subject "reconnect subject")
+OLD_S=$(new_session)
+SESSION=$OLD_S call review_claim "{\"contributor_key\":\"$OPKEY\",\"refs\":[\"$RECON\"]}" | field '.results[0].state' | grep -q claimed \
+  || fail "a reviewer could not claim an entry to reconnect over"
+NEW_S=$(new_session)
+SESSION=$NEW_S call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$RECON\",\"tier\":1,\"note\":\"before taking it back\"}" \
+  | field '.refused[0].error' | grep -q "under an earlier session" \
+  || fail "a reconnected reviewer was refused its own page without being told how to take it back"
+call query "{\"sql\":\"select contribution_id from q_review_claims where identity_id = '$OPID' and expires_at > now()\"}" \
+  | grep -q "$RECON" || fail "a reconnected reviewer could not find the page it was still holding"
+SESSION=$NEW_S call review_claim "{\"contributor_key\":\"$OPKEY\",\"refs\":[\"$RECON\"]}" \
+  | python3 -c "import sys,json; r=json.load(sys.stdin)['results'][0]; assert r['state']=='claimed', r" \
+  || fail "a reconnected reviewer could not take back its own lease"
+SESSION=$NEW_S call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$RECON\",\"tier\":1,\"note\":\"still mine\"}" \
+  | field '.ok' > /dev/null || fail "a reconnected reviewer could not decide its own claimed entry"
+RECON2=$(batch_subject "reconnect release subject")
+SESSION=$OLD_S call review_claim "{\"contributor_key\":\"$OPKEY\",\"refs\":[\"$RECON2\"]}" > /dev/null
+SESSION=$NEW_S call review_claim "{\"contributor_key\":\"$OPKEY\",\"refs\":[\"$RECON2\"],\"action\":\"release\"}" \
+  | python3 -c "import sys,json; r=json.load(sys.stdin)['results'][0]; assert r['state']=='released', r" \
+  || fail "a reconnected reviewer could not hand back the page it was holding"
 
 # Contract: the lease belongs to a reviewing session, not to a key. One agent
 # fleet reviews under one contributor key, so exclusion by identity gave every

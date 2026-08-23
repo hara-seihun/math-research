@@ -1,7 +1,7 @@
 import { sql } from "./db.ts";
 import { sha256hex, verifyAuthorship } from "./identity.ts";
 import { issueReceipt } from "./receipts.ts";
-import { createEdge, refreshAround } from "./graph.ts";
+import { createEdge, vetEdge, refreshAround } from "./graph.ts";
 import { isPatchSubmission, MAX_DIFF_BYTES, extractDiff, PATCH_REPO } from "./patch.ts";
 import { LADDER_ESCAPE, ladderRefusal, priorRungs } from "./ladder.ts";
 import { EXPOSITION_KIND } from "./exposition.ts";
@@ -163,6 +163,13 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
                      ${sql.json({ kind: input.kind, title: input.title, artifact_hash: hash, signature: input.signature ?? null } as never)})`;
 
     for (const link of input.relates_to ?? []) {
+      // The entry lands either way; a relation its endpoint cannot bear does
+      // not, and the author is told which one to use instead.
+      const wrongShape = await vetEdge(tx, { dst: link.id, rel: link.rel });
+      if (wrongShape) {
+        notes.push(`I did not make the ${link.rel} link to ${link.id}: ${wrongShape}`);
+        continue;
+      }
       await createEdge(tx, { identityId, src: contribution!.id, dst: link.id, rel: link.rel, note: link.note });
     }
     for (const target of input.supersedes ?? []) {

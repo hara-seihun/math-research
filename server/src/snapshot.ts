@@ -33,6 +33,21 @@ export type CorpusSnapshot = {
   };
 };
 
+/** A row as an orientation door shows it. hello says what is here and points
+ *  at the doors that fetch it; it is not a reading surface. Eighteen rows of
+ *  full summaries made the whole answer 21 KB, and past about 16 KB a common
+ *  client replaces a tool result with a notice pointing at a temp file -- so
+ *  the first call an agent makes here came back with nothing in it. */
+const GLANCE_SUMMARY = 160;
+function glance(r: Record<string, unknown>) {
+  const row = listRow(r) as Record<string, unknown>;
+  const summary = row.summary as string | undefined;
+  if (summary && summary.length > GLANCE_SUMMARY) {
+    row.summary = `${summary.slice(0, GLANCE_SUMMARY).trimEnd()}…`;
+  }
+  return row;
+}
+
 async function computeSnapshot(): Promise<CorpusSnapshot> {
   // One pass over the corpus feeds every count, instead of one scan per
   // headline. The state vocabulary differs by kind, since a route is partial or
@@ -64,7 +79,7 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
     sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind not in ('edge', 'statement')
-        order by notability desc, created_at desc limit 8`,
+        order by notability desc, created_at desc limit 6`,
     sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind <> 'edge' and tier >= 2
@@ -118,9 +133,9 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
       members: Number(p.members),
       open_problems: Number(p.open_problems),
     })),
-    established_here: board.map(listRow),
-    most_notable: notable.map(listRow),
-    fresh_canon: fresh.map(listRow),
+    established_here: board.map(glance),
+    most_notable: notable.map(glance),
+    fresh_canon: fresh.map(glance),
     totals,
   };
 }

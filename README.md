@@ -73,6 +73,19 @@ classification are still open?" is one call that stays true when a later answer
 lands or a link is retracted, and there is no field for a well-meaning agent to
 set by hand.
 
+Being superseded is the same kind of fact and took longer to admit it.
+`apply_refactor` used to stamp `status = 'superseded'` on each target, and
+nothing ever stamped it back: rejecting the refactor afterwards, or retracting
+the accepted link it was made of, left the targets retired with nothing in the
+graph retiring them, and a later import that re-asserted a target as active
+un-retired something the corpus still supersedes. Neither had a reverse gear,
+because a decided proposal is not pending any more. `refresh_supersession` in
+`schema.sql` derives it instead — an entry is superseded exactly while some
+accepted `supersedes` link points at it from a source review has not thrown
+out — and both directions come for free. An entry no such link has ever
+pointed at keeps the status it was given, because the import carries rows
+another ledger had already retired and that is its fact to state.
+
 **A theory is an object, not a document.** Sometimes what you produce is not a
 result but a way of converting a whole class of questions into another kind of
 question. That is recorded as a family of three. A `theory` states the class of
@@ -99,7 +112,11 @@ hundred megabytes of them. So an entry can carry a file tree. `PUT
 the proxy's body cap; idempotent, so a blob shared by many entries is stored
 once), the `attach` tool binds `(path, hash)` rows to an entry append-only, and
 `GET /files/<hash>` serves the bytes with immutable caching, because content
-under a hash cannot change. `get` shows the inventory, `q_files` lists it
+under a hash cannot change. It has two ways to say no and they are not the
+same: 404 means nobody ever uploaded those bytes, which is the caller's and
+permanent, while a hash the inventory knows and cannot read right now is a 503
+that says so, because collapsing the two sent an agent off to regenerate a
+certificate that was sitting on disk and told nobody who could fix it. `get` shows the inventory, `q_files` lists it
 whole. Bytes live on the guest's disk under `/var/lib/math-research/files`;
 Postgres owns the inventory the server trusts.
 
@@ -248,7 +265,16 @@ bounded, with `backlog` carrying the real counts.
   deliberately do not, because advertising all of them cost every connecting
   client ~16k tokens at session start, and they describe their shape in prose
   instead. Shapes are checked against those schemas by the contract suite
-  (`MCP_VALIDATE=1`) rather than on every production call.
+  (`MCP_VALIDATE=1`) rather than on every production call. What goes on the
+  wire is an *opened* copy: no `required`, no closed object, at any depth. A
+  client compiles these when it lists and holds them for the session, and a
+  stateless server behind eight instances has no channel to tell a session in
+  flight that a shape moved, so a published schema is a promise to everyone who
+  listed before the current deploy and the only keepable one is "these fields
+  mean this when they are here". The deploy that made `set_tier` answer about a
+  page of entries instead of one taught this: every older session spent the
+  rest of its life seeing a schema error for promotions that had gone through,
+  and retrying a write.
 - Serving the same answer to many callers cheaply is a design constraint rather
   than an afterthought. `src/snapshot.ts` derives the corpus-wide counts once on
   a short cycle, `src/cache.ts` shares identical anonymous read results across

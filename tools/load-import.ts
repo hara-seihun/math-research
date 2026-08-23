@@ -361,6 +361,11 @@ await db`
   where t.id is not null and not exists (select 1 from trail_entry e where e.trail_id = t.id)`;
 console.log(`trails: ${trails} new`);
 
+// First, because an import carries the exporting ledger's `status` and will
+// happily re-activate an entry this corpus supersedes. Supersession is derived
+// from the accepted links here, so the reconcile is a function call rather
+// than a rule the exporter has to know.
+await db`select refresh_supersession(null)`;
 await db`select refresh_state(null)`;
 // Twice: a statement inherits from its write-up, then a cell from the
 // programme that just inherited one.

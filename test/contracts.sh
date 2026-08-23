@@ -252,6 +252,19 @@ curl -sf "$FILES/$FHASH" -o "$WORK/blob.back"
 cmp -s "$FBLOB" "$WORK/blob.back" || fail "downloaded file differs from the uploaded bytes"
 code=$(curl -s -o /dev/null -w '%{http_code}' "$FILES/$LIAR")
 [[ $code == 404 ]] || fail "an unstored hash did not 404 (HTTP $code)"
+# Contract: a hash the inventory knows is never a 404. "Nobody uploaded that"
+# is the caller's mistake and permanent; "the bytes are not readable right
+# now" is ours and probably not, and one 404 covering both sent an agent off to
+# regenerate a certificate that was sitting on disk while telling nobody who
+# could fix it. get and q_files still list the file, so the answer has to admit
+# that it does.
+mv "$FILE_ROOT/objects/${JHASH:0:2}/$JHASH" "$WORK/hidden.json"
+MISSING=$(curl -s -o "$WORK/missing.json" -w '%{http_code}' "$FILES/$JHASH")
+mv "$WORK/hidden.json" "$FILE_ROOT/objects/${JHASH:0:2}/$JHASH"
+[[ $MISSING == 503 ]] || fail "an attached file whose bytes are unreadable answered HTTP $MISSING, not 503"
+field '.error' < "$WORK/missing.json" | grep -qi "attached" \
+  || fail "the unreadable-bytes answer reads like the hash was never here: $(cat "$WORK/missing.json")"
+[[ $(curl -sf "$FILES/$JHASH") == '{"receipt": true}' ]] || fail "the file did not come back once its bytes were readable again"
 
 # The runner is a separate sandboxed process; these tests stand in for it.
 # Checks are spooled under the hash of their source, which is the whole point:
@@ -597,6 +610,40 @@ d=json.load(sys.stdin)
 rows=d["links"]["out"]["supersedes"]
 assert any(x["id"]=="'"$SUP_OLD"'" and x["status"]=="superseded" for x in rows), rows' \
   || fail "a supersedes link lost its retired target"
+# Contract: supersession is derived from the accepted links, so it has a
+# reverse gear. Applying a refactor used to write 'superseded' onto every
+# target and nothing ever wrote it back: rejecting the refactor afterwards, or
+# retracting the link it was made of, left the targets retired with nothing in
+# the graph saying why, and apply_refactor would not look at a proposal it had
+# already decided. Review changing its mind is ordinary; it must not need a
+# migration.
+status_of() { call get "{\"ref\":\"$1\"}" | field '.status // "active"'; }
+call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$SUP_NEW\",\"reason\":\"not-mathematics\",\"note\":\"the replacement was worse\"}" \
+  | field '.ok' > /dev/null
+[[ $(status_of "$SUP_OLD") == active ]] \
+  || fail "rejecting a refactor left its targets superseded, with nothing in the graph superseding them"
+# And back again, because review reversing itself twice is also ordinary.
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$SUP_NEW\",\"tier\":2,\"note\":\"on a second reading the cut is right\"}" \
+  | field '.ok' > /dev/null
+[[ $(status_of "$SUP_OLD") == superseded ]] \
+  || fail "restoring a refactor did not retire again what it supersedes"
+# Contract: an import carries the exporting ledger's `status` and will happily
+# re-activate something this corpus supersedes. The reconcile is a function
+# call, not a rule the exporter has to know.
+psql -q -h "$PGHOST" -d math -c \
+  "update contribution set status = 'active' where id = '$SUP_OLD'" > /dev/null
+psql -q -h "$PGHOST" -d math -c 'select refresh_supersession(null)' > /dev/null
+[[ $(status_of "$SUP_OLD") == superseded ]] \
+  || fail "a reactivated entry stayed active although an accepted link still supersedes it"
+# Contract: an entry no supersedes link has ever pointed at keeps the status it
+# was given. The import carries rows that another ledger had already retired,
+# and that is its fact to state, not this graph's to overrule.
+IMPORTED_SUP=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"retired before it got here\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+psql -q -h "$PGHOST" -d math -c \
+  "update contribution set status = 'superseded' where id = '$IMPORTED_SUP'" > /dev/null
+psql -q -h "$PGHOST" -d math -c 'select refresh_supersession(null)' > /dev/null
+[[ $(status_of "$IMPORTED_SUP") == superseded ]] \
+  || fail "an entry superseded elsewhere was re-activated by a graph that never had an opinion about it"
 # Contract: anyone at all can flag, and it reaches a trusted reviewer. A
 # refutation link is the objection; acting on it stays trusted-only.
 FLAG_T=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"a result somebody disputes\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
@@ -1657,21 +1704,42 @@ for tool in $REGISTERED; do
   echo "$ANSWER" | grep -q '"error"' && fail "$tool answered with an error: $(echo "$ANSWER" | head -c 300)"
 done
 
-# Contract: an advertised output schema is open. A client caches these when it
-# lists, and this server is stateless HTTP behind several instances, so there
-# is no way to tell a session already in flight that a shape moved. Closed
-# schemas made every added field a break: after one deploy, sessions that had
-# listed beforehand rejected the answer to `set_tier` calls that had in fact
-# succeeded, and retried them. Growing the answer must stay free.
+# Contract: an advertised output schema demands nothing, at any depth. A client
+# compiles these when it lists and holds them for the session, and this server
+# is stateless HTTP behind eight instances with no notification stream, so
+# there is no way to tell a session already in flight that a shape moved.
+# Whatever a published schema insists on, this place will eventually change:
+# after the deploy that made `set_tier` answer about a page of entries instead
+# of one, every session that had listed beforehand saw a schema error for
+# promotions that had in fact gone through — the copy it held required a root
+# `id` the new answer no longer carried — and retried them, which on a write
+# door is a second write. So the wire copy documents fields and requires none.
+# The zod objects behind them stay strict, and MCP_VALIDATE=1 above is where a
+# response that is not exactly what it claims still fails.
 curl -sf --max-time 10 -X POST "$MCP" -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | sed -n 's/^data: //p' | python3 -c 'import sys,json
 tools = json.loads(sys.stdin.read())["result"]["tools"]
-closed = [t["name"] for t in tools if t.get("outputSchema", {}).get("additionalProperties") is False]
-assert not closed, f"closed output schemas: {closed}"
+SUB = ["items","additionalProperties","not","if","then","else","propertyNames","contains"]
+MAPS = ["properties","patternProperties","$defs","definitions"]
+LISTS = ["anyOf","oneOf","allOf","prefixItems"]
+def demands(node, where):
+    if not isinstance(node, dict): return []
+    bad = []
+    if "required" in node: bad.append(f"{where}.required")
+    if node.get("additionalProperties") is False: bad.append(f"{where}.additionalProperties=false")
+    for k in SUB:
+        if k in node: bad += demands(node[k], f"{where}/{k}")
+    for k in MAPS:
+        for name, sub in (node.get(k) or {}).items(): bad += demands(sub, f"{where}/{k}/{name}")
+    for k in LISTS:
+        for i, sub in enumerate(node.get(k) or []): bad += demands(sub, f"{where}/{k}/{i}")
+    return bad
+bad = [b for t in tools for b in demands(t.get("outputSchema"), t["name"])]
+assert not bad, f"output schemas that demand something: {bad}"
 assert any("outputSchema" in t for t in tools), "no tool advertises an output schema at all"' \
-  || fail "a tool advertises a closed output schema, so adding a field breaks every live session"
+  || fail "a tool publishes an output schema a future answer could fail, which breaks every session that listed before the deploy"
 
 # ——— A stranger with only the URL can find everything ————————————————————
 # The whole consumer story is: someone is handed https://…/mcp and nothing

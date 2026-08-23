@@ -153,7 +153,7 @@ export function fitToBudget(packet: Record<string, unknown>, target = RESPONSE_T
   const visit = (obj: Record<string, unknown>, prefix: string, depth: number) => {
     for (const [key, value] of Object.entries(obj)) {
       if (Array.isArray(value)) lists.push({ name: prefix + key, rows: value, had: value.length });
-      else if (value && typeof value === "object" && depth < 1) {
+      else if (value && typeof value === "object" && depth < 2) {
         visit(value as Record<string, unknown>, `${prefix}${key}.`, depth + 1);
       }
     }

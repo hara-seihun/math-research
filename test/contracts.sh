@@ -227,6 +227,18 @@ assert len(raw) < 16000, len(raw)
 assert d['content_range']['shown'] >= 2000, d['content_range']" || fail "an unsized body did not yield to the response budget"
 call get "{\"ref\":\"$LONG_ID\",\"content_limit\":40000}" | python3 -c "import sys,json; d=json.load(sys.stdin)
 assert 'content_range' not in d, d['content_range']" || fail "a body the caller sized was trimmed anyway"
+# The other half of the same budget: an entry can exceed it on its links alone,
+# whatever its body does. A much-linked conjecture came to 18 KB with the body
+# already floored, so the answer was dropped whole by the client that asked.
+HUB=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"conjecture\",\"title\":\"a conjecture everything points at\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+for i in $(seq 1 24); do
+  SPOKE=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"spoke $i toward the hub, with a title long enough to weigh something in a list row\",\"summary\":\"$(python3 -c "print('a summary that costs bytes. ' * 8)")\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$HUB\",\"rel\":\"serves\"}]}" | field '.id')
+done
+call get "{\"ref\":\"$HUB\"}" | python3 -c "import sys,json
+raw = sys.stdin.read()
+d = json.loads(raw)
+assert len(raw) < 16000, len(raw)
+assert d['links'], 'the entry came back with none of its links'" || fail "a much-linked entry did not fit what a client will hold"
 call get "{\"ref\":\"$LONG_ID\",\"content_offset\":1000,\"content_limit\":1000}" | python3 -c "import sys,json; d=json.load(sys.stdin)
 assert d['content'] == '$LONG'[1000:2000], d['content'][:80]" || fail "the next page of a body was not the next page"
 call get "{\"ref\":\"$CID\"}" | python3 -c "import sys,json; d=json.load(sys.stdin)

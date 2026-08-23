@@ -509,6 +509,9 @@ export const RelatedOut = z.union([
 ]);
 
 export const GetOut = z.strictObject({
+  sample: z
+    .string().optional()
+    .describe("Present when the lists around the entry were cut to keep the answer inside what a client will hold: which ones, and to what."),
   id: z.string(),
   kind: z.string(),
   title: z.string(),

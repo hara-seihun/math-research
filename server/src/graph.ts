@@ -364,7 +364,13 @@ export async function rejectedLinks(id: string) {
     select e.contribution_id as edge_id, e.rel,
            case when e.src = ${id} then 'out' else 'in' end as direction,
            case when e.src = ${id} then e.dst else e.src end as other,
-           c.title, ec.tier as edge_tier, rejection_of(ec.id) as rejection
+           c.title, ec.tier as edge_tier,
+           -- The verdict, at the length a list row is read at. A reviewer's
+           -- note runs to a paragraph and eight of them made this section
+           -- 6 KB of a get that then did not reach its reader at all; the
+           -- whole note is on the edge itself, one get away.
+           jsonb_set(rejection_of(ec.id), '{note}',
+                     to_jsonb(left(rejection_of(ec.id)->>'note', 240))) as rejection
     from edge e
     join contribution ec on ec.id = e.contribution_id and ec.status = 'rejected'
     join contribution c on c.id = case when e.src = ${id} then e.dst else e.src end

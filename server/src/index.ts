@@ -1368,7 +1368,7 @@ defineTool(
     entry.content = body.length > room ? body.slice(0, room) : body;
     const shown = (entry.content as string).length;
     const paged = content_offset > 0 || shown < total;
-    return structured(GetOut, {
+    const packet: Record<string, unknown> = {
       ...entry,
       ...(boardAt ? { board_at: boardAt } : {}),
       ...(originSource ? { origin_source: originSource } : {}),
@@ -1425,7 +1425,15 @@ defineTool(
               : {}),
           }
         : {}),
-    });
+    };
+    // The body already yielded to everything else, but a much-linked entry can
+    // exceed the budget on its links alone -- a famous conjecture came to
+    // 18 KB with the body floored at 2 000. The lists give way next, and say
+    // so; `links.more` and the section totals still count what is there.
+    const dropped = fitToBudget(packet);
+    return structured(GetOut, dropped
+      ? { ...packet, sample: `${dropped}. get({ref, rel:'<relation>'}) pages one relation in full, and q_links has every one of them.` }
+      : packet);
   },
 );
 

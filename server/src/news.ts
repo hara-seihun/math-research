@@ -181,10 +181,17 @@ export async function newsPacket(from: number, head: number, questions: number, 
     from event join contribution_overview c on c.id = event.contribution_id
     where ${window} and event.kind = 'verification' and event.payload->>'outcome' = 'passed'
     ${BY_WEIGHT} limit ${limit}`,
+    // One refactor ripples through an entry as a supersession and a
+    // restoration at once, and the restoration half carries neither a note nor
+    // a replacement. Left as two rows, five entries filled a list of ten and
+    // half of them read as a title and an empty dash. One row per entry, and
+    // it is the half that says why.
     sql`
-    select c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source,
+    select * from (
+    select distinct on (c.id)
+           c.id, c.kind, c.title, c.summary, c.tier, c.state, c.notability, c.lean_verified, c.origin, c.origin_source,
            c.names, c.created_at, c.status,
-           event.kind as decision, event.payload->>'note' as note, event.created_at as at,
+           event.kind as decision, event.payload->>'note' as note, event.created_at as at, event.seq,
            -- Most supersessions and restorations are derived: a refactor moved
            -- the corpus and the entry followed, so there is no note to give
            -- and the reason is the entry that replaced this one. Reading the
@@ -195,7 +202,11 @@ export async function newsPacket(from: number, head: number, questions: number, 
     from event join contribution_overview c on c.id = event.contribution_id
     left join contribution b on b.id = (event.payload->>'by')::uuid
     where ${window} and event.kind = any (${TERMINAL_KINDS})
-    ${BY_WEIGHT} limit ${limit}`,
+    order by c.id,
+             (event.payload->>'note' is not null) desc,
+             (event.payload->>'by' is not null) desc,
+             event.seq desc) c
+    order by c.notability desc, c.seq desc limit ${limit}`,
     sql<{ n: number }[]>`
     select count(*)::int as n from event where ${window} and kind = any (${TERMINAL_KINDS})`,
     // Provenance corrections. Rare, and the one movement a reader must not

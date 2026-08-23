@@ -13,12 +13,19 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UUID_PREFIX = /^[0-9a-f]{8,32}$/i;
 
 /** `kind` hard-filters; `prefer` only breaks a tie, so "cell A3" asked of
- *  frontier lands on the question rather than the write-up about it. */
+ *  frontier lands on the question rather than the write-up about it.
+ *
+ *  `exact` drops the trigram fallback. A misspelling resolved to the nearest
+ *  title is the right answer to "show me" and the wrong one to "promote this
+ *  to canon": a verdict door handed a ref it cannot resolve must say so, not
+ *  guess, because the guess is a permanent decision recorded against an entry
+ *  nobody read. */
 export async function deref(
   ref: string,
-  opts?: string | { kind?: string; prefer?: string[] },
+  opts?: string | { kind?: string; prefer?: string[]; exact?: boolean },
 ): Promise<Ref | { error: string; candidates?: unknown[] }> {
-  const { kind, prefer } = typeof opts === "string" ? { kind: opts, prefer: undefined } : (opts ?? {});
+  const { kind, prefer, exact: exactOnly } =
+    typeof opts === "string" ? { kind: opts, prefer: undefined, exact: false } : (opts ?? {});
   const raw = ref.trim();
   if (!raw) return { error: "pass an id, name, handle, or title." };
   if (UUID.test(raw)) {
@@ -71,6 +78,7 @@ export async function deref(
   if (exact.length > 1) {
     return { error: `"${raw}" names ${exact.length} entries. Pass one of these, by id or exact title.`, candidates: exact };
   }
+  if (exactOnly) return { error: `nothing here is called exactly "${raw}". Pass an id, or search for it first.` };
   const fuzzy = await sql.begin(async (tx) => {
     await tx`select set_config('pg_trgm.word_similarity_threshold', '0.35', true)`;
     return tx<{ id: string; title: string; kind: string; score: number }[]>`

@@ -253,7 +253,7 @@ export const NEIGHBOUR_CAP = 8;
 export async function neighbourhood(id: string, opts?: { rel?: string; offset?: number; limit?: number }) {
   const rel = opts?.rel ?? null;
   const out = await sql`
-    select e.rel, e.dst as id, c.kind, c.title, c.tier, c.notability, c.status,
+    select e.contribution_id as edge_id, e.rel, e.dst as id, c.kind, c.title, c.tier, c.notability, c.status,
            ec.tier as edge_tier, ec.identity_id as asserted_by, e.created_at as linked_at
     from edge e join contribution ec on ec.id = e.contribution_id
     join contribution c on c.id = e.dst
@@ -261,7 +261,7 @@ export async function neighbourhood(id: string, opts?: { rel?: string; offset?: 
       and (c.status = 'active' or e.rel = 'supersedes')
     order by ec.tier desc, c.notability desc`;
   const incoming = await sql`
-    select e.rel, e.src as id, c.kind, c.title, c.tier, c.notability, c.status,
+    select e.contribution_id as edge_id, e.rel, e.src as id, c.kind, c.title, c.tier, c.notability, c.status,
            ec.tier as edge_tier, ec.identity_id as asserted_by, e.created_at as linked_at
     from edge e join contribution ec on ec.id = e.contribution_id
     join contribution c on c.id = e.src
@@ -271,6 +271,7 @@ export async function neighbourhood(id: string, opts?: { rel?: string; offset?: 
   const group = (rows: typeof out) =>
     rows.reduce<Record<string, unknown[]>>((acc, r) => {
       (acc[r.rel] ??= []).push({
+        edge_id: r.edge_id,
         id: r.id, kind: r.kind, title: r.title, tier: r.tier, edge_tier: r.edge_tier,
         ...(r.status === "active" ? {} : { status: r.status }),
       });
@@ -296,6 +297,44 @@ export async function neighbourhood(id: string, opts?: { rel?: string; offset?: 
     ...(Object.keys(i.more).length ? { in: i.more } : {}),
   };
   return { out: o.kept, in: i.kept, ...(Object.keys(more).length ? { more } : {}) };
+}
+
+const REJECTED_SHOWN = 8;
+
+/**
+ * The links review threw out, which the neighbourhood above does not carry
+ * because a rejected assertion is not part of what an entry says.
+ *
+ * It has to be readable somewhere near the tier, though, and it was not: a
+ * reviewer promoted three edges out of one theorem, having read them as
+ * ordinary unreviewed T0 out-edges, and learned from `restored: true` in the
+ * reply that two had been rejected minutes earlier for reasons nobody had
+ * shown them. The verdict travels with the row here, and set_tier now asks for
+ * `restore: true` before reversing one.
+ */
+export async function rejectedLinks(id: string) {
+  const rows = await sql<{
+    edge_id: string; rel: string; direction: string; other: string; title: string;
+    edge_tier: number; rejection: Record<string, unknown> | null;
+  }[]>`
+    select e.contribution_id as edge_id, e.rel,
+           case when e.src = ${id} then 'out' else 'in' end as direction,
+           case when e.src = ${id} then e.dst else e.src end as other,
+           c.title, ec.tier as edge_tier, rejection_of(ec.id) as rejection
+    from edge e
+    join contribution ec on ec.id = e.contribution_id and ec.status = 'rejected'
+    join contribution c on c.id = case when e.src = ${id} then e.dst else e.src end
+    where e.src = ${id} or e.dst = ${id}
+    order by ec.updated_at desc
+    limit ${REJECTED_SHOWN + 1}`;
+  if (!rows.length) return null;
+  const shown = rows.slice(0, REJECTED_SHOWN);
+  if (rows.length <= REJECTED_SHOWN) return { links: shown, total: shown.length };
+  const [{ n }] = await sql<{ n: number }[]>`
+    select count(*)::int as n from edge e
+    join contribution ec on ec.id = e.contribution_id and ec.status = 'rejected'
+    where e.src = ${id} or e.dst = ${id}`;
+  return { links: shown, total: n! };
 }
 
 // --- Similarity oracle (NCD) ------

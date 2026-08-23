@@ -13,9 +13,10 @@ insert into config (key, value) values
              "review":0.4,"edge":0.0,"_default":1.0},
     "rel": {"proves":1.5,"answers":1.5,"via":1.3,"serves":1.2,"disproves":1.2,"refutes":1.2,
             "generalizes":1.2,"uses":1.0,"depends-on":1.0,"equivalent-to":1.0,
-            "reformulates":1.0,"rests-on":1.0,"dictionary-of":0.8,
-            "attacks":0.8,"refines":0.8,"introduces":0.7,"specializes":0.6,"repairs":0.6,
-            "expounds":0.4,"about":0.3,
+            "reformulates":1.0,"rests-on":1.0,"explains":1.0,"constrains":0.9,"realizes":0.9,
+            "dictionary-of":0.8,
+            "attacks":0.8,"refines":0.8,"introduces":0.7,"implements":0.7,"specializes":0.6,"repairs":0.6,
+            "expounds":0.4,"about":0.3,"bears-on":0.3,
             "reviews":0.3,"supersedes":0.2,"in-front":0.1,"part-of":0.1,
             "duplicates":0.1,"amends":0.0,"assesses-impact":0.0,"_default":0.5},
     "tier": {"0":0.0,"1":1.0,"2":3.0,"3":6.0},
@@ -45,3 +46,16 @@ insert into topic_rule (topic, pattern, ord) values
   ('optimization', '\y(optimization|linear program|convex program|semidefinite|duality|gradient|minimax|oracle|regret|online algorithm)\y', 15),
   ('logic', '\y(first-order|model theory|proof theory|decidab|computab|turing|set theory|forcing|axiom of|lambda calculus|type theory)\y', 16)
 on conflict (topic) do nothing;
+
+-- A relation added after a deployment reaches the live policy through here and
+-- not through the seed above, which is deliberately non-clobbering and so
+-- never runs again. Missing keys only: the operator's own tuning of a weight
+-- that is already set wins, and re-running changes nothing. Notability is not
+-- recomputed, because a relation nothing has asserted yet cannot have moved a
+-- score; set_tuning is what recomputes when a live weight changes.
+update config c
+   set value = jsonb_set(c.value, '{rel}', missing.merged), updated_at = now()
+  from (select ('{"explains":1.0,"constrains":0.9,"realizes":0.9,"implements":0.7,"bears-on":0.3}'::jsonb
+                || (value->'rel')) as merged
+          from config where key = 'notability_weights') missing
+ where c.key = 'notability_weights' and c.value->'rel' is distinct from missing.merged;

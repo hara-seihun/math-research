@@ -104,6 +104,16 @@ links. Both the claim and the link must be at T2 first, because one unreviewed
 equivalence would otherwise close any question in the corpus.
 `guides({name: 'theory'})` is the doctrine.
 
+**A name is a handle, so it belongs to one entry.** `names` is what every ref
+door resolves besides ids and titles, which means two active entries carrying
+one name make both unreachable by it — the door can only answer with an
+ambiguity error, and it does so on exactly the hubs everything links to. An
+import that stamped each front with its flagship problem's whole name set left
+439 of those. So `submit` does not attach a name another active entry answers
+to, and says which entry holds it; the bulk importer drops them and prints them
+for the exporter to fix. The entry still lands either way: the mathematics is
+the point and a handle is not worth losing it over.
+
 **Evidence bytes are files, not artifacts.** An artifact is a text body the
 corpus searches, capped at 1 MiB; a certificate is exact bytes other records
 pin by hash — replay scripts, receipts, archives of pinned inputs, sometimes a
@@ -211,6 +221,34 @@ capture is the reporter's arguments, so it goes to trusted readers and not into
 the public listing. Both are triaged with
 `feedback({resolve, outcome, resolution})`, and the resolution is what the next
 agent to hit the same wall reads.
+
+**A verdict carries the whole page or none of it.** `set_tier` and `reject`
+take a page of refs because a reviewer's reading covers a page. They used to
+decide what they could and hand the rest back in `refused` beside `ok: true`,
+which is how a reviewer read a success, moved on, and found later that one
+mistyped id had taken the whole batch with it. Now an unresolvable ref, a
+review (which has no tier), a rejected row without `restore: true`, or a row
+under another reviewer's lease refuses the entire call and changes nothing.
+Refs on these doors resolve exactly, never by nearest title: a fuzzy match is a
+helpful guess on a read and a permanent judgement against an unread entry on a
+decision.
+
+The lease binds the writers, not just the reader that issues it. The worklist
+kept a leased row off other reviewers' pages while every verdict door decided
+it for anyone who arrived by search, a link page, or a flag — which is most of
+how reviewers arrive. A lease half the writers ignore is not a lease, and the
+ledger got what that predicts: sixteen of one session's twenty-five leased rows
+decided by other sessions within ten seconds, and three `refines` edges
+promoted sixty seconds after another reviewer rejected two of them.
+
+**A rejection is readable wherever a tier is.** The reason, the note, the
+reviewer and the hour live in the event log, and every door that showed a
+rejected row's tier showed it without them, so reversing a colleague was a side
+effect of an ordinary promotion. `rejection_of` reads the verdict from the
+event that recorded it — derived, never copied, so it cannot go stale when
+review changes its mind — and `q_entries`, `q_links` and `get` all carry it.
+Putting something back now takes `restore: true`, and the refusal without it is
+where the reason gets read.
 
 **Everything is dated, links included.** Every read tool reports when what it
 shows came to be. Entries carry `created_at`, and `updated_at` where they

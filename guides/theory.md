@@ -92,8 +92,18 @@ answers a statement it is *equivalent* to. The database enforces that in
 `settlement_transport`, which is the whole reason fidelity is a typed field
 rather than an adjective. Two things transport a settlement.
 
-- a `reformulation` with fidelity `equivalent`, or a bare `equivalent-to` link;
+- a `reformulation` with fidelity `equivalent`, or a bare `equivalent-to` link
+  **between two questions**;
 - both the entry and the link promoted to **T2**.
+
+That second phrase is a type check, and it was missing until a reviewer found
+the hole by hand. A proved characterization — "P holds iff Q holds" — linked
+`equivalent-to` the open problem P has every ingredient of transport, and
+settles nothing: the theorem states an equivalence, it does not state P. There
+was no safe move left but to hold such links at T1 forever. Between two
+questions the link means what transport assumes it means, so an answer to
+either is an answer to both. When a theorem really is the answer, `proves` or
+`answers` says so and settles it directly.
 
 Then the reachability closure of that relation decides state. Answer the group
 question and the field question stops reading `open`, in whichever direction

@@ -31,6 +31,36 @@ export type SubmitInput = {
   definitions?: { term: string; statement: string; names: string[] }[];
 };
 
+/**
+ * Names that another active entry already answers to.
+ *
+ * A name is a handle: `link({src: 'CI-group census', ...})` has to land
+ * somewhere, and when two entries carry it the door can only refuse with an
+ * ambiguity error. The corpus grew 439 of those collisions before anyone
+ * noticed, most from an import that stamped a front with its flagship
+ * problem's whole name set, and they landed on exactly the hubs everything
+ * else links to. So a colliding name is not attached, and the submission says
+ * which entry holds it. The entry itself still lands: the mathematics is the
+ * point and a handle is not worth losing it over.
+ */
+export async function takenNames(
+  names: string[],
+): Promise<{ kept: string[]; refused: { name: string; held_by: string; title: string }[] }> {
+  if (!names.length) return { kept: [], refused: [] };
+  const clashes = await sql<{ name: string; id: string; title: string }[]>`
+    select n.name, c.id, c.title
+    from unnest(${names}::text[]) as n(name)
+    join contribution c
+      on c.status = 'active' and c.kind <> 'edge'
+     and (c.names_norm @> array[normalize_ref(n.name)] or normalize_ref(c.title) = normalize_ref(n.name))
+    order by c.notability desc`;
+  const held = new Map(clashes.map((c) => [c.name, c]));
+  return {
+    kept: names.filter((n) => !held.has(n)),
+    refused: [...held.entries()].map(([name, c]) => ({ name, held_by: c.id, title: c.title })),
+  };
+}
+
 export type SubmitResult =
   | {
       ok: true;
@@ -43,6 +73,7 @@ export type SubmitResult =
       receipt: unknown;
       notes: string[];
       introduced?: { id: string; term: string }[];
+      names_refused?: { name: string; held_by: string; title: string }[];
     }
   | { ok: false; error: string };
 
@@ -96,6 +127,17 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
     notes.push("your signature checks out against your registered public key, and is recorded as an authorship verification anyone can re-check.");
   }
 
+  const wanted = (input.names ?? []).map((n) => n.trim()).filter(Boolean).slice(0, 12);
+  const claimed = await takenNames(wanted);
+  const definitionNames = new Map<string, string[]>();
+  const definitionsRefused: { name: string; held_by: string; title: string }[] = [];
+  for (const d of input.definitions ?? []) {
+    const mine = await takenNames((d.names ?? []).map((n) => n.trim()).filter(Boolean));
+    definitionNames.set(d.term, mine.kept);
+    definitionsRefused.push(...mine.refused);
+  }
+  const namesRefused = [...claimed.refused, ...definitionsRefused];
+
   const minted: { id: string; term: string }[] = [];
   let existing: { id: string } | undefined;
   const result = await sql.begin(async (tx) => {
@@ -104,7 +146,7 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
              on conflict do nothing`;
 
     const classifyText = `${input.title}\n${input.summary}\n${content}`.slice(0, 4000);
-    const names = (input.names ?? []).map((n) => n.trim()).filter(Boolean).slice(0, 12);
+    const names = claimed.kept;
     const [contribution] = await tx<
       { id: string; created_at: Date; artifact_hash: string; identity_id: string | null }[]
     >`
@@ -137,7 +179,7 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
                                   origin, origin_source)
         values ('definition', ${d.term}, ${d.statement.slice(0, 2000)}, ${defHash},
                 ${tx.json({ introduced_by: contribution!.id } as never)}, ${identityId},
-                classify_topics(${`${d.term}\n${d.statement}`}), ${d.names}::text[],
+                classify_topics(${`${d.term}\n${d.statement}`}), ${definitionNames.get(d.term) ?? []}::text[],
                 ${externalSource ? "external" : "ledger"}, ${externalSource ?? null})
         returning id`;
       await tx`insert into event (kind, contribution_id, identity_id, payload)
@@ -171,6 +213,13 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
 
   if (existing) {
     notes.push(`identical content already exists as ${existing.id}, so I linked it for you.`);
+  }
+  if (namesRefused.length) {
+    notes.push(
+      `${namesRefused.length === 1 ? "one name is" : `${namesRefused.length} names are`} already another active entry's, so ${namesRefused.length === 1 ? "it is" : "they are"} not attached: ` +
+        namesRefused.map((n) => `"${n.name}" is ${n.held_by} (${n.title})`).join("; ") +
+        ". A name is a handle every ref door resolves, so two entries sharing one makes both unreachable by it. Pick a distinct name and amend, or link to the entry that holds it if that is the one you meant.",
+    );
   }
   if (externalSource) {
     notes.push(
@@ -255,5 +304,6 @@ export async function submit(identityId: string | null, input: SubmitInput): Pro
     receipt,
     notes,
     ...(minted.length ? { introduced: minted } : {}),
+    ...(namesRefused.length ? { names_refused: namesRefused } : {}),
   };
 }

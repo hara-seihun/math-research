@@ -102,6 +102,24 @@ export async function holdersOf(ids: string[]): Promise<Map<string, ClaimRow>> {
   return new Map(rows.map((r) => [r.contribution_id, r]));
 }
 
+/** The same question a verdict asks: which of these is somebody else reading
+ *  right now?
+ *
+ *  The lease used to bind only the door that handed it out. review_queue
+ *  refused to show a row another session held, and then set_tier, reject and
+ *  retract decided it anyway for anyone who had found it through search, a
+ *  link page, or a flag -- which is most of how reviewers arrive at an entry.
+ *  One reviewer watched sixteen of the twenty-five rows they had just leased
+ *  get decided by other sessions inside ten seconds, and another promoted
+ *  three edges a colleague had rejected sixty seconds earlier. A lease that
+ *  half the writers ignore is not a lease. */
+export async function heldByOthers(identityId: string, ids: string[]): Promise<Map<string, ClaimRow>> {
+  const mine = claimantOf(identityId);
+  const held = await holdersOf(ids);
+  for (const [id, row] of held) if (row.claimant === mine) held.delete(id);
+  return held;
+}
+
 /** Drop leases whose time is up. Nothing depends on this, because every read
  *  filters on expires_at, so it is housekeeping, run opportunistically off the queue
  *  call and allowed to fail without taking a request with it. */

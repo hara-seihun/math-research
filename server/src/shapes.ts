@@ -150,12 +150,13 @@ export const ExploringNow = z
   .describe("A fresh open trail touching this entry: someone is exploring here now.");
 
 const NeighbourLink = z.strictObject({
+  edge_id: z.string().describe("The link's own contribution id: what set_tier, reject and get take to act on the assertion rather than on either endpoint."),
   id: z.string(),
   kind: z.string(),
   title: z.string(),
   tier,
   edge_tier: z.number().int(),
-  status: z.string().optional().describe("Only when not 'active'."),
+  status: z.string().optional().describe("The endpoint's status, only when not 'active'."),
 });
 export const Neighbourhood = z
   .strictObject({
@@ -523,12 +524,45 @@ export const GetOut = z.strictObject({
   lean_verified: z.boolean(),
   origin: z.enum(["ledger", "external"]).describe("Priority: 'ledger' if the headline claim was first established here, 'external' if it was already established elsewhere."),
   origin_source: z.string().optional().describe("What established it, when origin is 'external'."),
-  content: z.string(),
-  media_type: z.string(),
+  content: z.string().nullable(),
+  content_range: z
+    .strictObject({
+      offset: z.number().int(),
+      shown: z.number().int(),
+      total: z.number().int().describe("The body's whole length in characters."),
+      next_offset: z.number().int().optional().describe("Pass as content_offset for the next page of the body."),
+    })
+    .optional()
+    .describe("Present only when you are holding part of a body rather than all of it."),
+  content_tip: z.string().optional(),
+  media_type: z.string().nullable(),
   author: z.string().nullable(),
   matched_by: z.string(),
   note: z.string().optional(),
+  rejection: z
+    .strictObject({ reason: z.string().nullable(), note: z.string().nullable(), by: z.string().nullable(), at: iso.nullable() })
+    .optional()
+    .describe("Why review threw this entry out, and who did. Present exactly while status is 'rejected'."),
   links: Neighbourhood,
+  rejected_links: z
+    .strictObject({
+      links: z.array(
+        z.strictObject({
+          edge_id: z.string(),
+          rel: z.string(),
+          direction: z.enum(["in", "out"]),
+          other: z.string(),
+          title: z.string(),
+          edge_tier: z.number().int(),
+          rejection: z
+            .strictObject({ reason: z.string().nullable(), note: z.string().nullable(), by: z.string().nullable(), at: iso.nullable() })
+            .nullable(),
+        }),
+      ),
+      total: z.number().int(),
+    })
+    .optional()
+    .describe("Links review threw out, with the verdict, so promoting one back is deliberate. They are not in `links`, which is what this entry asserts."),
   verifications: z
     .array(
       z.strictObject({
@@ -606,6 +640,10 @@ export const SubmitOut = z.strictObject({
     .array(z.strictObject({ id: z.string(), term: z.string() }))
     .optional()
     .describe("Definition entries minted from a theory's `introduces` rows, each already linked to the theory."),
+  names_refused: z
+    .array(z.strictObject({ name: z.string(), held_by: z.string(), title: z.string() }))
+    .optional()
+    .describe("Names another active entry already answers to, so they were not attached to yours. The entry landed; the handle is taken."),
   thanks: z.string(),
   attributed_to: z.string(),
   your_contributor_key: z.string().optional().describe("Shown once when this call minted your identity. Save it."),
@@ -1112,13 +1150,6 @@ export const SetOriginOut = z.strictObject({
     .describe("Questions this entry settles that reach the board because of this decision, which is what calling something ours again does."),
 });
 
-/** A ref a bulk decision could not act on, with why. The others still went
- *  through: one unresolvable ref in a page of a hundred is not a reason to
- *  make a reviewer re-read the ninety-nine. */
-export const RefusedRefs = z
-  .array(z.strictObject({ ref: z.string(), error: z.string() }))
-  .optional()
-  .describe("Refs this call did not act on, each with why. Everything else in the call was still decided.");
 
 export const SetTierOut = z.strictObject({
   ok: z.literal(true),
@@ -1135,8 +1166,7 @@ export const SetTierOut = z.strictObject({
           .describe("The entry had been rejected by review and this promotion put it back in the corpus."),
       }),
     )
-    .describe("Every entry this call moved. One decision per row in the public event ledger, all carrying the note."),
-  refused: RefusedRefs,
+    .describe("Every entry this call moved: all of them, because a page a verdict door cannot carry whole is refused whole."),
 });
 
 export const SetTuningOut = z.strictObject({
@@ -1177,8 +1207,7 @@ export const RejectOut = z.strictObject({
   note: z.string(),
   rejected: z
     .array(z.strictObject({ id: z.string(), title: z.string() }))
-    .describe("Every entry this call threw out. One decision per row in the public event ledger, all carrying the reason and note."),
-  refused: RefusedRefs,
+    .describe("Every entry this call threw out: all of them, because a page a verdict door cannot carry whole is refused whole."),
   reopened: z
     .array(z.strictObject({ id: z.string(), title: z.string() }))
     .describe("Questions these entries were claiming to settle, now open again because what settled them is out."),

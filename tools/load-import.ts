@@ -150,6 +150,49 @@ await db`
   from imp_contribution
   on conflict (hash) do nothing`;
 
+// ——— Names —————————————————————————————————————————————————
+// A name is a handle every ref door resolves, so two active entries carrying
+// one makes both unreachable by it. An export that stamps a programme with its
+// flagship problem's whole name set does that wholesale: this ledger carried
+// 439 collisions after one such run, landing on the hubs everything links to,
+// and a reviewer cleared them by hand with 24 amendments. Colliding names are
+// dropped here instead, on the rows that did not hold them first, and printed
+// so the export can be corrected at the source. Everything else about the row
+// still imports — a handle is not worth losing the mathematics over.
+await db`
+  create temp table imp_name_clash as
+  with wanted as (
+    select i.import_key, n.name, normalize_ref(n.name) as norm
+    from imp_contribution i, unnest(i.names) as n(name)
+  )
+  select w.import_key, w.name, held.id as held_by, held.title
+  from wanted w
+  left join lateral (
+    select c.id, c.title from contribution c
+     where c.status = 'active' and c.kind <> 'edge'
+       and (c.names_norm @> array[w.norm] or normalize_ref(c.title) = w.norm)
+       and c.metadata->>'import_key' is distinct from w.import_key
+     order by c.notability desc limit 1) held on true
+  where held.id is not null
+     or exists (select 1 from wanted o where o.norm = w.norm and o.import_key < w.import_key)`;
+const clashes = await db<{ import_key: string; name: string; held_by: string | null; title: string | null }[]>`
+  select import_key, name, held_by, title from imp_name_clash order by name limit 20`;
+const [{ n: clashCount }] = await db<{ n: number }[]>`select count(*)::int as n from imp_name_clash`;
+if (clashCount) {
+  await db`
+    update imp_contribution i
+       set names = coalesce(array(
+             select x from unnest(i.names) x
+             where not exists (select 1 from imp_name_clash k
+                               where k.import_key = i.import_key and k.name = x)), '{}')
+     where exists (select 1 from imp_name_clash k where k.import_key = i.import_key)`;
+  console.log(`names: ${clashCount} dropped as already taken`);
+  for (const c of clashes) {
+    console.log(`  "${c.name}" (${c.import_key}) -> ${c.held_by ? `${c.held_by} ${c.title}` : "an earlier row of this same import"}`);
+  }
+  if (clashCount > clashes.length) console.log(`  …and ${clashCount - clashes.length} more`);
+}
+
 // ——— Contributions: insert what is new, reconcile what changed ——————————
 await db`
   update imp_contribution i set id = c.id

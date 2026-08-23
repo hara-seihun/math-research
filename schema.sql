@@ -337,8 +337,26 @@ create unique index if not exists contribution_import_key_idx
 -- notability can join to the edge's own tier/status/author. Suggested rel
 -- vocabulary: depends-on, uses, proves, disproves, answers, refines,
 -- generalizes, specializes, refactors, supersedes, duplicates, reviews,
--- about, repairs. Multiple identities may assert the same (src,dst,rel);
--- each is its own contribution and the strongest active one wins in the graph.
+-- about, repairs, and the five below. Multiple identities may assert the same
+-- (src,dst,rel); each is its own contribution and the strongest active one
+-- wins in the graph.
+--
+-- Reviewers kept bending the list above to say things it has no word for, and
+-- said so: `attacks` pointed at a theorem it does not attack, `uses` on an
+-- argument that survives deleting the target, `generalizes` where the source
+-- explains the target without subsuming it. Each of those had to be caveated
+-- in prose in a tier note, which is a typed graph telling the truth in the one
+-- place nothing can read. So:
+--   explains    the source supplies the mechanism the target exhibits, without
+--               subsuming it: the identity behind a family of inequalities.
+--   constrains  the source limits what an answer to the target can look like
+--               without settling it: a no-go theorem over a programme.
+--   realizes    the source exhibits an instance of what the target describes.
+--   implements  the source carries out what the target specifies: the patch a
+--               review asked for, the computation a route laid out.
+--   bears-on    the source's finding applies to the target, which the source
+--               never examined. A review's defect reaching what builds on what
+--               it read is this and not `reviews`.
 create table if not exists edge (
   contribution_id uuid primary key references contribution(id),
   src             uuid not null references contribution(id),
@@ -348,6 +366,23 @@ create table if not exists edge (
 );
 create index if not exists edge_src_idx on edge (src, rel);
 create index if not exists edge_dst_idx on edge (dst, rel);
+-- Every rejection carries a reason, a note, and who wrote it, and they live in
+-- the event ledger where a reader of a tier does not look. Read from there
+-- rather than copied onto the row: a decision has one record, and the copy is
+-- what goes stale when review reverses itself. `event_contribution_idx` makes
+-- it an index lookup, so a view can carry it per row.
+-- Security definer because it is read through q_entries and q_links, and the
+-- role `query` switches into can see the public views and no base table. The
+-- body is one indexed row of one table, keyed by the id the caller already
+-- holds, so it hands back nothing a caller could not read from q_events.
+create or replace function rejection_of(p_id uuid) returns jsonb
+  language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('reason', e.payload->>'reason', 'note', e.payload->>'note',
+                            'by', e.identity_id, 'at', e.created_at)
+  from event e
+  where e.contribution_id = p_id and e.kind = 'rejected'
+  order by e.seq desc limit 1
+$$;
 -- The other half of the same rule, which a check constraint cannot express
 -- because it spans two rows: nothing reviews a review. Deliberately linking
 -- one is still the regress, just typed by hand instead of scheduled.
@@ -1068,10 +1103,21 @@ end $$;
 -- Transport is deliberately narrow, because a wrong equivalence would close
 -- real questions:
 --   * a kind='reformulation' entry with fidelity 'equivalent', linked to what
---     it restates with rel='reformulates'; or a bare rel='equivalent-to' link;
+--     it restates with rel='reformulates'; or a bare rel='equivalent-to' link
+--     between two questions;
 --   * the entry and the link must both be at T2 (canon). One-directional
 --     fidelities ('implies', 'implied-by') and unreviewed claims transport
 --     nothing. They are progress, and frontier shows them as such.
+--
+-- "Between two questions" is the type check the bare link was missing, and a
+-- reviewer found the hole by hand: a *proved* characterization theorem, `P
+-- holds iff Q holds`, linked equivalent-to the open problem P, is not an
+-- answer to P and must not settle it — but every ingredient of transport was
+-- there, so the only safe move left was holding the link at T1 forever. The
+-- theorem states an equivalence; it does not state P. Between two questions
+-- the link means what transport assumes it means: these are one question, so
+-- an answer to either is an answer to both. When a theorem really is the
+-- answer, `proves`/`answers` says so and settles it directly.
 -- Equivalence is symmetric and composes, so this is the reachability closure
 -- of that reviewed relation, depth-capped because a chain of six reviewed
 -- equivalences is already further than any reader will follow.
@@ -1085,7 +1131,8 @@ create or replace function settlement_transport() returns table (a uuid, b uuid)
     join contribution d on d.id = e.dst and d.status = 'active'
     where (e.rel = 'reformulates' and s.kind = 'reformulation' and s.tier >= 2
            and s.metadata->>'fidelity' = 'equivalent')
-       or e.rel = 'equivalent-to'
+       or (e.rel = 'equivalent-to'
+           and s.kind in ('problem', 'conjecture') and d.kind in ('problem', 'conjecture'))
   )
   select a, b from pairs union select b, a from pairs
 $$;
@@ -1243,17 +1290,37 @@ end $$;
 -- what keeps session keys, OAuth state, and the request log private. The
 -- views execute with their owner's rights, so they must stay SELECTs over
 -- public data.
+-- The mathematics. Links are contributions too and there are five times as
+-- many of them, so a census, a search, and a board all mean this population
+-- and q_links carries the other one -- under the same ids, with the same
+-- columns, so a page of queue ids resolves in either without changing shape.
+-- (The exclusion used to be silent, and a reviewer auditing a queue page of
+-- sixteen live edges by id prefix here got an empty result from a view that
+-- was working as designed.)
+--
+-- `rejection` is what review threw the row out for, null while it is not
+-- rejected: reason, note, who, and when, beside the tier rather than an
+-- event-log query away, because reading a tier without it is how one reviewer
+-- silently reinstated what another had just thrown out.
 create or replace view q_entries as
   select id, kind, title, summary, state, status, tier, notability, lean_verified,
          tags, names, identity_id, artifact_hash, metadata, created_at, updated_at,
          impact_reach, impact_advance, impact_closure, impact_assessments,
-         origin, origin_source, board_at
+         origin, origin_source, board_at,
+         case when status = 'rejected' then rejection_of(id) end as rejection
   from contribution_overview
   where kind <> 'edge';
 
+-- Every link, as the contribution it is. `id` is the edge's own contribution
+-- id and is what set_tier and reject take; `edge_id` is the same value under
+-- the name older queries use.
+drop view if exists q_links;
 create or replace view q_links as
-  select ec.id as edge_id, e.src, e.dst, e.rel, ec.tier, ec.status,
-         ec.identity_id, e.created_at as linked_at
+  select ec.id, ec.id as edge_id, e.src, e.dst, e.rel, ec.tier, ec.status,
+         ec.identity_id, e.created_at as linked_at,
+         ec.kind, ec.title, ec.summary, ec.notability, ec.metadata,
+         ec.created_at, ec.updated_at,
+         case when ec.status = 'rejected' then rejection_of(ec.id) end as rejection
   from edge e join contribution ec on ec.id = e.contribution_id;
 
 create or replace view q_front_members as

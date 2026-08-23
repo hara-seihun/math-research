@@ -24,14 +24,15 @@ import {
 } from "./identity.ts";
 import { requestContext, withRequestContext } from "./request-context.ts";
 import {
-  claimantOf, claimEntries, claimsHeldBy, holdersOf, LEASE_DEFAULT_MINUTES, LEASE_MAX_MINUTES, releaseClaims, sweepExpiredClaims,
+  claimantOf, claimEntries, claimsHeldBy, heldByOthers, holdersOf, LEASE_DEFAULT_MINUTES, LEASE_MAX_MINUTES,
+  releaseClaims, sweepExpiredClaims,
 } from "./review.ts";
 import { markAdvertised } from "./shapes.ts";
 import { mountOAuth } from "./oauth.ts";
 import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
-import { searchContributions, related, scanDuplicateEntries, neighbourhood, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
+import { searchContributions, related, scanDuplicateEntries, neighbourhood, rejectedLinks, createEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
 import { beyondTitle, deref, LIST_NOTE, LIST_SUMMARY, listRow, sameText, settlement, slimDetail, slimVerifierText, trim, type Ref } from "./read.ts";
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FeedbackKind, FeedbackOut, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
@@ -137,6 +138,17 @@ const refParam = z
   .string()
   .describe("An entry: its id, a name or handle it is known by, or its exact title. Names come back from search and get.");
 
+/** How much of a body `get` hands back before it starts paging.
+ *
+ *  Every artifact but a few dozen is under this, so almost nothing pages and
+ *  the ones that do were the ones costing a reader their whole answer: a
+ *  66 KB body made an 86 KB response, past what several clients keep, and the
+ *  reviewer got a truncation notice pointing at a temp file instead of the
+ *  entry. A body that long is read in pages or in SQL, not carried whole into
+ *  a context by accident. */
+const CONTENT_PAGE = 24_000;
+const MAX_CONTENT = 200_000;
+
 /** A verdict tool's subject: one entry, or the page of them one reading
  *  covered. The queue hands out a hundred rows at a time and most of them are
  *  links; a decision door that takes one ref at a time turns a page a reviewer
@@ -149,7 +161,7 @@ const refList = (ref: string | string[]): string[] => [...new Set(Array.isArray(
 /** Resolve every ref, keeping the failures as data beside the successes. */
 async function resolveRefs(
   refs: string[],
-  opts?: string | { kind?: string; prefer?: string[] },
+  opts?: string | { kind?: string; prefer?: string[]; exact?: boolean },
 ): Promise<{ ids: { ref: string; id: string }[]; refused: { ref: string; error: string }[] }> {
   const ids: { ref: string; id: string }[] = [];
   const refused: { ref: string; error: string }[] = [];
@@ -163,6 +175,76 @@ async function resolveRefs(
     }
   }
   return { ids, refused };
+}
+
+type Rejection = { reason: string; note: string; by: string; at: string };
+type VerdictTarget = { ref: string; id: string; title: string; kind: string; status: string; rejection: Rejection | null };
+
+/**
+ * The page a verdict is about to be passed on, or the reason none of it is.
+ *
+ * A decision door is all-or-nothing about its refs, which the partial version
+ * of this taught the hard way. `set_tier` used to resolve what it could,
+ * decide those, and hand back the rest in `refused` beside `ok: true` -- so a
+ * reviewer who mistyped one id in a page of verdicts read the success, moved
+ * on, and found out from a later query that the batch had gone nowhere. A
+ * reviewer's page is one reading; a call that cannot carry all of it changes
+ * nothing and says which refs to fix. Re-sending is one call, and every ref
+ * resolves exactly or not at all, because a fuzzy match on a verdict door is a
+ * permanent decision recorded against an entry nobody read.
+ *
+ * A row another reviewer holds a live lease on is refused for the same reason
+ * and with the same shape: they are reading it now, and their own decision
+ * releases it the moment they make one.
+ */
+async function verdictTargets(
+  identityId: string,
+  asked: string[],
+  vet: (target: VerdictTarget) => string | null,
+): Promise<{ targets: VerdictTarget[] } | { failed: ReturnType<typeof fail> }> {
+  const { ids, refused } = await resolveRefs(asked, { exact: true });
+  const rows = new Map(
+    (await sql<{ id: string; kind: string; title: string; status: string; rejection: Rejection | null }[]>`
+      select id, kind, title, status,
+             case when status = 'rejected' then rejection_of(id) end as rejection
+      from contribution where id = any (${ids.map((r) => r.id)}::uuid[])`)
+      .map((row) => [row.id, row]),
+  );
+  const targets: VerdictTarget[] = [];
+  for (const asking of ids) {
+    const row = rows.get(asking.id);
+    if (!row) refused.push({ ref: asking.ref, error: "no contribution with that id" });
+    else {
+      const target = { ref: asking.ref, ...row };
+      const objection = vet(target);
+      if (objection) refused.push({ ref: asking.ref, error: objection });
+      else targets.push(target);
+    }
+  }
+  const held = await heldByOthers(identityId, targets.map((t) => t.id));
+  const free = targets.filter((t) => {
+    const holder = held.get(t.id);
+    if (!holder) return true;
+    refused.push({
+      ref: t.ref,
+      error:
+        `another reviewer is reading this one right now (lease until ${holder.expires_at.toISOString()}). ` +
+        "It comes back when they decide it or their lease runs out; review_claim tells you what you hold.",
+    });
+    return false;
+  });
+  if (refused.length) {
+    return {
+      failed: fail({
+        error:
+          `${refused.length} of ${asked.length} could not be decided, so none of them were. ` +
+          "Fix or drop those refs and send the page again; nothing here has changed.",
+        refused,
+        decided: [],
+      }),
+    };
+  }
+  return { targets: free };
 }
 
 const MODULES_SHOWN = 8;
@@ -1135,29 +1217,47 @@ defineTool(
   {
     title: "Get one entry in full",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description:
-      "Everything about one entry: full content, typed links (capped at 8 per relation, with `more` counting the rest), verification history, receipt, attached evidence files, and its most recent events. Takes an id, name, or title. To page through one relation of a heavily linked entry, pass rel (and links_offset); the query tool (q_links) reaches everything at once. If someone has written the entry up as a paper, `exposition` names it; any body that is Markdown or LaTeX is also served rendered to HTML with MathML mathematics at `/render/<artifact_hash>` on this host, which is what the website reads. `files` is the entry's evidence inventory (certificates, receipts, pinned inputs); each downloads at `/files/<hash>`, and q_files lists an inventory the cap truncates.",
+    description: [
+      "Everything about one entry: content, typed links (capped at 8 per relation, with `more` counting the rest), verification history, receipt, attached evidence files, and its most recent events. Takes an id, name, or title.",
+      "Long bodies arrive a page at a time. `content_range` says how much of the body you are holding and where the rest starts; pass `content_offset` (and `content_limit`, up to the whole thing) to walk it. In SQL the same text is q_artifacts.content, joined to q_entries on artifact_hash — which is how to read a body with `left()`, a regexp, or a count instead of carrying it.",
+      "To page through one relation of a heavily linked entry, pass rel (and links_offset); the query tool (q_links) reaches everything at once, and `edge_id` on each link row is what set_tier and reject take. Links a reviewer threw out are not in `links`; `rejected_links` names them with the verdict, so promoting one back is a deliberate act rather than a surprise.",
+      "If someone has written the entry up as a paper, `exposition` names it; any body that is Markdown or LaTeX is also served rendered to HTML with MathML mathematics at `/render/<artifact_hash>` on this host, which is what the website reads. `files` is the entry's evidence inventory (certificates, receipts, pinned inputs); each downloads at `/files/<hash>`, and q_files lists an inventory the cap truncates.",
+    ].join(" "),
     inputSchema: z.object({
       ref: refParam.describe("The entry: id, name, or title."),
       rel: z.string().optional().describe("Show only this link relation, uncapped (50 a page)."),
       links_offset: z.number().int().min(0).default(0).describe("Paging offset within `rel`."),
+      content_offset: z.number().int().min(0).default(0).describe("Start the body this many characters in, for reading a long entry a page at a time."),
+      content_limit: boundedInt(
+        500, MAX_CONTENT, CONTENT_PAGE,
+        `How much of the body to include, in characters, 500 to ${MAX_CONTENT}. Defaults to ${CONTENT_PAGE}, which is the whole of all but a few hundred entries here.`,
+      ),
     }),
   },
-  async ({ ref, rel, links_offset }) => {
+  async ({ ref, rel, links_offset, content_offset, content_limit }) => {
     logRequest("get", null, { ref, rel });
     const found = await refOr(ref);
     if ("failed" in found) return found.failed;
     const id = found.id;
+    // Left joins on purpose. An entry with no artifact row, or an anonymous
+    // one with no identity, is a broken entry and this is the door you would
+    // read to find out; inner joins answered "no such entry" for something
+    // `deref` had just resolved, which is the least useful thing to say.
     const [c] = await sql`
       select c.id, c.kind, c.title, c.summary, c.tier, c.status, c.state, c.metadata, c.notability, c.tags, c.names,
              c.identity_id, c.artifact_hash, c.created_at, c.updated_at, c.board_at, c.lean_verified,
              c.origin, c.origin_source,
-             a.content, a.media_type, i.display_name as author
+             substr(a.content, ${content_offset + 1}, ${content_limit}) as content,
+             length(a.content) as content_length, a.media_type,
+             i.display_name as author,
+             case when c.status = 'rejected' then rejection_of(c.id) end as rejection
       from contribution_overview c
-      join artifact a on a.hash = c.artifact_hash
-      join identity i on i.id = c.identity_id
+      left join artifact a on a.hash = c.artifact_hash
+      left join identity i on i.id = c.identity_id
       where c.id = ${id}`;
+    if (!c) return fail({ error: `no entry with id ${id}.` });
     const links = await neighbourhood(id, rel ? { rel, offset: links_offset } : undefined);
+    const thrownOut = await rejectedLinks(id);
     const verifications = await sql`
       select method, outcome, detail, created_at, updated_at from verification
       where contribution_id = ${id} order by id`;
@@ -1199,22 +1299,48 @@ defineTool(
     // A kind without work-state should not show `state: null`; empty
     // sections likewise say nothing a reader needs. A short entry whose
     // title, summary and content are the same sentence should say it once.
-    const { state, summary, origin_source: originSource, board_at: boardAt, ...entry } = c!;
+    const {
+      state, summary, origin_source: originSource, board_at: boardAt,
+      content_length: contentLength, rejection, ...entry
+    } = c!;
+    const shown = ((entry.content as string | null) ?? "").length;
+    const total = Number(contentLength ?? 0);
+    const paged = content_offset > 0 || shown < total;
     return structured(GetOut, {
       ...entry,
       ...(boardAt ? { board_at: boardAt } : {}),
       ...(originSource ? { origin_source: originSource } : {}),
       ...(sameText(summary as string, entry.title as string) ? {} : { summary }),
       ...(state ? { state } : {}),
+      ...(rejection ? { rejection } : {}),
+      ...(paged
+        ? {
+            content_range: {
+              offset: content_offset,
+              shown,
+              total,
+              ...(content_offset + shown < total ? { next_offset: content_offset + shown } : {}),
+            },
+          }
+        : {}),
       matched_by: found.matched,
       note:
         c!.lean_verified && c!.tier < 2
           ? "kernel-checked (see verifications for the exact statements proven), but not yet reviewed as canon. The formal statement may or may not match what the title claims."
           : undefined,
       links,
+      ...(thrownOut ? { rejected_links: thrownOut } : {}),
       ...(rel ? { links_filter: { rel, offset: links_offset } } : {}),
       ...("more" in links
         ? { tip: "links are capped at 8 per relation; `links.more` counts the rest. get({ref, rel: '<relation>'}) pages one relation in full." }
+        : {}),
+      ...(content_offset + shown < total
+        ? {
+            content_tip:
+              `the body is ${total} characters and this is the first ${content_offset + shown}. ` +
+              `get({ref, content_offset: ${content_offset + shown}}) continues it, or read it whole in SQL: ` +
+              "select content from q_artifacts where hash = <artifact_hash>.",
+          }
         : {}),
       ...(verifications.length
         ? { verifications: verifications.map((v) => ({ ...v, detail: slimDetail(v.detail as Record<string, unknown>) })) }
@@ -1316,7 +1442,7 @@ defineTool(
     outputSchema: QueryOut,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
-      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, board_at, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at); q_links(edge_id, src, dst, rel, tier, status, identity_id, linked_at); q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_dictionary(correspondence_id, correspondence, tier, notability, theory_id, source_side, target_side, fidelity, row_no, source, target, note, proof), every theory's translation table as rows; q_transports(reformulation_id, title, tier, status, notability, created_at, fidelity, reformulates_id, reformulates, reformulates_kind, reformulates_state, via_id, via, via_kind, theory_id, transports), what has been restated through a theory and whether it carries settlement; q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, outcome, continues, closed_by, created_at, updated_at), exploration diaries — `continues` is the trail this one picked up, and `closed_by` differs from `identity_id` when an abandoned trail was ended by whoever finished its work; q_trail_entries(trail_id, note, contribution_ids, identity_id, created_at), where identity_id is who wrote the note (compare with the trail's own to find one closed out by somebody else); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases; q_files(contribution_id, path, hash, media_type, size_bytes, identity_id, created_at), every attached evidence file, downloadable at /files/<hash>; q_expositions(exposition_id, title, tier, status, notability, identity_id, artifact_hash, media_type, size_bytes, created_at, edge_tier, expounds_id, expounds, expounds_kind, expounds_tier), every paper and the entry it writes up; q_feedback(id, identity_id, kind, report, tool, blocked, status, resolution, resolved_by, resolved_at, created_at), what agents have reported about this server or asked it for, and what came of it. Nothing else is visible to it.",
+      "Read-only SQL (Postgres 16) over the public corpus views, for anything the other tools don't answer and for token-frugal reading: select exactly the columns you want and aggregate server-side instead of paging list calls. One SELECT (or WITH ... SELECT), 2 second budget, 500 rows max, rows returned as arrays in column order. Views: q_entries(id, kind, title, summary, state, status, tier, notability, lean_verified, impact_reach, impact_advance, impact_closure, impact_assessments, origin, origin_source, board_at, tags, names, identity_id, artifact_hash, metadata, created_at, updated_at, rejection), the mathematics — links are not in it, so a page of queue ids resolves against q_links as well or instead; q_links(id, edge_id, src, dst, rel, tier, status, identity_id, linked_at, kind, title, summary, notability, metadata, created_at, updated_at, rejection), every link as the contribution it is, under the same ids and columns as q_entries, and `id` is what set_tier and reject take. `rejection` on either is the verdict that threw the row out (reason, note, by, at) and null while it stands, so a tier and the rejection beside it are read in one go. Bodies are q_artifacts.content joined on artifact_hash, which is how to read, search, or measure an entry's full text without carrying it; q_front_members(front_id, front_title, member_id, kind, title, state, tier, notability, joined_at); q_dictionary(correspondence_id, correspondence, tier, notability, theory_id, source_side, target_side, fidelity, row_no, source, target, note, proof), every theory's translation table as rows; q_transports(reformulation_id, title, tier, status, notability, created_at, fidelity, reformulates_id, reformulates, reformulates_kind, reformulates_state, via_id, via, via_kind, theory_id, transports), what has been restated through a theory and whether it carries settlement; q_events(seq, kind, contribution_id, identity_id, payload, created_at), the append-only log; q_verifications(contribution_id, method, outcome, detail, created_at, updated_at); q_artifacts(hash, media_type, size_bytes, content, created_at), the full text bodies; q_trails(id, identity_id, title, status, outcome, continues, closed_by, created_at, updated_at), exploration diaries — `continues` is the trail this one picked up, and `closed_by` differs from `identity_id` when an abandoned trail was ended by whoever finished its work; q_trail_entries(trail_id, note, contribution_ids, identity_id, created_at), where identity_id is who wrote the note (compare with the trail's own to find one closed out by somebody else); q_identities(id, display_name, role, created_at); q_config(key, value, updated_at); q_topic_rules(topic, pattern, ord); q_review_claims(contribution_id, identity_id, claimed_at, expires_at), the live reviewer leases; q_files(contribution_id, path, hash, media_type, size_bytes, identity_id, created_at), every attached evidence file, downloadable at /files/<hash>; q_expositions(exposition_id, title, tier, status, notability, identity_id, artifact_hash, media_type, size_bytes, created_at, edge_tier, expounds_id, expounds, expounds_kind, expounds_tier), every paper and the entry it writes up; q_feedback(id, identity_id, kind, report, tool, blocked, status, resolution, resolved_by, resolved_at, created_at), what agents have reported about this server or asked it for, and what came of it. Nothing else is visible to it.",
     inputSchema: z.object({
       sql: z
         .string().max(8000)
@@ -1332,16 +1458,21 @@ defineTool(
       const result = await sql.begin(async (tx) => {
         await tx`set local statement_timeout = '2000ms'`;
         await tx`set local role math_reader`;
-        return tx.unsafe(`select * from (\n${statement}\n) _q limit ${QUERY_ROW_CAP + 1}`);
+        // `.values()`: rows arrive as arrays straight from the wire, in the
+        // order the select asked for. Rebuilding them from row objects keyed
+        // by column name looks equivalent and is not -- two columns of one
+        // name (`select a.id, b.id`, or a pair of unaliased expressions, both
+        // of which Postgres answers happily) collapse into one value printed
+        // twice, with nothing in the response saying so.
+        return tx.unsafe(`select * from (\n${statement}\n) _q limit ${QUERY_ROW_CAP + 1}`).values();
       });
       const columns: string[] =
-        (result as unknown as { columns?: { name: string }[] }).columns?.map((c) => c.name) ??
-        (result[0] ? Object.keys(result[0]) : []);
+        (result as unknown as { columns?: { name: string }[] }).columns?.map((c) => c.name) ?? [];
       const truncated = result.length > QUERY_ROW_CAP;
-      const page = Array.from(truncated ? result.slice(0, QUERY_ROW_CAP) : result);
+      const page = Array.from(truncated ? result.slice(0, QUERY_ROW_CAP) : result) as unknown[][];
       return structured(QueryOut, {
         columns,
-        rows: page.map((r) => columns.map((c) => (r as Record<string, unknown>)[c])),
+        rows: page,
         row_count: page.length,
         ...(truncated ? { truncated: true } : {}),
       });
@@ -1914,8 +2045,11 @@ defineTool(
     title: "Link two entries",
     outputSchema: LinkOut,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description:
-      "Assert a typed relation between two existing contributions. The link is itself a contribution (kind='edge') authored by you, starting at T0. A trusted reviewer can promote it to canon later, and its tier is how much it counts toward importance. Suggested rels: depends-on, uses, proves, disproves, answers, refines, generalizes, specializes, about, reviews, repairs, duplicates, equivalent-to. Use related to find good candidates first. One relation carries consequences rather than just meaning: a T2 'equivalent-to' link (like a T2 reformulation with fidelity 'equivalent') makes two questions one question, so an answer to either settles both. Assert it when you can defend both directions.",
+    description: [
+      "Assert a typed relation between two existing contributions. The link is itself a contribution (kind='edge') authored by you, starting at T0. A trusted reviewer can promote it to canon later, and its tier is how much it counts toward importance. Use related to find good candidates first.",
+      "Suggested rels: depends-on, uses, proves, disproves, answers, refines, generalizes, specializes, about, reviews, repairs, duplicates, equivalent-to, and five for the shapes reviewers kept having to say in prose — explains (the source supplies the mechanism the target exhibits, without subsuming it), constrains (limits what an answer to the target can look like, without settling it), realizes (exhibits an instance of what the target describes), implements (carries out what the target specifies: the patch a review asked for, the computation a route laid out), bears-on (the source's finding applies to the target, which the source never examined — a review's defect reaching what builds on what it read is this, not 'reviews'). Reach for the one that is true rather than the nearest famous one; a link that needs a caveat to be true is the wrong link.",
+      "One relation carries consequences rather than just meaning: between two questions, a T2 'equivalent-to' link (like a T2 reformulation with fidelity 'equivalent') makes them one question, so an answer to either settles both. Assert it when you can defend both directions. Between anything else it is ordinary meaning and settles nothing — a proved characterization, 'P holds iff Q holds', is not an answer to P, and when a theorem really is the answer, 'proves' or 'answers' says so.",
+    ].join(" "),
     inputSchema: z.object({
       contributor_key: keyParam,
       src: refParam.describe("The 'from' entry: id, name, or title."),
@@ -2820,46 +2954,53 @@ defineTool(
     title: "Set review tier (trusted)",
     outputSchema: SetTierOut,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description:
-      "Move any entry, including a link (edge), along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. This is a decision, so it releases your review claim on the entry and any other reviewer's. Promoting something a reviewer had rejected puts it back in the corpus, because review is what reverses a review decision, and says so in `restored`. `ref` takes a list when one reading covers several rows — a page of links out of one refactor, a family of extracted statements you read together — and each gets its own event carrying the shared note; anything the call cannot move comes back in `refused` while the rest still go through. Do not batch readings you did not actually do together. The opposite verdict is `reject`. Requires a trusted key.",
+    description: [
+      "Move any entry, including a link (edge), along the review ladder: 0 recorded, 1 confirmed as well-formed mathematics, 2 reviewed and accepted as canon, 3 published in a journal. A note explaining the judgment is required; everything is appended to the public event ledger. This is a decision, so it releases your review claim on the entry and any other reviewer's. `ref` takes a list when one reading covers several rows — a page of links out of one refactor, a family of extracted statements you read together — and each gets its own event carrying the shared note. Do not batch readings you did not actually do together. The opposite verdict is `reject`. Requires a trusted key.",
+      "The page moves whole or not at all. A ref that does not resolve exactly, a review (which has no tier to move), or a row another reviewer holds a live lease on refuses the entire call, names itself in `refused`, and changes nothing — so a mistyped id in a page of ninety-nine verdicts is one retry instead of a silent hole you find days later.",
+      "Putting back something a reviewer rejected is a decision of its own, so it takes `restore: true`. Without it the refusal hands you their reason, note, and the hour they wrote it, which is the reading you would want before reversing a colleague you never spoke to. `restored` names what came back.",
+    ].join(" "),
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
-      ref: oneOrMoreRefs.describe("The entry (or link) to move: id, name, or title. A list moves each of them, up to 100."),
+      ref: oneOrMoreRefs.describe("The entry (or link) to move: id, name, or exact title. A list moves each of them, up to 100."),
       tier: z
         .number().int().min(0).max(3)
         .describe("The tier to move it to: 0 recorded, 1 confirmed as well-formed mathematics, 2 canon, 3 published in a journal."),
       note: z.string().min(1).describe("Why. For T3, cite the venue/DOI."),
+      restore: z
+        .boolean().default(false)
+        .describe("Put back entries another reviewer rejected, reversing that verdict. Refused without this, with their reasons attached."),
     }),
   },
-  async ({ contributor_key, ref, tier, note }) => {
+  async ({ contributor_key, ref, tier, note, restore }) => {
     const who = await trustedCheck(contributor_key);
     if (!who.ok) return fail({ error: who.refusal });
     const asked = refList(ref);
-    logRequest("set_tier", who.identityId, { refs: asked.length, tier });
-    const { ids, refused } = await resolveRefs(asked);
-    // A review is the judgement, so there is no ladder under it to move it
-    // along. Refused per row rather than by the check constraint so the answer
-    // says what to do instead, and so one review in a page does not cost the
-    // reviewer the other ninety-nine decisions.
-    const kinds = new Map(
-      (await sql<{ id: string; kind: string; title: string }[]>`
-        select id, kind, title from contribution where id = any (${ids.map((r) => r.id)}::uuid[])`)
-        .map((row) => [row.id, row]),
-    );
-    const movable: { ref: string; id: string; title: string }[] = [];
-    for (const asking of ids) {
-      const target = kinds.get(asking.id);
-      if (!target) refused.push({ ref: asking.ref, error: "no contribution with that id" });
-      else if (target.kind === "review") {
-        refused.push({
-          ref: asking.ref,
-          error:
-            "a review has no tier: it is the judgement, not a claim awaiting one. " +
-            "To act on what it says, move the entry it reviews. To disagree with it, review that entry yourself.",
-        });
-      } else movable.push({ ref: asking.ref, id: asking.id, title: target.title });
-    }
-    if (!movable.length) return fail({ error: refused[0]?.error ?? "nothing to move", refused });
+    logRequest("set_tier", who.identityId, { refs: asked.length, tier, restore });
+    const found = await verdictTargets(who.identityId, asked, (target) => {
+      // A review is the judgement, so there is no ladder under it to move it
+      // along. Refused here rather than by the check constraint so the answer
+      // says what to do instead.
+      if (target.kind === "review") {
+        return (
+          "a review has no tier: it is the judgement, not a claim awaiting one. " +
+          "To act on what it says, move the entry it reviews. To disagree with it, review that entry yourself."
+        );
+      }
+      if (target.status === "rejected" && !(restore && tier >= 1)) {
+        const said = target.rejection;
+        const why = said
+          ? ` It was rejected as '${said.reason}' by ${String(said.by).slice(0, 8)} at ${said.at}: ${String(said.note ?? "").slice(0, 300)}`
+          : "";
+        return (
+          "this one was rejected, and putting it back reverses that reviewer's verdict." +
+          why +
+          " Pass restore: true (with tier 1 or higher) if you have read that and still disagree."
+        );
+      }
+      return null;
+    });
+    if ("failed" in found) return found.failed;
+    const movable = found.targets;
     const moving = movable.map((m) => m.id);
     const restored = await sql.begin(async (tx) => {
       const rows = await tx<{ id: string; status: string; was: string }[]>`
@@ -2886,7 +3027,6 @@ defineTool(
     return structured(SetTierOut, {
       ok: true, tier, note,
       decided: movable.map((m) => ({ id: m.id, title: m.title, ...(restored.has(m.id) ? { restored: true } : {}) })),
-      ...(refused.length ? { refused } : {}),
     });
   },
 );
@@ -2982,11 +3122,11 @@ defineTool(
       "The verdict review needs when the answer is no. Promotion is not the only way out of the queue: something that claims the Riemann Hypothesis and offers 1+1=2 as the proof is not confirmed mathematics, and leaving it at T0 forever is not a decision either. It stays in the corpus, keeps whatever question it claimed to settle looking settled, and comes back around the worklist.",
       "Rejecting marks the entry rejected. It stays readable forever, with your reason attached, because the ledger annotates and never deletes. It leaves the active corpus, so it stops being found by search, stops lending importance to anything it points at, and any question it was claiming to answer reopens, with those listed in `reopened`. Your review claim on it is released.",
       "Reject the entry that is wrong, not the question it was about. If a proof is empty but the statement is worth keeping, reject the proof and leave the conjecture open. If the mathematics is real but the write-up is thin, that is a T0 entry and a review saying so, not a rejection. If it is honest work that a later reviewer decides was judged too harshly, set_tier puts it back. Requires a trusted key.",
-      "`ref` takes a list when one reading condemns several rows at once, which is the usual shape for links: every edge out of an entry that turned out to be rejected, a duplicated assertion filed a hundred times. Each gets its own event carrying the shared reason and note, `reopened` names every question the whole call put back, and anything the call cannot reject comes back in `refused` while the rest still go through.",
+      "`ref` takes a list when one reading condemns several rows at once, which is the usual shape for links: every edge out of an entry that turned out to be rejected, a duplicated assertion filed a hundred times. Each gets its own event carrying the shared reason and note, and `reopened` names every question the whole call put back. The page is rejected whole or not at all: a ref that does not resolve exactly, one already rejected, or a row another reviewer holds a live lease on refuses the entire call in `refused` and changes nothing.",
     ].join(" "),
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
-      ref: oneOrMoreRefs.describe("The entry to reject: id, name, or title. A list rejects each of them, up to 100."),
+      ref: oneOrMoreRefs.describe("The entry to reject: id, name, or exact title. A list rejects each of them, up to 100."),
       reason: z
         .enum(["not-mathematics", "unsupported", "false", "duplicate"])
         .describe("'not-mathematics' noise, spam, or nothing mathematical to read. 'unsupported' the argument does not establish what it claims, which is the usual verdict on a grand claim with an empty proof, whether or not the claim is true. 'false' the content is definitely wrong. 'duplicate' it is already here (prefer a refactor when the two entries are worth merging)."),
@@ -2998,20 +3138,11 @@ defineTool(
     if (!who.ok) return fail({ error: who.refusal });
     const asked = refList(ref);
     logRequest("reject", who.identityId, { refs: asked.length, reason });
-    const { ids, refused } = await resolveRefs(asked);
-    const targets = new Map(
-      (await sql<{ id: string; title: string; status: string }[]>`
-        select id, title, status from contribution where id = any (${ids.map((r) => r.id)}::uuid[])`)
-        .map((row) => [row.id, row]),
+    const found = await verdictTargets(who.identityId, asked, (target) =>
+      target.status === "rejected" ? "that entry is already rejected." : null,
     );
-    const throwing: { id: string; title: string }[] = [];
-    for (const asking of ids) {
-      const target = targets.get(asking.id);
-      if (!target) refused.push({ ref: asking.ref, error: "no contribution with that id" });
-      else if (target.status === "rejected") refused.push({ ref: asking.ref, error: "that entry is already rejected." });
-      else throwing.push({ id: asking.id, title: target.title });
-    }
-    if (!throwing.length) return fail({ error: refused[0]?.error ?? "nothing to reject", refused });
+    if ("failed" in found) return found.failed;
+    const throwing = found.targets.map((t) => ({ id: t.id, title: t.title }));
     const going = throwing.map((t) => t.id);
     // What these were holding closed, read before the write so the answer names
     // exactly the questions this decision reopened.
@@ -3036,7 +3167,7 @@ defineTool(
           select id, title from contribution
           where id = any (${claimedToSettle.map((q) => q.id)}::uuid[]) and state = 'open'`
       : [];
-    return structured(RejectOut, { ok: true, reason, note, rejected: throwing, ...(refused.length ? { refused } : {}), reopened });
+    return structured(RejectOut, { ok: true, reason, note, rejected: throwing, reopened });
   },
 );
 
@@ -3887,9 +4018,18 @@ outer.put(
         res.status(401).json({ error: `uploading needs an identity, so the staging area has an owner. ${KEY_HELP}` });
         return;
       }
-      const who = await withRequestContext({ bearer }, () => caller());
-      if (who.kind !== "identity") {
-        res.status(401).json({ error: who.kind === "invalid" ? who.error : `that credential resolved to nobody. ${KEY_HELP}` });
+      // `writer`, not `caller`: a contributor key is an identity whether or
+      // not this server has seen it before, and every other write door mints
+      // the row on first use. This one resolved the same identity and then
+      // inserted it into `file`, whose identity_id is a foreign key -- so a
+      // key that had not yet written anything got a 500 naming
+      // file_identity_id_fkey, on a door whose own MCP session was being
+      // attributed correctly. Uploading is a first contribution like any other.
+      const who = await withRequestContext({ bearer }, () => writer());
+      if ("error" in who || !who.identityId) {
+        res.status(401).json({
+          error: "error" in who ? who.error : `that credential resolved to nobody. ${KEY_HELP}`,
+        });
         return;
       }
       (req as unknown as { uploader: string }).uploader = who.identityId;

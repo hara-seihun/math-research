@@ -205,6 +205,38 @@ EV=$(call get "{\"ref\":\"$CID\"}")
 [[ $(call get "{\"id\":\"$CID\"}" | field '.id') == "$CID" ]] || fail "get refused an entry passed as id instead of ref"
 [[ $(call search '{"limit":500}' | field '.results | length') -le 100 ]] || fail "search did not clamp an oversized limit"
 
+# Contract: a long body is paged rather than dumped. An entry whose content is
+# tens of kilobytes made a response past what several clients keep, and the
+# reader got a truncation notice pointing at a temp file instead of the entry.
+LONG=$(python3 -c "print('sentence about widgets. ' * 1400)")
+LONG_ID=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"a long body\",\"summary\":\"s\",\"content\":\"$LONG\"}" | field '.id')
+call get "{\"ref\":\"$LONG_ID\",\"content_limit\":1000}" | python3 -c "import sys,json; d=json.load(sys.stdin)
+r = d['content_range']
+assert len(d['content']) == 1000 == r['shown'] and r['total'] > 30000, r
+assert r['next_offset'] == 1000 and 'content_offset: 1000' in d['content_tip'], d['content_tip']" \
+  || fail "get did not page a long body or did not say where the rest is"
+call get "{\"ref\":\"$LONG_ID\",\"content_offset\":1000,\"content_limit\":1000}" | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert d['content'] == '$LONG'[1000:2000], d['content'][:80]" || fail "the next page of a body was not the next page"
+call get "{\"ref\":\"$CID\"}" | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert 'content_range' not in d, d.get('content_range')" || fail "a short entry was reported as paged"
+
+# Contract: a name is a handle every ref door resolves, so it belongs to one
+# entry. An import that gave each front its flagship problem's whole name set
+# left 439 collisions on exactly the hubs everything links to, and every one of
+# them turned ref-by-name into an ambiguity error. The entry still lands; the
+# name does not.
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"front\",\"title\":\"the widget programme\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"widget-census\"]}" \
+  | field '.id' > /dev/null
+TAKEN=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"a second claim on one handle\",\"summary\":\"s\",\"content\":\"c.\",\"names\":[\"widget-census\",\"widget-parity-census\"]}")
+echo "$TAKEN" | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert [n['name'] for n in d['names_refused']] == ['widget-census'], d.get('names_refused')
+assert any('widget-census' in n for n in d['notes']), d['notes']" \
+  || fail "a name another active entry already answers to was attached anyway"
+call get "{\"ref\":\"$(echo "$TAKEN" | field '.id')\"}" | python3 -c "import sys,json
+assert json.load(sys.stdin)['names'] == ['widget-parity-census'], 'kept a taken name'" \
+  || fail "a colliding name landed on the entry"
+[[ $(call get '{"ref":"widget-census"}' | field '.kind') == front ]] || fail "a handle stopped resolving to the entry that holds it"
+
 # Contract: a query that names a column the view does not have is told what the
 # view does have, not just that the view exists.
 call query '{"sql":"select no_such_column from q_entries"}' | field '.views' \
@@ -241,6 +273,18 @@ RJ=$(curl -sf -X PUT -H "Authorization: Bearer $KEY" -H 'Content-Type: applicati
   --data-binary @"$WORK/receipt.json" "$FILES/$JHASH")
 [[ $(echo "$RJ" | field '.stored') == true ]] || fail "a JSON-typed upload lost its body to the MCP body parser: $RJ"
 [[ $(curl -sf "$FILES/$JHASH") == '{"receipt": true}' ]] || fail "JSON-typed upload did not round-trip byte-for-byte"
+
+# Contract: uploading is a first contribution like any other. This door
+# resolved a key to its identity without minting the row, then wrote that id
+# into `file`, whose identity_id is a foreign key -- so a key that had not
+# written anything yet got HTTP 500 and a Postgres constraint name, on a
+# credential the MCP session was attributing correctly the whole time.
+FRESH_KEY="mrk_$(openssl rand -hex 32)"
+printf 'first thing this key ever did' > "$WORK/first.bin"
+FRESH_HASH=$(sha256sum "$WORK/first.bin" | cut -d' ' -f1)
+RF=$(curl -sf -X PUT -H "Authorization: Bearer $FRESH_KEY" -H 'Content-Type: application/octet-stream' \
+  --data-binary @"$WORK/first.bin" "$FILES/$FRESH_HASH")
+[[ $(echo "$RF" | field '.stored') == true ]] || fail "an upload from a key that had not written before was refused: $RF"
 
 LIAR=${FHASH:0:63}0; [[ $LIAR == "$FHASH" ]] && LIAR=${FHASH:0:63}1
 code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $KEY" --data-binary @"$WORK/chunk1" "$FILES/$LIAR")
@@ -553,6 +597,78 @@ call review_claim "{\"contributor_key\":\"$TKEY\",\"refs\":[\"$HOLD\"]}" \
 psql -q -h "$WORK" -d math -c "update review_claim set expires_at = now() - interval '1 minute' where contribution_id = '$HOLD'"
 lease_queue "\"$OPKEY\"" ',"limit":10' | ids_of | grep -q "$HOLD" || fail "an expired lease still held an entry out of the queue"
 
+# Contract: the two corpus views cover the whole corpus between them. q_entries
+# is the mathematics and excludes links, which is right and was silent: a
+# reviewer auditing a queue page of live edges by id prefix here got an empty
+# result from a view working as designed. Links resolve in q_links under the
+# same `id`, and a rejected row carries the verdict beside its tier in both.
+VIEW_A=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"view coverage source\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+VIEW_B=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"view coverage target\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+VIEW_E=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$VIEW_A\",\"dst\":\"$VIEW_B\",\"rel\":\"explains\",\"note\":\"the mechanism\"}" | field '.edge_id')
+call query "{\"sql\":\"select id, rel, tier from q_links where id = '$VIEW_E'\"}" \
+  | python3 -c "import sys,json; r=json.load(sys.stdin)['rows']; assert r and r[0][1] == 'explains', r" \
+  || fail "an edge is not reachable in q_links by its own contribution id"
+call get "{\"ref\":\"$VIEW_A\"}" | python3 -c "import sys,json
+row = json.load(sys.stdin)['links']['out']['explains'][0]
+assert row['edge_id'] == '$VIEW_E', row" || fail "get's links do not name the edge a reviewer would act on"
+call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$VIEW_E\",\"reason\":\"unsupported\",\"note\":\"the mechanism is not that one\"}" \
+  | field '.ok' > /dev/null
+# Two unaliased expressions, on purpose: rows come back positionally. Built
+# from row objects keyed by column name they would collapse into one value
+# printed twice, which is how `select a.id, b.id` quietly answers a join with
+# the same id in both columns.
+call query "{\"sql\":\"select rejection->>'reason', rejection->>'note' from q_links where id = '$VIEW_E'\"}" \
+  | python3 -c "import sys,json; r=json.load(sys.stdin)['rows'][0]; assert r[0] == 'unsupported' and 'not that one' in r[1], r" \
+  || fail "a rejected link's verdict is not readable beside its tier, or duplicate column names collapsed"
+call get "{\"ref\":\"$VIEW_A\"}" | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert 'explains' not in d['links'].get('out', {}), d['links']
+thrown = d['rejected_links']['links'][0]
+assert thrown['edge_id'] == '$VIEW_E' and thrown['rejection']['reason'] == 'unsupported', thrown" \
+  || fail "a rejected link vanished from get instead of showing the verdict that removed it"
+
+# ——— A verdict carries the whole page, or none of it ————————————————————
+# Contract: a decision door that resolves what it can and drops the rest hands
+# a reviewer `ok: true` for a batch that went nowhere, which is how a page of
+# verdicts was silently lost over one mistyped id. One bad ref refuses the
+# call, names itself, and leaves every other row exactly where it was.
+batch_subject() { call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"batch subject $1\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id'; }
+BATCH1=$(batch_subject one)
+BATCH2=$(batch_subject two)
+BATCH3=$(batch_subject three)
+BAD=00000000-0000-4000-8000-000000000000
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":[\"$BATCH1\",\"$BAD\",\"$BATCH2\"],\"tier\":2,\"note\":\"one reading\"}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert d['decided'] == [], d
+assert [r['ref'] for r in d['refused']] == ['$BAD'], d" || fail "a page of verdicts was partly applied around an unresolvable ref"
+for b in "$BATCH1" "$BATCH2"; do
+  [[ $(call get "{\"ref\":\"$b\"}" | field '.tier') == 0 ]] || fail "a refused page of verdicts moved something anyway"
+done
+# And the same page without the bad ref moves all of it.
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":[\"$BATCH1\",\"$BATCH2\"],\"tier\":2,\"note\":\"one reading\"}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); assert len(d['decided']) == 2, d" \
+  || fail "a clean page of verdicts did not go through whole"
+# Contract: a verdict door never resolves a ref by nearest title. On a read a
+# fuzzy match is a kindness; on a decision it is a permanent judgement recorded
+# against an entry nobody read.
+[[ $(call get '{"ref":"batch subjekt three"}' | field '.id') == "$BATCH3" ]] || fail "a read door stopped resolving a misspelled title"
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"batch subjekt three\",\"tier\":2,\"note\":\"n\"}" \
+  | field '.refused[0].error' | grep -qi "exactly" || fail "set_tier promoted the nearest title to a ref it could not resolve"
+[[ $(call get "{\"ref\":\"$BATCH3\"}" | field '.tier') == 0 ]] || fail "a fuzzy ref on a verdict door moved an entry"
+
+# Contract: the lease binds the writers, not just the queue that hands it out.
+# review_queue kept a leased row off other reviewers' pages while set_tier and
+# reject decided it for anyone who arrived through search or a link page, which
+# is most of how reviewers arrive: one session watched sixteen of the
+# twenty-five rows it had just taken get decided by others inside ten seconds.
+HELD_S=$(new_session)
+HELD=$(SESSION=$HELD_S call review_claim "{\"contributor_key\":\"$OPKEY\",\"refs\":[\"$BATCH3\"]}" | field '.results[0].id')
+[[ $HELD == "$BATCH3" ]] || fail "a reviewer could not claim an entry it found outside the queue"
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BATCH3\",\"tier\":2,\"note\":\"n\"}" \
+  | field '.refused[0].error' | grep -qi "reading this one right now" \
+  || fail "a verdict door decided an entry another reviewer was holding"
+SESSION=$HELD_S call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BATCH3\",\"tier\":2,\"note\":\"mine to decide\"}" \
+  | field '.ok' > /dev/null || fail "the holder of a lease could not decide what it was holding"
+
 # Contract: the lease belongs to a reviewing session, not to a key. One agent
 # fleet reviews under one contributor key, so exclusion by identity gave every
 # one of its concurrent sessions the same page and the fleet paid for the same
@@ -595,11 +711,27 @@ call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"u
   || fail "the rejection did not land in the public event ledger with its reason"
 call search "{\"query\":\"Settling the hard open question\"}" | grep -q "$BOGUS_P" \
   && fail "a rejected entry is still offered by search"
-# Contract: a review decision is reversed by review. Promoting something that
-# was rejected puts it back, so a harsh verdict is not permanent damage.
-call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"tier\":1,\"note\":\"on second reading the argument is real\"}" \
+# Contract: a review decision is reversed by review, deliberately. Promoting
+# something that was rejected puts it back, so a harsh verdict is not permanent
+# damage -- but it reverses a colleague nobody spoke to, and it used to be a
+# silent side effect of an ordinary promotion. Refused without `restore`, and
+# refused with their reason in hand, so the reading happens before the reversal.
+RESTORE_NO=$(call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"tier\":1,\"note\":\"looks fine to me\"}")
+echo "$RESTORE_NO" | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert d['decided'] == [], d
+why = d['refused'][0]['error']
+assert 'unsupported' in why and 'does not bear on the question' in why, why" \
+  || fail "set_tier restored a rejected entry without being asked, or without showing the verdict it reversed"
+[[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '.status') == rejected ]] || fail "a refused restore moved the entry anyway"
+# The rejection is readable wherever the tier is, which is the whole point:
+# nobody should have to query the event log to see what they are reversing.
+call get "{\"ref\":\"$BOGUS_P\"}" | python3 -c "import sys,json; r=json.load(sys.stdin)['rejection']
+assert r['reason'] == 'unsupported' and r['by'] and r['at'], r" || fail "get did not carry the verdict on a rejected entry"
+call query "{\"sql\":\"select rejection->>'reason' from q_entries where id = '$BOGUS_P'\"}" | field '.rows[0][0]' \
+  | grep -qx unsupported || fail "q_entries did not carry the verdict on a rejected entry"
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"tier\":1,\"restore\":true,\"note\":\"on second reading the argument is real\"}" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'] and d['decided'] == [{'id': '$BOGUS_P', 'title': 'Settling the hard open question', 'restored': True}], d" \
-  || fail "promoting a rejected entry did not restore it"
+  || fail "promoting a rejected entry with restore did not put it back"
 [[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '.status') == active ]] || fail "a restored entry did not come back active"
 call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"and back out again\"}" | field '.ok' > /dev/null
 # Contract: a link to a retired entry is a dead link, so the neighbourhood
@@ -630,8 +762,9 @@ call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$SUP_NEW\",\"reason\":\"n
   | field '.ok' > /dev/null
 [[ $(status_of "$SUP_OLD") == active ]] \
   || fail "rejecting a refactor left its targets superseded, with nothing in the graph superseding them"
-# And back again, because review reversing itself twice is also ordinary.
-call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$SUP_NEW\",\"tier\":2,\"note\":\"on a second reading the cut is right\"}" \
+# And back again, because review reversing itself twice is also ordinary --
+# said out loud with `restore`, since the second reversal is a decision too.
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$SUP_NEW\",\"tier\":2,\"restore\":true,\"note\":\"on a second reading the cut is right\"}" \
   | field '.ok' > /dev/null
 [[ $(status_of "$SUP_OLD") == superseded ]] \
   || fail "restoring a refactor did not retire again what it supersedes"
@@ -701,7 +834,20 @@ call link "{\"contributor_key\":\"$KEY\",\"src\":\"$RV_SUBJ\",\"dst\":\"$RV\",\"
 LNK_S=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"a theorem at one end of a link\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 LNK_D=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"a result at the other end\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
 LNK=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$LNK_S\",\"dst\":\"$LNK_D\",\"rel\":\"uses\"}" | field '.edge_id')
-call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"kind\":\"edge\",\"limit\":100}" \
+# Paged rather than asked for one big page: this link is the newest thing in
+# the corpus and sorts last, so a fixed page silently stops covering it the
+# day the suite grows past it.
+queue_page() { call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"kind\":\"edge\",\"limit\":40,\"offset\":$1}"; }
+find_in_queue() { # follows the queue's own `next`: the page size it grants is the only one that is true
+  local offset=0 page
+  while [[ -n $offset ]]; do
+    page=$(queue_page "$offset")
+    if echo "$page" | grep -q "$1"; then echo "$page"; return 0; fi
+    offset=$(echo "$page" | jq -r '.next.offset // empty')
+  done
+  echo '{"unreviewed":[]}'
+}
+find_in_queue "$LNK" \
   | python3 -c "import sys,json; d=json.load(sys.stdin)
 row = next((r for r in d['unreviewed'] if r['id'] == '$LNK'), None)
 assert row, 'the link never reached the queue'
@@ -716,20 +862,27 @@ assert b['by_kind'].get('edge', 0) >= 1, b
 assert sum(b['by_kind'].values()) == b['unreviewed'], b" \
   || fail "the default queue hides links from its own backlog count"
 
-# Contract: one reading, one call. The queue hands out a hundred rows and most
+# Contract: one reading, one call. The queue hands out a page of rows and most
 # of them are links; a verdict door taking one ref at a time turns a page the
 # reviewer has already read into a hundred round trips, which is how a backlog
-# of twenty thousand edges stayed one. A ref the call cannot act on comes back
-# in `refused` and the rest are still decided.
+# of twenty thousand edges stayed one. A review is the one thing in a page that
+# has no tier to move, and it takes the whole page down with it rather than
+# leaving a hole nobody was told about.
 BULK=()
 for i in 1 2 3; do
   BULK+=("$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"bulk subject $i\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')")
 done
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":[\"${BULK[0]}\",\"${BULK[1]}\",\"${BULK[2]}\",\"$RV\"],\"tier\":2,\"note\":\"one reading covered all three\"}" \
   | python3 -c "import sys,json; d=json.load(sys.stdin)
-assert [r['id'] for r in d['decided']] == ['${BULK[0]}', '${BULK[1]}', '${BULK[2]}'], d
-assert [r['ref'] for r in d['refused']] == ['$RV'], d" \
-  || fail "a bulk promotion did not decide what it could and refuse what it could not"
+assert d['decided'] == [], d
+assert [r['ref'] for r in d['refused']] == ['$RV'], d
+assert 'review has no tier' in d['refused'][0]['error'], d" \
+  || fail "a page carrying a review was partly applied instead of refused whole"
+[[ $(call get "{\"ref\":\"${BULK[0]}\"}" | field '.tier') == 0 ]] || fail "a refused page promoted an entry anyway"
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":[\"${BULK[0]}\",\"${BULK[1]}\",\"${BULK[2]}\"],\"tier\":2,\"note\":\"one reading covered all three\"}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert [r['id'] for r in d['decided']] == ['${BULK[0]}', '${BULK[1]}', '${BULK[2]}'], d" \
+  || fail "a bulk promotion did not decide the page it was given"
 for id in "${BULK[@]}"; do
   [[ $(call get "{\"ref\":\"$id\"}" | field '.tier') == 2 ]] || fail "a bulk promotion did not apply to every entry"
   [[ $(psql -h "$WORK" -d math -tAc "select count(*) from event where contribution_id = '$id' and kind = 'tier-changed'") == 1 ]] \
@@ -1198,6 +1351,20 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$EQ_EDGE\",\"tier\":2,\
 [[ $(call frontier "{\"ref\":\"$EQ1\"}" | field '.state') == settled ]] \
   || fail "a reviewed equivalence link did not identify the two questions"
 
+# Contract: transport is between two *questions*. A proved characterization,
+# "P holds iff Q holds", is a theorem about P and not an answer to it, so an
+# equivalent-to link from one to an open problem must not settle the problem
+# however reviewed both ends are. Reviewers were holding such links at T1
+# forever because that was the only safe move left.
+CHAR_Q=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"title\":\"does every widget admit a gadget\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+CHAR_T=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"a widget admits a gadget iff its index is even\",\"summary\":\"s\",\"content\":\"c.\"}" | field '.id')
+CHAR_E=$(call link "{\"contributor_key\":\"$KEY\",\"src\":\"$CHAR_T\",\"dst\":\"$CHAR_Q\",\"rel\":\"equivalent-to\",\"note\":\"the characterization\"}" | field '.edge_id')
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CHAR_T\",\"tier\":2,\"note\":\"the characterization is correct\"}" > /dev/null
+call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$CHAR_E\",\"tier\":2,\"note\":\"and it really is an equivalence\"}" > /dev/null
+call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"proof\",\"title\":\"proof of the index characterization\",\"summary\":\"s\",\"content\":\"c.\",\"relates_to\":[{\"id\":\"$CHAR_T\",\"rel\":\"proves\"}]}" > /dev/null
+[[ $(call frontier "{\"ref\":\"$CHAR_Q\"}" | field '.state') == open ]] \
+  || fail "proving a characterization theorem settled the question it characterizes"
+
 # ——— A paper is an object, and it renders —————————————————————————————
 # An exposition earns its kind by being *about* something already here and by
 # being readable: both are checked, along with the promise that the author
@@ -1471,9 +1638,10 @@ d = json.load(sys.stdin)
 rows = [x for xs in list(d["links"]["in"].values()) + list(d["links"]["out"].values()) for x in xs]
 assert rows, "get returned no link rows to check"
 for r in rows:
-    assert set(r) <= {"id", "kind", "title", "tier", "edge_tier", "status"}, sorted(r)
+    assert set(r) <= {"id", "edge_id", "kind", "title", "tier", "edge_tier", "status"}, sorted(r)
+    assert r["edge_id"] != r["id"], r
     assert "status" not in r or r["status"] != "active", r
-' || fail "get link rows are not minimal (id, kind, title, tier, edge_tier, status-when-inactive)"
+' || fail "get link rows are not minimal (id, edge_id, kind, title, tier, edge_tier, status-when-inactive)"
 dated "get events" "$GOTQ" 'd["events"]'
 FRO=$(call frontier "{\"ref\":\"$Q\"}")
 dated "frontier" "$FRO" '[d]'

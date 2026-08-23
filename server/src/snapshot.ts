@@ -68,7 +68,7 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
       left join contribution m on m.id = e.src and m.status = 'active' and ec.id is not null
       where f.kind = 'front' and f.status = 'active'
       group by f.id, f.title, f.notability
-      order by members desc, f.notability desc limit 10`,
+      order by members desc, f.notability desc limit 6`,
     // What this place has actually established, best first, which is the
     // first thing anyone arriving wants and the one thing graph density
     // cannot answer.
@@ -80,7 +80,7 @@ async function computeSnapshot(): Promise<CorpusSnapshot> {
     sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind not in ('edge', 'statement')
-        order by notability desc, created_at desc limit 6`,
+        order by notability desc, created_at desc limit 5`,
     sql`select id, kind, title, summary, tier, state, notability, lean_verified, origin, origin_source, created_at
         from contribution
         where status = 'active' and kind <> 'edge' and tier >= 2

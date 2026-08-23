@@ -1809,6 +1809,15 @@ dated "hello most_notable" "$(call hello '{}')" 'd["most_notable"]'
 # made it a 21 KB answer, and past about 16 KB a common client replaces a tool
 # result with a notice pointing at a temp file -- so the first call an agent
 # makes here came back with nothing in it. Rows point; get fetches.
+# The whole arrival answer, against the limit its readers actually apply: pi's
+# MCP adapter replaces any tool result over 16 KB with a notice pointing at a
+# temp file, so a hello above that teaches nothing to the agents that read it.
+# The test corpus is small, so this measures the fixed teaching text -- the
+# tips, the census glosses, the how-to-ask table -- which is most of it and the
+# part that grows by editing rather than by use.
+call hello '{}' | python3 -c "import sys
+raw = sys.stdin.read()
+assert len(raw) < 12000, len(raw)" || fail "hello's fixed text alone is close to the size its readers drop"
 LONG_SUMMARY=$(python3 -c "print('a summary long enough to matter, repeated. ' * 14)")
 GLANCED=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"theorem\",\"title\":\"an entry with a great deal to say for itself\",\"summary\":\"$LONG_SUMMARY\",\"content\":\"c.\"}" | field '.id')
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$GLANCED\",\"tier\":2,\"note\":\"canon, for the glance\"}" | field '.ok' > /dev/null

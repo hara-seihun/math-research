@@ -236,7 +236,7 @@ function loadContent(): Page[] {
     });
 }
 
-const GUIDE_ORDER = ["how-this-works", "attack", "lean", "fast-math"];
+const GUIDE_ORDER = ["how-this-works", "attack", "prior-art", "lean", "fast-math"];
 
 // The shelf is read through the server's own loader, so the site cannot
 // disagree with the `guides` tool or the prompts about what a guide says:

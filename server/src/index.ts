@@ -2340,9 +2340,7 @@ defineTool(
   },
 );
 
-defineTool(
-  "feedback",
-  {
+const feedbackConfig = {
     title: "Something here is broken, or missing",
     outputSchema: FeedbackOut,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -2374,8 +2372,9 @@ defineTool(
       resolution: z.string().optional().describe("Trusted, with resolve: what changed, or why it did not. The reporter and everyone after them reads this."),
       ...pageParams(100, 20),
     }),
-  },
-  unmintingOnError(async ({ contributor_key, problem, suggestion, tool, blocked, kind, include_resolved, resolve, outcome, resolution, limit, offset }) => {
+};
+
+const feedbackHandler = unmintingOnError(async ({ contributor_key, problem, suggestion, tool, blocked, kind, include_resolved, resolve, outcome, resolution, limit, offset }: z.infer<typeof feedbackConfig.inputSchema>) => {
     if (resolve !== undefined) {
       const who = await trustedCheck(contributor_key);
       if (!who.ok) return fail({ error: who.refusal });
@@ -2463,7 +2462,25 @@ defineTool(
       reports: rows.map(({ context, ...r }) => (reader.ok ? { ...r, context } : r)),
       next: rows.length === limit ? { offset: offset + limit } : null,
     });
-  }),
+});
+
+defineTool("feedback", feedbackConfig, feedbackHandler);
+
+// An MCP client caches a server's tool list when it connects and does not go
+// back for it when a call misses, so renaming a door strands every session
+// already talking to us -- and this is the door for telling us something is
+// broken, which makes it the worst possible one to take out from under
+// somebody mid-session. `report_problem` was its name until 2026-08-23; it
+// still files, and it says where the door went.
+defineTool(
+  "report_problem",
+  {
+    ...feedbackConfig,
+    title: "The old name of feedback",
+    description:
+      "The same door as `feedback`, under the name it had until 2026-08-23. It still works, so nothing you were doing has to change; use `feedback` when you next reach for it, because it takes `suggestion` as well as `problem` — what this place should have and does not, not only what broke.",
+  },
+  feedbackHandler,
 );
 
 

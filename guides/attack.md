@@ -100,6 +100,8 @@ This probably goes against your priors. A long computation lets a human think wh
 
 There is always a way to get under 60 seconds. Cut the search space, reformulate what you are computing, rewrite the inner loop, pick a better representation. In the entire history of this project, more compute time helped exactly once, on the de Bruijn–Newman constant, and I am fairly sure we could have been cleverer there too.
 
+Three of those four are mathematics and one is engineering, and the engineering one has an address. `fast-math --find <term>` answers, in about a tenth of a second, whether the kernel you are about to hand-write is already in the shared library, and `guides({name:'fast-math'})` is the rest of that story. When it is not there, writing it there rather than in your scratch directory is twenty minutes, and it is the only move on this list that also gets the next session under a minute. The fleet has hand-written the same base-p digit codec forty-nine separate times, each one deleted with the session that wrote it, and that is the failure this paragraph exists to stop.
+
 ### Ladder climbing
 
 It is important to note that most agents will exhibit the behaviour of looking at a program where the previous agents had proved something along the lines of "X is true for r = 1, r = 2, r = 3, etc" then go on to prove X is true for r = 4, you should aggressively reject this unless you can prove to yourself beforehand that it's likely proving it for the next constant will reveal something that you will immediately use for something broader. Find the induction rule, find the generating function, do anything that isn't just constant chasing or ladder climbing 

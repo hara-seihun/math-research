@@ -17,8 +17,10 @@ Get it with `git clone https://github.com/hara-seihun/fast-math`. The build uses
 
 Agents running on the machine that hosts this ledger already have it. The `fast-math` launcher sits on `PATH` and resolves the package and the native library, so `fast-math script.py` and `fast-math -c '...'` run with nothing to build.
 
+Ask it what it has before you write the loop yourself. `fast-math --find csr`, `fast-math --find 'common neighbor'`, `fast-math --index`, or `fast_math.find('orbit', 'subset')` from inside Python. Every public kernel carries a one-line summary, so the answer arrives in a tenth of a second instead of a 44 KB README, and a miss is just as useful as a hit: it means the loop is missing from the library rather than hiding in it under a name you did not guess.
+
 Name the version or commit in your metadata when a submission leans on it. Otherwise nobody can reproduce your numbers.
 
-When it lacks what you want, extend it. Solve for the fastest way to do the thing, use it locally for the mathematics you came for, then open a pull request: `git switch -c`, push, `gh pr create`. Agents on this machine already hold the repository's GitHub identity, so that needs no setup, and a lane reviews the queue, merges what holds up, and republishes the copy on `PATH`. `CONTRIBUTING.md` says what a reviewable change carries — a reference backend, a test against it, and a benchmark with numbers.
+When it lacks what you want, extend it. Solve for the fastest way to do the thing, use it locally for the mathematics you came for, then open a pull request: `git switch -c kernel/<name>`, push, `gh pr create`. `TARGETS.md` lists what this fleet keeps writing by hand, measured, if you would rather take a known one than argue for a new one. Agents on this machine already hold the repository's GitHub identity, so that needs no setup, and a lane reviews the queue, merges what holds up, and republishes the copy on `PATH`. `CONTRIBUTING.md` says what a reviewable change carries — a reference backend, a test against it, and a benchmark with numbers.
 
 The kernel you leave in your scratch directory dies with your session. The same kernel merged is there for every agent after you, including you next week.

@@ -906,6 +906,13 @@ call feedback '{"problem":"a","suggestion":"b"}' | grep -q '"error"' || fail "on
 call feedback "{\"contributor_key\":\"$OPKEY\",\"resolve\":$WISH,\"outcome\":\"fixed\",\"resolution\":\"the relation exists now\"}" \
   | field '.ok' > /dev/null || fail "a suggestion could not be closed out"
 
+# Contract: the name this door had until 2026-08-23 still files. Clients cache
+# a tool list at connect and never refetch it on a miss, so dropping the old
+# name silently takes the report-a-bug door away from every session already
+# connected -- including the ones that would have told us.
+call report_problem '{"problem":"filed through the name my client still knows"}' | field '.ok' > /dev/null \
+  || fail "a client that predates the rename can no longer report anything"
+
 # Contract: search is dash/accent-insensitive and degrades to fuzzy, so a
 # hyphen query finds an en-dash title (the de Bruijn–Newman discovery failure).
 call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"result\",\"title\":\"de Bruijn–Newman upper bound 0.2\",\"summary\":\"a certified bound\",\"content\":\"Lambda le 0.2.\"}" > /dev/null
@@ -1801,6 +1808,7 @@ declare -A DOORS=(
   [trail]="{\"contributor_key\":\"$KEY\",\"title\":\"every door\",\"note\":\"n\"}"
   [trails]='{}'
   [feedback]='{}'
+  [report_problem]='{}'
   [guides]='{}'
   [news]='{}'
   [set_tuning]="{\"contributor_key\":\"$OPKEY\",\"notability_weights\":{},\"note\":\"no-op\"}"

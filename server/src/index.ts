@@ -37,7 +37,7 @@ import { beyondTitle, changeView, deref, fitToBudget, LIST_NOTE, LIST_SUMMARY, l
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FeedbackKind, FeedbackOut, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LeanGrepOut, LeanInfoOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
-  RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SearchDeclsOut, SearchOut, SetOriginOut, SetTierOut, SetTuningOut, structured, SubmitOut, TheoriesOut,
+  RejectOut, RetractOut, ReviewClaimOut, ReviewQueueOut, SalvageOut, SearchDeclsOut, SearchOut, SetOriginOut, SetTierOut, SetTuningOut, structured, SubmitOut, TheoriesOut,
   TrailOut, TrailsOut,
 } from "./shapes.ts";
 import {
@@ -195,7 +195,15 @@ async function resolveRefs(
   return { ids, refused };
 }
 
-type Rejection = { reason: string; note: string; by: string; at: string };
+type Rejection = {
+  reason: string;
+  note: string;
+  by: string;
+  at: string;
+  /** Whether a reviewer has carried the surviving mathematics back out. */
+  salvaged: boolean;
+  salvage: { note: string; into: string[]; by: string | null; at: string } | null;
+};
 type VerdictTarget = { ref: string; id: string; title: string; kind: string; status: string; rejection: Rejection | null };
 
 /**
@@ -455,7 +463,7 @@ const TOOLS: ToolDef[] = [];
 const SHAREABLE = new Set(["search", "search_decls", "lean_similar", "fronts", "frontier", "theories", "related", "get", "query", "trails", "guides", "news"]);
 
 // Tools that move the corpus, and so retire every shared read above.
-const WRITES = new Set(["submit", "link", "attach", "trail", "set_tier", "set_origin", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "reject", "grant_trust"]);
+const WRITES = new Set(["submit", "link", "attach", "trail", "set_tier", "set_origin", "set_tuning", "apply_refactor", "apply_amendment", "apply_impact_assessment", "retract", "reject", "salvage", "grant_trust"]);
 
 // Instructions are the one string every client puts in front of a model before
 // anything is called, and they are paid for on every connection whether or not
@@ -2768,9 +2776,13 @@ defineTool(
       "This lease is over the *reading*, not over the mathematics. Nothing here reserves a problem, a proof, or a line of attack: research is meant to be attacked in parallel and trails stay advisory diaries. Only adjudication is queue work, because it is the one thing worth doing exactly once.",
       "The queue does not care who wrote an entry or who has read it. Judging your own submission is a real hazard, but hiding it is worse: on a ledger whose mathematics comes from one fleet under one key, filtering by author emptied the worklist entirely and nothing got reviewed at all. So review your own work like anything else, and say in the note that it is yours. Entries that already carry a reading and are still sitting at T0 come back too, marked with their `reviews` count and sorted after the unread ones, because a reading without a verdict is not a decision.",
       "A link is a contribution on the same ladder as the mathematics, and an unreviewed one is an unchecked claim about what depends on, advances, or settles what. So links are queued like everything else, and an edge row prints what it asserts — relation, both endpoints, their kinds and tiers — which is enough to decide most of them without a second call. `backlog` counts everything that matches rather than this page; `backlog.by_kind` says what it is made of, and `kind` narrows the page to one of them, which is how you take a run of links or a run of theorems rather than a mixture. Requires a trusted key.",
+      "`mode:'salvage'` is the other worklist: entries review threw out as false or unsupported whose surviving mathematics is still nobody's, leased the same way. Read the review guide before working it — a rejection is a verdict on an entry and never on the mathematics inside it, and most of these hold real results a wrong constant took down with it.",
     ].join(" "),
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
+      mode: z
+        .enum(["verdicts", "salvage"]).default("verdicts")
+        .describe("'verdicts' is the queue of things waiting to be judged. 'salvage' is the queue of judgements that are not finished: rejected entries whose salvageable mathematics has not been written back into the corpus. Both lease what they hand you."),
       kind: z.string().optional().describe("Only queue entries of this kind, for example 'proof', 'conjecture', or 'edge' for links. `backlog.by_kind` lists what is actually waiting."),
       max_tier: z
         .number().int().min(0).max(2).default(1)
@@ -2795,10 +2807,10 @@ defineTool(
       ...pageParams(40, 20),
     }),
   },
-  async ({ contributor_key, kind, max_tier, claim, claim_minutes, include_claimed, include_decided, limit, offset }) => {
+  async ({ contributor_key, mode, kind, max_tier, claim, claim_minutes, include_claimed, include_decided, limit, offset }) => {
     const who = await trustedCheck(contributor_key);
     if (!who.ok) return fail({ error: who.refusal });
-    logRequest("review_queue", who.identityId, { kind, max_tier, offset, claim, include_decided });
+    logRequest("review_queue", who.identityId, { mode, kind, max_tier, offset, claim, include_decided });
     sweepExpiredClaims();
     const mine = who.identityId ? claimantOf(who.identityId) : null;
     // One predicate, used for the page and for the backlog count, so the
@@ -2848,6 +2860,19 @@ defineTool(
     // at the same instant and the conflicting insert refuses the row that is
     // already held, so the loser never sees it rather than seeing it twice.
     const taking = claim && who.identityId !== null;
+    const salvaging = mode === "salvage";
+    // The unfinished half of every harsh verdict. A rejection removes an entry;
+    // it does not remove the mathematics that was in it, and the notes on these
+    // rows say so themselves -- "the main statements can be repaired", written
+    // by the reviewer who then threw the page out because as written it was
+    // false. Until someone has put what survives back in the corpus as its own
+    // entries, or read it and found nothing worth keeping, the decision is half
+    // made. `duplicate` and `not-mathematics` are not here: the first says the
+    // work is already in the corpus and the second that there was none.
+    const salvageWhere = sql`
+      c.status = 'rejected' and c.kind <> 'edge'
+        and rejection_of(c.id)->>'reason' in ('false', 'unsupported')
+        and coalesce((rejection_of(c.id)->>'salvaged')::boolean, false) = false`;
     /** Whether every row on this page is spelled out in a section beside it. */
     const described = kind === "amendment" || kind === "patch";
     // The same list row every other read door returns, plus what only a
@@ -2865,7 +2890,7 @@ defineTool(
       if (described) delete (row as { summary?: unknown }).summary;
       return row;
     };
-    const rows = await sql<{
+    const rows = salvaging ? [] : await sql<{
       id: string; kind: string; title: string; summary: string; tier: number; notability: number;
       created_at: Date; lean_verified: boolean; reviews: number; claimed_until: Date | null;
       link: Record<string, unknown> | null;
@@ -2898,9 +2923,50 @@ defineTool(
       join lateral (${reviewCount}) rc on true
       left join lateral (${linkDetail}) lk on true
       order by cand.reviewed asc, c.notability desc, c.created_at asc`;
+    // Every rejection with mathematics still stranded in it, most consequential
+    // first. The reviewer's own readings travel with the row because that is
+    // usually where the repair already is: the correction written a minute
+    // before the verdict, in an entry that carries no tier and that nothing
+    // else in the corpus can cite.
+    const salvageRows = await sql<{
+      id: string; kind: string; title: string; summary: string; notability: number;
+      rejection: { reason: string; note: string; by: string | null; at: Date };
+      readings: { id: string; title: string }[]; claimed_until: Date | null;
+    }[]>`
+      with held as (${otherClaims}),
+      candidate as (
+        select c.id, c.notability, c.updated_at
+        from contribution c
+        left join held h on h.id = c.id
+        where ${salvageWhere} and (${include_claimed} or h.id is null)
+        order by c.notability desc, c.updated_at desc
+        limit ${salvaging ? limit : Math.min(limit, 5)} offset ${salvaging ? offset : 0}
+      ), taken as (
+        insert into review_claim (contribution_id, identity_id, claimant, claimed_at, expires_at)
+        select id, ${who.identityId ?? null}::text, ${mine}::text, now(), now() + make_interval(mins => ${claim_minutes})
+        from candidate where ${salvaging && taking}
+        on conflict (contribution_id) do update
+          set identity_id = excluded.identity_id, claimant = excluded.claimant,
+              claimed_at = now(), expires_at = excluded.expires_at
+          where review_claim.expires_at <= now()
+             or review_claim.claimant = excluded.claimant
+        returning contribution_id, expires_at
+      )
+      select c.id, c.kind, c.title, c.summary, c.notability, rejection_of(c.id) as rejection,
+             t.expires_at as claimed_until,
+             (select coalesce(json_agg(json_build_object('id', r.id, 'title', r.title)), '[]'::json)
+              from edge e
+              join contribution ec on ec.id = e.contribution_id and ec.status = 'active'
+              join contribution r on r.id = e.src and r.status = 'active' and r.kind = 'review'
+              where e.dst = c.id and e.rel = 'reviews') as readings
+      from candidate cand
+      join contribution c on c.id = cand.id
+      left join taken t on t.contribution_id = cand.id
+      order by cand.notability desc, cand.updated_at desc`;
     // A row the insert refused was taken by someone else between the scan and
     // the write. It is theirs; do not hand it out as well.
     const won = taking ? rows.filter((r) => r.claimed_until !== null) : rows;
+    const salvageWon = salvaging && taking ? salvageRows.filter((r) => r.claimed_until !== null) : salvageRows;
     // A page of forty edge rows is 10 KB and forty long-titled entries more
     // than that, and the answer carrying them has to arrive whole or it does
     // not arrive at all -- the reviewer asking for the largest page the door
@@ -2910,10 +2976,27 @@ defineTool(
     // and `next` counts what was actually served, so the following page starts
     // exactly where this one stopped instead of stepping over the difference.
     const WORKLIST_BUDGET = RESPONSE_TARGET - 5_000;
-    const unreviewed = [...won];
-    const weight = () => JSON.stringify(unreviewed.map(queueRow)).length;
-    const dropped: string[] = [];
-    while (unreviewed.length > 1 && weight() > WORKLIST_BUDGET) dropped.push(unreviewed.pop()!.id);
+    const fitPage = <T extends { id: string }>(page: T[], view: (row: T) => unknown) => {
+      const kept = [...page];
+      const dropped: string[] = [];
+      const weight = () => JSON.stringify(kept.map(view)).length;
+      while (kept.length > 1 && weight() > WORKLIST_BUDGET) dropped.push(kept.pop()!.id);
+      return { kept, dropped };
+    };
+    const salvageView = (r: (typeof salvageRows)[number]) => ({
+      id: r.id, kind: r.kind, title: r.title, summary: trim(r.summary, LIST_SUMMARY),
+      notability: r.notability,
+      // On the page itself the verdict note is the work: it is where the
+      // reviewer said what was wrong and, as often as not, what survives.
+      // Trimmed only in the sample beside a page of verdicts.
+      rejection: salvaging ? r.rejection : { ...r.rejection, note: trim(r.rejection.note, LIST_NOTE) },
+      readings: r.readings,
+      claimed_until: r.claimed_until,
+    });
+    const fitted = salvaging ? fitPage(salvageWon, salvageView) : fitPage(won, queueRow);
+    const unreviewed = salvaging ? [] : (fitted.kept as typeof won);
+    const salvage = salvaging ? (fitted.kept as typeof salvageRows) : salvageRows;
+    const dropped = fitted.dropped;
     if (dropped.length && taking) {
       await sql.begin(async (tx) => {
         await releaseClaims(tx, dropped);
@@ -2945,7 +3028,9 @@ defineTool(
     // already chosen what they are working on, and `backlog` still counts the
     // rest. Twenty amendments to decide arrived with the detail for two of
     // them, because five sections about other work had taken the room.
-    const wants = (sectionKind: string | null) => kind === undefined || kind === sectionKind;
+    // A salvage page carries none of them: they are all about entries waiting
+    // on a verdict, and this reviewer is working the verdicts that were passed.
+    const wants = (sectionKind: string | null) => !salvaging && (kind === undefined || kind === sectionKind);
     // A queue row names a patch; it is not the patch. Eight module paths were
     // a third of its weight.
     const sideModules = (modules: string[] | null): string[] | null =>
@@ -3040,7 +3125,7 @@ defineTool(
       e.rel in ('refutes', 'disputes') and ec.status = 'active'
         and o.status = 'active' and c.status = 'active' and c.tier <= 2
         and c.kind not in ('problem', 'conjecture', 'front', 'route', 'edge')`;
-    const flagged = kind !== undefined ? [] : await sql`
+    const flagged = kind !== undefined || salvaging ? [] : await sql`
       select c.id, c.kind, c.title, c.tier, o.id as objection_id, o.title as objection_title,
              e.rel, ec.identity_id as by, e.created_at as raised_at
       from edge e
@@ -3055,7 +3140,7 @@ defineTool(
     // are off it until someone amends the headline to say what was found.
     // An answer nobody can read from the board is not published.
     const askingWhere = sql`c.status = 'active' and (${certified()}) and not (${statesAFinding()})`;
-    const askingClosures = kind !== undefined ? [] : await sql`
+    const askingClosures = kind !== undefined || salvaging ? [] : await sql`
       select c.id, c.kind, c.title, c.tier, c.state, c.notability, ${impactScore()} as impact_score,
              s.title as settled_by
       from contribution c
@@ -3128,7 +3213,8 @@ defineTool(
                 join contribution tgt on tgt.id = e.dst
                 where ${impactWhere})::int as impact_assessment_proposals,
              (select count(*) from contribution c where ${askingWhere})::int as asking_closures,
-             (select count(*) from contribution c where ${patchWhere})::int as patches`;
+             (select count(*) from contribution c where ${patchWhere})::int as patches,
+             (select count(*) from contribution c where ${salvageWhere})::int as salvage`;
     // What this reviewer holds that is *not* on the page in front of them, and
     // not many of those either. A claiming call leases every row it hands out,
     // so listing them again under `your_claims` printed the whole worklist
@@ -3136,24 +3222,28 @@ defineTool(
     // at 7 KB was most of the answer -- spent on rows the reviewer took
     // precisely because they had already read them. What is worth carrying is
     // the few they have left undecided, and the count of the rest.
-    const onThisPage = new Set(unreviewed.map((r) => r.id));
+    const onThisPage = new Set((salvaging ? salvage : unreviewed).map((r) => r.id));
     const allHeld = await claimsHeldBy(mine);
     const earlier = allHeld.filter((h) => !onThisPage.has(h.id));
     const held = earlier.slice(0, 10);
-    const tip = !include_claimed && unreviewed.length < limit && (counts?.claimed_by_others ?? 0) > 0
+    const tip = !salvaging && !include_claimed && unreviewed.length < limit && (counts?.claimed_by_others ?? 0) > 0
       ? `${counts!.claimed_by_others} more matching entries are held by other reviewers right now and were left off your page. They come back if their reviewer does not decide them.`
       : undefined;
+    const served = salvaging ? salvage.length : unreviewed.length;
     const packet: Record<string, unknown> = {
       // The same list row every other read door returns, plus what only a
       // reviewer needs. A bespoke shape here is what let 2000-character
       // summaries into a page of twenty.
-      unreviewed: unreviewed.map(queueRow),
+      ...(salvaging ? {} : { unreviewed: unreviewed.map(queueRow) }),
+      ...(salvage.length ? { salvage: salvage.map(salvageView) } : {}),
       // What was served, not what was asked for: a page cut to fit still has
       // to hand back a cursor that resumes at the first row nobody was shown.
       // Including on the last page -- a short page that was also cut still has
       // rows behind it, and ending the walk there is how a reviewer's paging
       // loop would step over them and report the queue empty.
-      next: won.length === limit || dropped.length ? { offset: offset + unreviewed.length } : null,
+      next: (salvaging ? salvageWon.length : won.length) === limit || dropped.length
+        ? { offset: offset + served }
+        : null,
       ...(dropped.length
         ? { page_note: `${dropped.length} more matching entries were left off this page to keep the answer inside what a client will hold, and are not leased to you. next.offset resumes at the first of them.` }
         : {}),
@@ -3178,6 +3268,7 @@ defineTool(
         amendment_proposals: amendments.length,
         impact_assessment_proposals: impactAssessments.length,
         patches: patches.length,
+        salvage: salvage.length,
       },
       flagged,
       asking_closures: askingClosures,
@@ -3203,7 +3294,7 @@ defineTool(
     // was leased in the statement that selected it, so a row dropped here
     // would be work leased to a reviewer who was never shown it and stepped
     // over by the next page.
-    const shortened = fitToBudget(packet, { keep: ["unreviewed"] });
+    const shortened = fitToBudget(packet, { keep: [salvaging ? "salvage" : "unreviewed"] });
     return structured(ReviewQueueOut, shortened
       ? { ...packet, sample: `${shortened}. backlog counts what is really waiting; ask again with kind to take a run of one sort.` }
       : packet);
@@ -3404,6 +3495,7 @@ defineTool(
       "The verdict review needs when the answer is no. Promotion is not the only way out of the queue: something that claims the Riemann Hypothesis and offers 1+1=2 as the proof is not confirmed mathematics, and leaving it at T0 forever is not a decision either. It stays in the corpus, keeps whatever question it claimed to settle looking settled, and comes back around the worklist.",
       "Rejecting marks the entry rejected. It stays readable forever, with your reason attached, because the ledger annotates and never deletes. It leaves the active corpus, so it stops being found by search, stops lending importance to anything it points at, and any question it was claiming to answer reopens, with those listed in `reopened`. Your review claim on it is released.",
       "Reject the entry that is wrong, not the question it was about. If a proof is empty but the statement is worth keeping, reject the proof and leave the conjecture open. If the mathematics is real but the write-up is thin, that is a T0 entry and a review saying so, not a rejection. If it is honest work that a later reviewer decides was judged too harshly, set_tier puts it back. Requires a trusted key.",
+      "Throwing the page out is half the verdict. A wrong constant, an unproved step, one false lemma — the entry goes, and the mathematics that was standing beside it goes with it unless you carry it out. So when you reject something for being false or unsupported, submit whatever survives as your own T0 entries and finish the decision with `salvage`; read the review guide, which is short and is mostly about this.",
       "`ref` takes a list when one reading condemns several rows at once, which is the usual shape for links: every edge out of an entry that turned out to be rejected, a duplicated assertion filed a hundred times. Each gets its own event carrying the shared reason and note, and `reopened` names every question the whole call put back. The page is rejected whole or not at all: a ref that does not resolve exactly, one already rejected, or a row another reviewer holds a live lease on refuses the entire call in `refused` and changes nothing.",
     ].join(" "),
     inputSchema: z.object({
@@ -3450,6 +3542,99 @@ defineTool(
           where id = any (${claimedToSettle.map((q) => q.id)}::uuid[]) and state = 'open'`
       : [];
     return structured(RejectOut, { ok: true, reason, note, rejected: throwing, reopened });
+  },
+);
+
+defineTool(
+  "salvage",
+  {
+    title: "Finish a rejection: carry out what survived (trusted)",
+    outputSchema: SalvageOut,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: [
+      "The other half of a rejection. `reject` says this entry is not confirmed mathematics; it does not say there was no mathematics in it, and usually there was. The verdict notes in this corpus say so themselves — 'the main statements can be repaired', 'all three headlines are TRUE', written by the reviewer who then correctly threw the page out because as written it was false. What that reviewer worked out lives in a review, which carries no tier and which nothing can cite, and the results die there.",
+      "So: read the rejected entry and any readings on it, take what actually holds, submit it as ordinary new T0 entries in your own words with the correction made, and then call this. It records that the rejection is finished, links each new entry `salvages` back to what it came out of, and takes the row off the salvage worklist (`review_queue({mode:'salvage'})`).",
+      "`into` empty is a real and frequent verdict: you read it, and nothing in it survives its own error. Say that in the note and the row is done. What the mark means is that a reviewer looked, so do not mark a page you have not read — nothing else counts this backlog, and the lane that works it stops when this reaches zero.",
+      "Salvaged mathematics is new work at T0 like anything else, and it climbs by review the same way. Do not restore the rejected entry instead: it was rejected for a reason that still holds, and `set_tier({restore:true})` is for a verdict that was wrong, not for one that was right about a page containing something good. Requires a trusted key.",
+    ].join(" "),
+    inputSchema: z.object({
+      contributor_key: trustedKeyParam,
+      ref: oneOrMoreRefs.describe("The rejected entry this finishes: id, name, or exact title. A list marks each of them, up to 100, which is the shape when one salvaged entry carries what several rejected ones were reaching for."),
+      into: z
+        .array(refParam).max(100).default([])
+        .describe("The live entries now carrying the recovered mathematics, which you submit first. Leave it empty when nothing survived, and say so in the note."),
+      note: z
+        .string().min(1)
+        .describe("What you took out and what you left, or why nothing was worth taking. Public and permanent, and it is what the next reviewer reads instead of doing this again."),
+    }),
+  },
+  async ({ contributor_key, ref, into, note }) => {
+    const who = await trustedCheck(contributor_key);
+    if (!who.ok) return fail({ error: who.refusal });
+    const asked = refList(ref);
+    logRequest("salvage", who.identityId, { refs: asked.length, into: into.length });
+    const found = await verdictTargets(who.identityId, asked, (target) => {
+      if (target.status !== "rejected") {
+        return `that entry is ${target.status}, and salvage finishes a rejection. Nothing needs carrying out of an entry that is still standing.`;
+      }
+      if (target.rejection?.salvaged) {
+        return `that rejection is already finished: ${target.rejection.salvage?.note ?? "marked salvaged"}`;
+      }
+      return null;
+    });
+    if ("failed" in found) return found.failed;
+    const carriers = await resolveRefs(into, { exact: true });
+    const rejected = new Set(found.targets.map((t) => t.id));
+    const carried = await sql<{ id: string; kind: string; title: string; tier: number; status: string }[]>`
+      select id, kind, title, tier, status from contribution where id = any (${carriers.ids.map((r) => r.id)}::uuid[])`;
+    const live = new Map(carried.map((c) => [c.id, c]));
+    const refused = [...carriers.refused];
+    for (const asking of carriers.ids) {
+      const row = live.get(asking.id);
+      if (!row) refused.push({ ref: asking.ref, error: "no contribution with that id" });
+      else if (rejected.has(row.id)) {
+        refused.push({ ref: asking.ref, error: "that is one of the rejected entries, and salvage is a new entry carrying what survived rather than the page review threw out wearing a fresh label." });
+      } else if (row.status !== "active") {
+        refused.push({ ref: asking.ref, error: `that entry is ${row.status}, so it is not carrying anything. Salvaged work has to be live.` });
+      }
+    }
+    if (refused.length) {
+      return fail({
+        error: refused.length === 1
+          ? refused[0]!.error
+          : `${refused.length} of the entries named in \`into\` are not live work carrying what you recovered, so nothing was marked.`,
+        ...(refused.length === 1 ? { ref: refused[0]!.ref } : { refused }),
+      });
+    }
+    const keeping = carriers.ids.map((r) => r.id);
+    const marking = found.targets.map((t) => t.id);
+    let links = 0;
+    await sql.begin(async (tx) => {
+      await tx`insert into event (kind, contribution_id, identity_id, payload)
+               select 'salvaged', id, ${who.identityId}, ${tx.json({ note, into: keeping } as never)}
+               from unnest(${marking}::uuid[]) as id`;
+      for (const src of keeping) {
+        for (const dst of marking) {
+          const made = await createEdge(tx, { identityId: who.identityId, src, dst, rel: "salvages", note });
+          if ("id" in made) links++;
+        }
+      }
+      await releaseClaims(tx, marking);
+    });
+    await refreshAround([...marking, ...keeping]);
+    const [rest] = await sql<{ n: number }[]>`
+      select count(*)::int as n from contribution c
+      where c.status = 'rejected' and c.kind <> 'edge'
+        and rejection_of(c.id)->>'reason' in ('false', 'unsupported')
+        and coalesce((rejection_of(c.id)->>'salvaged')::boolean, false) = false`;
+    return structured(SalvageOut, {
+      ok: true,
+      note,
+      salvaged: found.targets.map((t) => ({ id: t.id, title: t.title, reason: t.rejection?.reason ?? "rejected" })),
+      into: carried.map((c) => ({ id: c.id, kind: c.kind, title: c.title, tier: c.tier })),
+      links,
+      remaining: rest?.n ?? 0,
+    });
   },
 );
 
@@ -3752,7 +3937,7 @@ defineTool(
         error: asked.length === 1
           ? refused[0]!.error
           : `${refused.length} of ${asked.length} could not be decided, so none of them were. Drop those and send the page again; nothing here has changed.`,
-        ...(asked.length === 1 ? { ...refused[0] } : { refused }),
+        ...(asked.length === 1 ? { amendment_id: refused[0]!.amendment_id } : { refused }),
       });
     }
     await sql.begin(async (tx) => {

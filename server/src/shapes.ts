@@ -166,6 +166,29 @@ const NeighbourLink = z.strictObject({
   edge_tier: z.number().int(),
   status: z.string().optional().describe("The endpoint's status, only when not 'active'."),
 });
+/**
+ * A verdict, wherever it is read. `salvaged` is the second half of it: whether
+ * a reviewer has carried the entry's surviving mathematics back into the
+ * corpus as its own entries, or read it and found none. False on every fresh
+ * rejection, and the one count that says how much of what review threw out is
+ * still owed back.
+ */
+export const RejectionView = z.strictObject({
+  reason: z.string().nullable(),
+  note: z.string().nullable(),
+  by: z.string().nullable(),
+  at: iso.nullable(),
+  salvaged: z.boolean(),
+  salvage: z
+    .strictObject({
+      note: z.string().nullable(),
+      into: z.array(z.string()).describe("The live entries carrying what was recovered. Empty when the reviewer found nothing worth keeping."),
+      by: z.string().nullable(),
+      at: iso.nullable(),
+    })
+    .nullable(),
+});
+
 export const Neighbourhood = z
   .strictObject({
     out: z.record(z.string(), z.array(NeighbourLink)).describe("Outgoing links, grouped by relation, top rows by (edge tier, notability)."),
@@ -554,8 +577,7 @@ export const GetOut = z.strictObject({
   author: z.string().nullable(),
   matched_by: z.string(),
   note: z.string().optional(),
-  rejection: z
-    .strictObject({ reason: z.string().nullable(), note: z.string().nullable(), by: z.string().nullable(), at: iso.nullable() })
+  rejection: RejectionView
     .optional()
     .describe("Why review threw this entry out, and who did. Present exactly while status is 'rejected'."),
   links: Neighbourhood,
@@ -569,9 +591,7 @@ export const GetOut = z.strictObject({
           other: z.string(),
           title: z.string(),
           edge_tier: z.number().int(),
-          rejection: z
-            .strictObject({ reason: z.string().nullable(), note: z.string().nullable(), by: z.string().nullable(), at: iso.nullable() })
-            .nullable(),
+          rejection: RejectionView.nullable(),
         }),
       ),
       total: z.number().int(),
@@ -1032,8 +1052,25 @@ export const ReviewQueueOut = z.strictObject({
       reviews: z.number().int().describe("How many readings this entry already carries. More than zero and still here means nobody has decided it."),
       claimed_until: iso.nullable().describe("Your lease on adjudicating this entry. It is yours until then, or until you decide it."),
     }),
-  ).describe("Entries waiting on a verdict, as ordinary list rows: enough to choose what to read, with the full text one get away. An 'external' origin you cannot verify, or a 'ledger' origin that is quietly a known result, is part of what the reading is for. This is the only section `limit` governs; the ones below carry at most ten each, however many `backlog` counts."),
+  ).optional().describe("Entries waiting on a verdict, as ordinary list rows: enough to choose what to read, with the full text one get away. Absent on a salvage page, which is a different worklist. An 'external' origin you cannot verify, or a 'ledger' origin that is quietly a known result, is part of what the reading is for. This is the only section `limit` governs; the ones below carry at most ten each, however many `backlog` counts."),
   next: offsetCursor,
+  salvage: z
+    .array(
+      z.strictObject({
+        id: z.string(),
+        kind: z.string(),
+        title: z.string(),
+        summary: z.string().nullable(),
+        notability: z.number(),
+        rejection: RejectionView.describe("Why review threw it out, which is usually also the description of what survives."),
+        readings: z
+          .array(z.strictObject({ id: z.string(), title: z.string() }))
+          .describe("Reviews written about this entry. When a reviewer worked out the repair before rejecting, it is in one of these rather than in the entry."),
+        claimed_until: iso.nullable().describe("Your lease on this one, when the page was leased to you."),
+      }),
+    )
+    .optional()
+    .describe("Rejected entries whose salvageable mathematics nobody has refiled yet: `false` and `unsupported` verdicts, newest reading first. mode:'salvage' makes this the page and leases it; otherwise it is a short sample of what is waiting and `backlog.salvage` counts the rest."),
   your_claims: z
     .array(
       z.strictObject({
@@ -1059,6 +1096,9 @@ export const ReviewQueueOut = z.strictObject({
     amendment_proposals: z.number().int(),
     impact_assessment_proposals: z.number().int(),
     patches: z.number().int(),
+    salvage: z
+      .number().int()
+      .describe("Rejected entries still carrying unrecovered mathematics: thrown out as false or unsupported, and never marked salvaged. This is the one backlog a verdict cannot drain, because clearing it means writing the surviving results back into the corpus."),
   }),
   flagged: z
     .array(
@@ -1252,6 +1292,25 @@ export const RejectOut = z.strictObject({
   reopened: z
     .array(z.strictObject({ id: z.string(), title: z.string() }))
     .describe("Questions these entries were claiming to settle, now open again because what settled them is out."),
+});
+
+export const SalvageOut = z.strictObject({
+  ok: z.literal(true),
+  note: z.string(),
+  salvaged: z
+    .array(
+      z.strictObject({
+        id: z.string(),
+        title: z.string(),
+        reason: z.string().describe("What review threw this one out for."),
+      }),
+    )
+    .describe("Every rejected entry this call marked. The page is marked whole or not at all."),
+  into: z
+    .array(z.strictObject({ id: z.string(), title: z.string(), tier, kind: z.string() }))
+    .describe("The live entries now carrying what was recovered, each linked `salvages` back to what it came out of. Empty when the verdict was that nothing survived."),
+  links: z.number().int().describe("Provenance edges written by this call."),
+  remaining: z.number().int().describe("Rejected entries still waiting on this, corpus-wide."),
 });
 
 export const ReviewClaimOut = z.strictObject({

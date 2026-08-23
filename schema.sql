@@ -67,7 +67,7 @@ alter table artifact drop column if exists search;
 -- The append-only event ledger.
 create table if not exists event (
   seq             bigserial primary key,
-  kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | restored | refactor-applied | refactor-rejected | amendment-applied | amendment-rejected | impact-assessment-applied | impact-assessment-rejected | flagged | identity-updated | imported | role-granted
+  kind            text not null,          -- submitted | verification | tier-changed | retracted | superseded | restored | rejected | salvaged | refactor-applied | refactor-rejected | amendment-applied | amendment-rejected | impact-assessment-applied | impact-assessment-rejected | flagged | identity-updated | imported | role-granted
   contribution_id uuid,
   identity_id     text,
   payload         jsonb not null default '{}'::jsonb,
@@ -379,13 +379,39 @@ create index if not exists edge_dst_idx on edge (dst, rel);
 -- role `query` switches into can see the public views and no base table. The
 -- body is one indexed row of one table, keyed by the id the caller already
 -- holds, so it hands back nothing a caller could not read from q_events.
+--
+-- `salvaged` is the second half of the same decision. A rejection is a verdict
+-- on an entry, never on the mathematics inside it, and most of what review
+-- throws out for a wrong constant or an unproved step still holds real results
+-- that nobody has refiled. So a rejection is unfinished until a reviewer has
+-- confirmed either that the salvageable part is back in the corpus as its own
+-- T0 entries, or that there was nothing to save. False until then, which is
+-- what makes the backlog countable and what tells the salvage lane when to
+-- stop. The mark is an event like every other decision, and it counts only
+-- when it lands after the rejection it answers: an entry restored, worked on,
+-- and rejected again is unsalvaged once more.
 create or replace function rejection_of(p_id uuid) returns jsonb
   language sql stable security definer set search_path = public as $$
-  select jsonb_build_object('reason', e.payload->>'reason', 'note', e.payload->>'note',
-                            'by', e.identity_id, 'at', e.created_at)
-  from event e
-  where e.contribution_id = p_id and e.kind = 'rejected'
-  order by e.seq desc limit 1
+  with verdict as (
+    select e.seq, e.payload, e.identity_id, e.created_at
+    from event e
+    where e.contribution_id = p_id and e.kind = 'rejected'
+    order by e.seq desc limit 1
+  ), salvage as (
+    select e.payload, e.identity_id, e.created_at
+    from event e, verdict v
+    where e.contribution_id = p_id and e.kind = 'salvaged' and e.seq > v.seq
+    order by e.seq desc limit 1
+  )
+  select jsonb_build_object('reason', v.payload->>'reason', 'note', v.payload->>'note',
+                            'by', v.identity_id, 'at', v.created_at,
+                            'salvaged', (select count(*) > 0 from salvage),
+                            'salvage', (select jsonb_build_object(
+                                          'note', s.payload->>'note',
+                                          'into', coalesce(s.payload->'into', '[]'::jsonb),
+                                          'by', s.identity_id, 'at', s.created_at)
+                                        from salvage s))
+  from verdict v
 $$;
 -- The other half of the same rule, which a check constraint cannot express
 -- because it spans two rows: nothing reviews a review. Deliberately linking

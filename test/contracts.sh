@@ -21,6 +21,16 @@ command -v initdb > /dev/null || exec nix shell --impure --expr \
 # toolchain.
 ./test/doc-ssot.sh
 
+# Then the types, for the same reason and at the same price (two seconds).
+# bun runs TypeScript by stripping it, so nothing on the path from an edit to
+# production ever type-checked this server: the first run of this line found a
+# key silently overwritten in an error payload that had been shipping for
+# weeks. A type error is a bug that the compiler already knows about.
+(cd server && bun install --silent && bunx tsc --noEmit) || {
+  echo "typecheck failed" >&2
+  exit 1
+}
+
 WORK=$(mktemp -d)
 # A fifo nobody writes to, so `read -t` is a sub-second sleep that costs no
 # process. Every wait in here is a few milliseconds long and there are hundreds
@@ -851,6 +861,50 @@ call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"tier\":1,\
   || fail "promoting a rejected entry with restore did not put it back"
 [[ $(call get "{\"ref\":\"$BOGUS_P\"}" | field '.status') == active ]] || fail "a restored entry did not come back active"
 call reject "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"reason\":\"unsupported\",\"note\":\"and back out again\"}" | field '.ok' > /dev/null
+
+# ——— A rejection is unfinished until its mathematics is out ——————————————
+# Contract: rejecting removes an entry, not the results that were standing
+# beside its error, and the corpus was losing those. So a false/unsupported
+# verdict lands on a second worklist until a reviewer has carried out what
+# survives (or read it and found nothing), and the mark says which.
+call query "{\"sql\":\"select rejection->>'salvaged' from q_entries where id = '$BOGUS_P'\"}" | field '.rows[0][0]' \
+  | grep -qx false || fail "a fresh rejection did not come back unsalvaged"
+SALV_QUEUE=$(call review_queue "{\"contributor_key\":\"$OPKEY\",\"mode\":\"salvage\",\"limit\":25,\"claim\":false}")
+echo "$SALV_QUEUE" | python3 -c "import sys,json; d=json.load(sys.stdin)
+row = next((r for r in d['salvage'] if r['id'] == '$BOGUS_P'), None)
+assert row, [r['id'] for r in d['salvage']]
+assert row['rejection']['reason'] == 'unsupported' and 'back out again' in row['rejection']['note'], row
+assert d['backlog']['salvage'] >= 1 and 'unreviewed' not in d, d.keys()" \
+  || fail "the salvage worklist did not carry the rejected entry with the verdict a reviewer has to read"
+# The mark is not free-floating: it names live entries, and refuses the
+# rejected page itself, because salvaged work is new mathematics rather than
+# the entry review threw out wearing a new label.
+call salvage "{\"contributor_key\":\"$KEY\",\"ref\":\"$BOGUS_P\",\"into\":[],\"note\":\"n\"}" \
+  | field '.error' | grep -qi trusted || fail "an untrusted key was allowed to finish a rejection"
+call salvage "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"into\":[\"$BOGUS_P\"],\"note\":\"n\"}" \
+  | field '.error' | grep -qi 'new entry carrying' || fail "salvage accepted the rejected entry as its own salvage"
+call salvage "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_Q\",\"into\":[],\"note\":\"n\"}" \
+  | field '.refused[0].error' | grep -qi 'finishes a rejection' || fail "salvage marked an entry that was never rejected"
+SALVAGED=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"lemma\",\"title\":\"The step that did survive\",\"summary\":\"s\",\"content\":\"Recovered from a rejected entry, with the false identity removed.\"}" | field '.id')
+call salvage "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"into\":[\"$SALVAGED\"],\"note\":\"the lemma never used the broken step; refiled it.\"}" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert d['ok'] and d['links'] == 1 and [e['id'] for e in d['into']] == ['$SALVAGED'], d" \
+  || fail "finishing a rejection did not record what carried its mathematics out"
+call query "{\"sql\":\"select rejection->>'salvaged', rejection->'salvage'->>'note' from q_entries where id = '$BOGUS_P'\"}" \
+  | python3 -c "import sys,json; r=json.load(sys.stdin)['rows'][0]
+assert r[0] == 'true' and 'never used the broken step' in r[1], r" \
+  || fail "the salvage mark is not readable beside the verdict it finishes"
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"mode\":\"salvage\",\"limit\":25,\"claim\":false}" \
+  | grep -q "$BOGUS_P" && fail "a finished rejection is still on the salvage worklist"
+call salvage "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$BOGUS_P\",\"into\":[],\"note\":\"again\"}" \
+  | field '.refused[0].error' | grep -qi 'already finished' || fail "a rejection could be marked salvaged twice"
+# Provenance survives the endpoint being inactive: the whole point of the
+# relation is to name what the result came out of.
+call get "{\"ref\":\"$SALVAGED\"}" | python3 -c "import sys,json
+rows = json.load(sys.stdin)['links']['out']['salvages']
+assert any(x['id'] == '$BOGUS_P' and x['status'] == 'rejected' for x in rows), rows" \
+  || fail "a salvages link lost its rejected source"
+
 # Contract: a link to a retired entry is a dead link, so the neighbourhood
 # hides it (this is what kept three withdrawn copies of one paper stacked on
 # an entry's expounds relation) — except through `supersedes`, whose whole
@@ -2264,6 +2318,8 @@ declare -A DOORS=(
   [review_queue]="{\"contributor_key\":\"$OPKEY\"}"
   [review_claim]="{\"contributor_key\":\"$OPKEY\",\"refs\":[\"$Q\"],\"action\":\"release\"}"
   [reject]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$RQO\",\"reason\":\"not-mathematics\",\"note\":\"contract test\"}"
+  # Sorted after reject, which is what leaves it something to finish.
+  [salvage]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$RQO\",\"into\":[],\"note\":\"nothing mathematical to carry out\"}"
   [set_tier]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$Q\",\"tier\":1,\"note\":\"n\"}"
   [set_origin]="{\"contributor_key\":\"$OPKEY\",\"ref\":\"$Q\",\"origin\":\"ledger\",\"note\":\"n\"}"
   [apply_refactor]="{\"contributor_key\":\"$OPKEY\",\"refactor_id\":\"$PROPOSAL\",\"decision\":\"reject\",\"note\":\"n\"}"

@@ -932,6 +932,20 @@ const AlreadyTried = z.strictObject({
 
 const counts = z.record(z.string(), z.number().int());
 
+const SettledQuestions = z.array(
+  z.strictObject({
+    question: ListRow,
+    by: z.array(
+      z.strictObject({
+        rel: z.string(),
+        edge_tier: z.number().int().describe("The settling link's own review tier. A fresh one is 0."),
+        linked_at: iso,
+        entry: ListRow,
+      }),
+    ),
+  }),
+);
+
 export const NewsOut = z.strictObject({
   sample: z
     .string().optional()
@@ -952,22 +966,13 @@ export const NewsOut = z.strictObject({
       z.strictObject({ identity_id: z.string(), name: z.string().nullable(), events: z.number().int() }),
     ),
   }),
-  settled: z
-    .array(
-      z.strictObject({
-        question: ListRow,
-        by: z.array(
-          z.strictObject({
-            rel: z.string(),
-            edge_tier: z.number().int().describe("The settling link's own review tier. A fresh one is 0."),
-            linked_at: iso,
-            entry: ListRow,
-          }),
-        ),
-      }),
-    )
+  settled: SettledQuestions
     .describe("Questions this window settled, with what settles each and at which tier. The most notable `limit` of them; `settled_total` says how many there were."),
   settled_total: z.number().int().describe("How many questions this window settled in all."),
+  standing: SettledQuestions
+    .describe("Settlements from the last day that landed before this window and that the graph still agrees with. A cursor announces each result exactly once, so a reader who checked recently would otherwise hear nothing about a question that closed an hour ago. Already reported and never this window's work; report them as the state of the board, with their own custody."),
+  standing_total: z.number().int().describe("How many questions settled before this window are still standing inside `standing_since`."),
+  standing_since: iso.describe("The clock cutoff `standing` reaches back to, independent of the cursor."),
   promoted: z.array(
     z.strictObject({ entry: ListRow, tier, note: z.string().nullable().describe("The opening of the reviewer's verdict; get(<id>) carries the whole of it."), at: iso }),
   ).describe("Entries a trusted reviewer moved to canon or above, with the reviewer's verdict. The most notable `limit` of them, one row per entry however many steps it took; `promotions.total` says how many there were."),

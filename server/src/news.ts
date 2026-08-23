@@ -35,11 +35,25 @@ const BY_WEIGHT = sql`order by c.notability desc, event.seq desc`;
 
 const TRAIL_FRESH = "2 hours";
 
+// A cursor is exact, which means every result is announced in exactly one
+// packet and then never again. Two runs minutes apart make the second one
+// structurally empty, and it reads as a quiet board to a reader whose actual
+// question is "is anything happening", which is about state and not about a
+// diff. It happened: a cell of the finite CI-group classification closed at
+// 20:40, a packet at 20:48 carried it, and the packet at 20:54 reported that
+// nothing had been settled. `standing` is the counterweight -- one day of
+// settlements that are still standing, from before the window, so a short
+// window still describes the board rather than only the last five minutes.
+const STANDING = 24 * 60 * 60 * 1000;
+
+const STANDING_SHOWN = 5;
+
 const DECLS_SHOWN = 12;
 
 export const HOW_TO_READ = [
   "This is evidence for a summary, not the summary. Custody first. Every entry here, including every link, sits on one review ladder of T0 recorded (the author's claim, no review), T1 confirmed mathematics, T2 canon accepted by a trusted reviewer, and T3 published externally. lean_verified is an independent machine check and never a tier. It says the listed declarations compile, not that they mean what the prose around them claims.",
   "A question is settled when an active entry stands in an answers/proves/disproves/refutes/resolves relation to it. That is a fact about the graph: the settling entry and the settling link each still carry their own tier, and a fresh settlement is usually T0 until review reaches it. Say so, and treat a settlement as closing only the exact question the link points at, never a broader parent question or a whole programme.",
+  "standing is not this window's work. It is the settlements from the last day that landed before the window opened, still standing on the graph, carried because a cursor announces each result exactly once and a reader who checked recently would otherwise be told an hour-old closure never happened. An earlier packet already reported these, so never present one as new or as this window's result; use them to say what the board looks like, and check their custody exactly as you would a fresh settlement, origin included.",
   "Settling is not the same as being first. A settling entry marked origin: 'external' records mathematics established outside this ledger, with origin_source naming what established it, so the question is genuinely closed here but the result is not ours. Never report such a closure as this ledger's own result. Name the source, and say the ledger recorded, replayed, or verified it.",
   "Every headline list here — settled, promoted, kernel checks, terminal decisions, provenance corrections — is the most notable `limit` of its window, not the most recent, with the section's own total beside it saying how many there were. A window of three hundred promotions handed to a reader asking for ten is genuinely the ten that matter most, and the other two hundred and ninety are less notable rather than unseen. Raise `limit` to see further down; the totals are what tell you whether that is worth doing.",
   "A move to origin 'external' in provenance is the ledger correcting its own custody: something it was carrying as its own result was established elsewhere, and origin_source names what established it. Read those before writing anything, because an entry corrected this way is the one a summary is most likely to headline as this ledger's discovery.",
@@ -90,7 +104,15 @@ export async function newsPacket(
 
   // Six full-corpus counts, and the same six hello opens with. Taken from the
   // shared snapshot rather than re-counted for every reader.
-  const { totals } = await corpus.get();
+  //
+  // The standing window is resolved to a sequence number here so the query
+  // below is a plain range on seq -- an index seek at both ends -- rather than
+  // a time predicate over the whole event ledger.
+  const [{ totals }, standingFrom] = await Promise.all([
+    corpus.get(),
+    seqBefore(new Date(Date.now() - STANDING)),
+  ]);
+  const standingWindow = sql`event.seq > ${standingFrom} and event.seq <= ${from}`;
 
   // Every count and top-N below reads the same event window and none of them
   // feeds another, so they go to the server together. Sequentially they were
@@ -102,6 +124,8 @@ export async function newsPacket(
     newLinks,
     settlements,
     [settledTotal],
+    stillStanding,
+    [standingTotal],
     [promotionCounts],
     promoted,
     [verificationCounts],
@@ -156,6 +180,38 @@ export async function newsPacket(
     where ${window} and event.kind = 'submitted' and event.payload->>'kind' = 'edge'
       and event.payload->>'rel' = any (${SETTLE_RELS})
       and q.kind in ('problem', 'conjecture') and q.status = 'active' and s.status = 'active'`,
+    // Settlements from before the window that the graph still agrees with.
+    // `q.state = 'settled'` is what makes this honest without a second pass:
+    // state is derived from the live edges, so a closure whose link was since
+    // retracted, or whose settling entry was rejected, drops out of here on
+    // its own and is not carried forward as news that still holds.
+    sql`
+    select q.id as question_id, q.kind as question_kind, q.title as question_title,
+           q.summary as question_summary, q.tier as question_tier, q.state as question_state,
+           q.notability as question_notability, q.lean_verified as question_lean_verified,
+           q.names as question_names, q.created_at as question_created_at,
+           s.id, s.kind, s.title, s.summary, s.tier, s.state, s.notability, s.lean_verified,
+           s.names, s.created_at, s.origin, s.origin_source,
+           event.payload->>'rel' as rel, ec.tier as edge_tier, event.created_at as linked_at
+    from event
+    join contribution ec on ec.id = event.contribution_id and ec.status = 'active'
+    join contribution_overview q on q.id = (event.payload->>'dst')::uuid
+    join contribution_overview s on s.id = (event.payload->>'src')::uuid
+    where ${standingWindow} and event.kind = 'submitted' and event.payload->>'kind' = 'edge'
+      and event.payload->>'rel' = any (${SETTLE_RELS})
+      and q.kind in ('problem', 'conjecture') and q.status = 'active' and q.state = 'settled'
+      and s.status = 'active'
+    order by q.notability desc, s.notability desc, event.seq desc limit ${STANDING_SHOWN * 4}`,
+    sql<{ n: number }[]>`
+    select count(distinct event.payload->>'dst')::int as n
+    from event
+    join contribution ec on ec.id = event.contribution_id and ec.status = 'active'
+    join contribution q on q.id = (event.payload->>'dst')::uuid
+    join contribution s on s.id = (event.payload->>'src')::uuid
+    where ${standingWindow} and event.kind = 'submitted' and event.payload->>'kind' = 'edge'
+      and event.payload->>'rel' = any (${SETTLE_RELS})
+      and q.kind in ('problem', 'conjecture') and q.status = 'active' and q.state = 'settled'
+      and s.status = 'active'`,
     sql<{ total: number; links: number }[]>`
     select count(*)::int as total,
            count(*) filter (where c.kind = 'edge')::int as links
@@ -259,20 +315,31 @@ export async function newsPacket(
 
   // --- Settlements. The link must still be active: a settlement asserted and
   // then retracted inside one window is not news that a question closed.
-  const settled: Record<string, { question: unknown; by: unknown[] }> = {};
-  for (const row of settlements) {
-    const key = row.question_id as string;
-    settled[key] ??= {
-      question: listRow({
-        id: row.question_id, kind: row.question_kind, title: row.question_title,
-        summary: row.question_summary, tier: row.question_tier, state: row.question_state,
-        notability: row.question_notability, lean_verified: row.question_lean_verified,
-        names: row.question_names, created_at: row.question_created_at,
-      }),
-      by: [],
-    };
-    settled[key]!.by.push({ rel: row.rel, edge_tier: row.edge_tier, linked_at: row.linked_at, entry: listRow(row) });
-  }
+  const byQuestion = (rows: readonly Record<string, unknown>[]) => {
+    const out: Record<string, { question: unknown; by: unknown[] }> = {};
+    for (const row of rows) {
+      const key = row.question_id as string;
+      out[key] ??= {
+        question: listRow({
+          id: row.question_id, kind: row.question_kind, title: row.question_title,
+          summary: row.question_summary, tier: row.question_tier, state: row.question_state,
+          notability: row.question_notability, lean_verified: row.question_lean_verified,
+          names: row.question_names, created_at: row.question_created_at,
+        }),
+        by: [],
+      };
+      out[key]!.by.push({ rel: row.rel, edge_tier: row.edge_tier, linked_at: row.linked_at, entry: listRow(row) });
+    }
+    return Object.values(out);
+  };
+
+  const settled = byQuestion(settlements as Record<string, unknown>[]);
+  // A question settled twice -- once before the window, once inside it -- is
+  // this window's news, not carried news, and printing both says the same
+  // closure twice under two headings that disagree about whether it is new.
+  const fresh = new Set(settled.map((s) => (s.question as { id: string }).id));
+  const standing = byQuestion(stillStanding as Record<string, unknown>[])
+    .filter((s) => !fresh.has((s.question as { id: string }).id));
 
   const touched = new Map<string, Record<string, number>>();
   for (const row of activity) {
@@ -390,8 +457,11 @@ export async function newsPacket(
       event_kinds: Object.fromEntries(eventKinds.map((r) => [r.kind, r.n])),
       by_identity: identities.map((r) => ({ identity_id: r.identity_id, name: r.display_name, events: r.n })),
     },
-    settled: Object.values(settled).slice(0, limit),
+    settled: settled.slice(0, limit),
     settled_total: settledTotal!.n,
+    standing: standing.slice(0, STANDING_SHOWN),
+    standing_total: standingTotal!.n,
+    standing_since: new Date(Date.now() - STANDING),
     promoted: promoted.map((row) => ({
       entry: listRow(row), tier: row.promoted_to, note: trim(row.note as string | null, LIST_NOTE), at: row.at,
     })),

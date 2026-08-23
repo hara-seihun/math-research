@@ -1737,14 +1737,27 @@ d = json.load(sys.stdin)
 assert 'sample' not in d, d['sample']" || fail "news trimmed a packet whose size the caller had chosen"
 
 # Contract: the cursor advances exactly once. Reading from the sequence number
-# the last packet handed back reports nothing that packet already carried.
+# the last packet handed back reports nothing that packet already carried --
+# but the board is not the diff. A settlement is announced in exactly one
+# packet, so a reader who checked minutes ago was told nothing at all about a
+# question that closed an hour ago, and read a five-minute window as a quiet
+# ledger. `standing` carries the last day of closures the graph still agrees
+# with, marked as already reported; a settlement whose answer was withdrawn
+# never reaches it, because the question is open again.
 CUR2=$(echo "$NEWS" | field '.next.after_seq')
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$NQ\",\"tier\":2,\"note\":\"canon for the news contract\"}" > /dev/null
-NEWS2=$(call news "{\"after_seq\":$CUR2}")
-echo "$NEWS2" | NQ="$NQ" python3 -c '
+NEWS2=$(call news "{\"after_seq\":$CUR2,\"limit\":50}")
+echo "$NEWS2" | NQ="$NQ" NA="$NA" WQ="$WQ" python3 -c '
 import os, sys, json
 d = json.load(sys.stdin)
+nq, na, wq = os.environ["NQ"], os.environ["NA"], os.environ["WQ"]
 assert not d["settled"], "news replayed a settlement the previous packet carried"
+standing = {s["question"]["id"]: s for s in d["standing"]}
+assert nq in standing, "an hour-old settlement vanished the moment the cursor passed it"
+assert any(b["entry"]["id"] == na for b in standing[nq]["by"]), "standing did not name what settled it"
+assert wq not in standing, "a withdrawn answer was carried forward as a settlement that still stands"
+assert d["standing_total"] >= len(d["standing"])
+assert d["standing_since"], "standing did not say how far back it reaches"
 promoted = {p["entry"]["id"]: p for p in d["promoted"]}
 assert os.environ["NQ"] in promoted, "trusted promotion missing from news"
 assert promoted[os.environ["NQ"]]["tier"] == 2

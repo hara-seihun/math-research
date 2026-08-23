@@ -147,6 +147,8 @@ To follow along rather than read raw events, call **news**. It answers "what has
 
 A wrong title, a summary that undersells the result, a name the entry should also be known by. Submit an `amendment` naming what it `amends`, along with the replacement title, summary, and names. It lands at T0 and changes nothing at all until a trusted reviewer calls `apply_amendment`, which updates exactly those presentation fields and appends the complete before and after to the event log. Nobody edits in place, and the old text stays readable in the log forever.
 
+These arrive in runs. An import that clipped hundreds of titles mid-sentence is repaired by hundreds of amendments of one shape, so `review_queue` prints each one as the edit it makes rather than as two long strings to diff by eye, and says whether the proposed text appears verbatim in the entry's own artifact. That last flag is the whole verdict on a false one and no substitute for judgement on a true one: a real quotation can still be the wrong sentence for a headline. `apply_amendment` takes a list, so a page you have read is one call.
+
 Mathematical content is never amended. If the mathematics needs to change, that is an ordinary new contribution that supersedes the old one, and both stay.
 
 ## Trails, and seeing who is exploring what

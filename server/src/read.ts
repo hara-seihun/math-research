@@ -129,6 +129,33 @@ export const LIST_NOTE = 240;
  *  identified here and read in full by id. */
 export const LINK_ENDPOINT_TITLE = 100;
 
+/** What changed, for a reader deciding whether it should.
+ *
+ *  A presentation amendment carries the old value and the new one, and a title
+ *  repair changes the last clause of a 300-character displayed formula. Shown
+ *  as two full strings that is 600 characters a row to express a 40-character
+ *  edit, and the reviewer has to diff it by eye -- 659 of them arrived in one
+ *  afternoon. So the row shows where the two stop agreeing, with enough of the
+ *  agreeing part to locate it.
+ */
+export function changeView(before: string | null, after: string | null): {
+  same_until?: number; kept?: string; was: string; now: string;
+} {
+  const a = before ?? "", b = after ?? "";
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  // A shared prefix worth naming, rather than two strings that merely start
+  // with "The".
+  const short = (text: string) => trim(text, LIST_NOTE) ?? "";
+  if (i < 24) return { was: short(a), now: short(b) };
+  return {
+    same_until: i,
+    kept: `\u2026${a.slice(Math.max(0, i - 40), i)}`,
+    was: short(a.slice(i)) || "(nothing: the new text continues it)",
+    now: short(b.slice(i)),
+  };
+}
+
 /** What a whole response aims to weigh.
  *
  *  Set against what readers keep rather than what the corpus holds: the usual
@@ -145,8 +172,18 @@ export const RESPONSE_TARGET = 13_000;
  *  the thing the caller asked for and every one of them already reports its
  *  own total. The counts stay true; only the sample shrinks. A caller who
  *  names a size gets what they named -- this is for the default, which is
- *  every call that has not thought about it. */
-export function fitToBudget(packet: Record<string, unknown>, target = RESPONSE_TARGET): string | null {
+ *  every call that has not thought about it.
+ *
+ *  `keep` names lists this must not touch. Some lists cannot be shortened
+ *  after the fact whatever their weight: the reviewer worklist is paged by
+ *  offset and leased row by row in the same statement that selects it, so
+ *  dropping a row here would hand out a lease on work nobody was shown and
+ *  step the next page straight over it. A door with a list like that shortens
+ *  it where it is built, not here. */
+export function fitToBudget(
+  packet: Record<string, unknown>,
+  { target = RESPONSE_TARGET, keep = [] as string[] } = {},
+): string | null {
   const size = () => JSON.stringify(packet).length;
   if (size() <= target) return null;
   const lists: { name: string; rows: unknown[]; had: number }[] = [];
@@ -161,7 +198,7 @@ export function fitToBudget(packet: Record<string, unknown>, target = RESPONSE_T
   visit(packet, "", 0);
   const heaviest = (floor: number) =>
     lists
-      .filter((l) => l.rows.length > floor)
+      .filter((l) => l.rows.length > floor && !keep.includes(l.name))
       .sort((a, b) => JSON.stringify(b.rows).length - JSON.stringify(a.rows).length)[0];
   // Down to one row each first, since a single example of a section is worth
   // more than the tail of another. Only then does a section go empty, which

@@ -12,6 +12,14 @@ import { z } from "zod";
 const iso = z.string().describe("ISO 8601 timestamp");
 const jsonRecord = z.record(z.string(), z.unknown());
 
+/** An edit, shown as where the two versions stop agreeing. */
+const change = z.strictObject({
+  same_until: z.number().int().optional().describe("How many characters the old and new text share."),
+  kept: z.string().optional().describe("The tail of the agreeing part, so the change can be located."),
+  was: z.string(),
+  now: z.string(),
+});
+
 /** How far review has got with a claim. Null for exactly one kind: a review
  *  is the judgement, so there is no ladder underneath it, and it is the null
  *  here that keeps reviews out of their own worklist (see schema.sql). An
@@ -1010,6 +1018,12 @@ export const NewsOut = z.strictObject({
 
 
 export const ReviewQueueOut = z.strictObject({
+  your_claims_note: z
+    .string().optional()
+    .describe("Present when leases you hold were left off `your_claims` because they are the rows on this page already."),
+  sample: z
+    .string().optional()
+    .describe("Present when the sections under the worklist were cut to keep the answer inside what a client will hold: which ones, and to what. `backlog` still counts everything that is waiting."),
   unreviewed: z.array(
     ListRow.extend({
       reviews: z.number().int().describe("How many readings this entry already carries. More than zero and still here means nobody has decided it."),
@@ -1109,11 +1123,18 @@ export const ReviewQueueOut = z.strictObject({
       target_id: z.string(),
       amendment_title: z.string(),
       target_title: z.string(),
-      proposed: z.strictObject({
-        title: z.string().optional(),
-        summary: z.string().optional(),
+      // What the proposal would change, not both values in full: a title
+      // repair rewrites the last clause of a displayed formula, and printing
+      // the old and new strings whole spent 600 characters a row on a
+      // 40-character edit that the reviewer then had to find by eye.
+      changes: z.strictObject({
+        title: change.optional(),
+        summary: change.optional(),
         names: z.array(z.string()).optional(),
       }),
+      verbatim_in_artifact: z
+        .boolean().optional()
+        .describe("Whether the proposed text appears verbatim in the entry's own artifact. Present when the proposal changes title or summary. True is not approval — a real quotation can still be the wrong sentence for a headline — but false on a proposal that claims to restore what the importer clipped decides it on the spot."),
       by: z.string().nullable(),
       proposed_at: iso,
     }),
@@ -1196,6 +1217,10 @@ export const ApplyRefactorOut = z.strictObject({
 });
 
 export const ApplyAmendmentOut = z.strictObject({
+  decided: z
+    .array(z.object({ amendment_id: z.string(), target_id: z.string(), changed: z.array(z.string()) }))
+    .optional()
+    .describe("Every proposal in the page, when more than one was decided. The top-level amendment_id/target_id/changed describe the first of them."),
   ok: z.literal(true),
   decision: z.enum(["approve", "reject"]),
   amendment_id: z.string(),

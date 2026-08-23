@@ -33,7 +33,7 @@ import { serverPublicKey } from "./receipts.ts";
 import { submit } from "./submit.ts";
 import { awaitCheck, report, requestCheck } from "./lean.ts";
 import { searchContributions, related, scanDuplicateEntries, neighbourhood, rejectedLinks, createEdge, vetEdge, refreshNotability, refreshState, refreshAround, normalizeText } from "./graph.ts";
-import { beyondTitle, deref, fitToBudget, LIST_NOTE, LIST_SUMMARY, listRow, RESPONSE_TARGET, sameText, settlement, slimDetail, slimVerifierText, trim, type Ref } from "./read.ts";
+import { beyondTitle, changeView, deref, fitToBudget, LIST_NOTE, LIST_SUMMARY, listRow, RESPONSE_TARGET, sameText, settlement, slimDetail, slimVerifierText, trim, type Ref } from "./read.ts";
 import {
   ApplyAmendmentOut, ApplyImpactAssessmentOut, ApplyRefactorOut, AttachOut, CheckLeanOut, fail, FeedbackKind, FeedbackOut, FrontierOut, FrontsOut, GetOut, GrantTrustOut, GuidesOut,
   HelloOut, LeanGrepOut, LeanInfoOut, LeanSimilarOut, LinkOut, MySubmissionsOut, NewsOut, QueryOut, RegisterPublicKeyOut, RelatedOut,
@@ -2890,7 +2890,16 @@ defineTool(
     // asked for a hundred patches and a hundred flags, and a page of fifty
     // came back past the output limit of the clients reading it. `backlog`
     // says how many of each there really are.
-    const side = Math.min(limit, 10);
+    //
+    // Five rather than ten: ten patches with their build detail is 8 KB, which
+    // is most of what a client will hold spent on a section that exists to say
+    // "there is also patch work waiting". Five of each is enough to see what
+    // is there, and `backlog` counts the rest.
+    const side = Math.min(limit, 5);
+    // A queue row names a patch; it is not the patch. Eight module paths were
+    // a third of its weight.
+    const sideModules = (modules: string[] | null): string[] | null =>
+      modules === null || modules.length <= 4 ? modules : [...modules.slice(0, 4), `+${modules.length - 4} more`];
     const proposalWhere = sql`
       e.rel = 'supersedes' and ec.status = 'active' and ec.tier = 0 and rc.status = 'active'`;
     const proposals = await sql`
@@ -2904,18 +2913,50 @@ defineTool(
     const amendmentWhere = sql`
       e.rel = 'amends' and ec.status = 'active' and ec.tier = 0
         and ac.status = 'active' and ac.kind = 'amendment' and tgt.status = 'active'`;
-    const amendments = await sql`
+    // A presentation amendment is decided by comparing the proposal against
+    // the entry's own text, so the comparison is done here rather than left as
+    // a `get` per row. Most of these say "the importer clipped this title
+    // mid-sentence, here is the sentence": that claim is a substring test, and
+    // 659 of them arrived in one afternoon.
+    const amendments = (await sql<{
+      amendment_edge: string; amendment_id: string; target_id: string; amendment_title: string;
+      target_title: string; target_summary: string; proposed: Record<string, unknown>;
+      title_verbatim: boolean | null; summary_verbatim: boolean | null; by: string; proposed_at: Date;
+    }[]>`
       select e.contribution_id as amendment_edge, e.src as amendment_id, e.dst as target_id,
-             ac.title as amendment_title, tgt.title as target_title,
+             ac.title as amendment_title, tgt.title as target_title, tgt.summary as target_summary,
              (ac.metadata->'amendment') - 'target' as proposed,
+             case when ac.metadata->'amendment'->>'title' is not null
+                  then position(ac.metadata->'amendment'->>'title' in ta.content) > 0 end as title_verbatim,
+             case when ac.metadata->'amendment'->>'summary' is not null
+                  then position(ac.metadata->'amendment'->>'summary' in ta.content) > 0 end as summary_verbatim,
              ac.identity_id as by, e.created_at as proposed_at
       from edge e
       join contribution ec on ec.id = e.contribution_id
       join contribution ac on ac.id = e.src
       join contribution tgt on tgt.id = e.dst
+      join artifact ta on ta.hash = tgt.artifact_hash
       where ${amendmentWhere}
       order by tgt.notability desc, e.created_at asc
-      limit ${side}`;
+      limit ${side}`).map((a) => {
+      const proposed = (a.proposed ?? {}) as { title?: string; summary?: string; names?: string[] };
+      const changes: Record<string, unknown> = {};
+      if (proposed.title !== undefined) changes.title = changeView(a.target_title, proposed.title);
+      if (proposed.summary !== undefined) changes.summary = changeView(a.target_summary, proposed.summary);
+      if (proposed.names !== undefined) changes.names = proposed.names;
+      const checks = [a.title_verbatim, a.summary_verbatim].filter((v) => v !== null);
+      return {
+        amendment_edge: a.amendment_edge, amendment_id: a.amendment_id, target_id: a.target_id,
+        amendment_title: a.amendment_title, target_title: trim(a.target_title, LIST_NOTE),
+        changes,
+        // Whether the entry's own text says what the proposal says it says.
+        // True is not approval -- a verbatim quotation can still be the wrong
+        // sentence to put in the title -- but false on a proposal that claims
+        // to quote is the whole verdict.
+        ...(checks.length ? { verbatim_in_artifact: checks.every(Boolean) } : {}),
+        by: a.by, proposed_at: a.proposed_at,
+      };
+    });
     const impactWhere = sql`
       e.rel = 'assesses-impact' and ec.status = 'active' and ec.tier = 0
         and ac.status = 'active' and ac.kind = 'impact-assessment' and tgt.status = 'active'`;
@@ -3035,17 +3076,28 @@ defineTool(
                 where ${impactWhere})::int as impact_assessment_proposals,
              (select count(*) from contribution c where ${askingWhere})::int as asking_closures,
              (select count(*) from contribution c where ${patchWhere})::int as patches`;
-    const held = await claimsHeldBy(mine);
+    // What this reviewer holds that is *not* on the page in front of them. A
+    // claiming call leases every row it hands out, so listing those again
+    // under `your_claims` printed the whole worklist twice -- 2.4 KB of exact
+    // duplication in an answer that has to fit in 13 KB. What a reviewer
+    // cannot see from the page is what they took on an earlier one and have
+    // not decided; that is the list worth carrying.
+    const onThisPage = new Set(unreviewed.map((r) => r.id));
+    const allHeld = await claimsHeldBy(mine);
+    const held = allHeld.filter((h) => !onThisPage.has(h.id));
     const tip = !include_claimed && unreviewed.length < limit && (counts?.claimed_by_others ?? 0) > 0
       ? `${counts!.claimed_by_others} more matching entries are held by other reviewers right now and were left off your page. They come back if their reviewer does not decide them.`
       : undefined;
-    return structured(ReviewQueueOut, {
+    const packet: Record<string, unknown> = {
       // The same list row every other read door returns, plus what only a
       // reviewer needs. A bespoke shape here is what let 2000-character
       // summaries into a page of twenty.
       unreviewed: unreviewed.map((r) => ({ ...listRow(r), reviews: r.reviews ?? 0, claimed_until: r.claimed_until })),
       next: unreviewed.length === limit ? { offset: offset + limit } : null,
       your_claims: held,
+      ...(allHeld.length > held.length
+        ? { your_claims_note: `${allHeld.length - held.length} more leases you hold are the rows on this page; only what you took earlier and have not decided is listed here.` }
+        : {}),
       ...(tip ? { tip } : {}),
       backlog: counts ?? {
         unreviewed: unreviewed.length,
@@ -3067,14 +3119,26 @@ defineTool(
       patches: patches.map((p) => ({
         ...p,
         summary: trim(p.summary as string | null, LIST_SUMMARY),
-        changed_modules: capModules(p.changed_modules as string[] | null),
-        deleted_modules: capModules(p.deleted_modules as string[] | null),
+        changed_modules: sideModules(p.changed_modules as string[] | null),
+        deleted_modules: sideModules(p.deleted_modules as string[] | null),
       })),
       refactor_proposals: proposals,
       amendment_proposals: amendments,
       impact_assessment_proposals: impactAssessments,
       recent_verification_failures: failures,
-    });
+    };
+    // Seven sections, each already bounded, still came to 30 KB together on a
+    // busy day -- and a queue nobody receives is a queue nobody works. The
+    // context under the worklist gives way; every one of those sections
+    // reports its own total in `backlog`. The worklist itself never does: it
+    // is what the caller asked for, it is paged by offset, and every row on it
+    // was leased in the statement that selected it, so a row dropped here
+    // would be work leased to a reviewer who was never shown it and stepped
+    // over by the next page.
+    const dropped = fitToBudget(packet, { keep: ["unreviewed", "your_claims"] });
+    return structured(ReviewQueueOut, dropped
+      ? { ...packet, sample: `${dropped}. backlog counts what is really waiting; ask again with a smaller limit, or with kind to take a run of one sort.` }
+      : packet);
   },
 );
 
@@ -3533,20 +3597,24 @@ defineTool(
     outputSchema: ApplyAmendmentOut,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     description:
-      "Decide a pending T0 amendment proposal. Approval promotes the proposal and its amends edge to T2, changes only the target's title, summary/description, and/or canonical names, and records the complete before/after in the append-only event ledger. Mathematical content, authorship, and identity never change. Rejection retracts the proposal and edge. Requires a trusted key.",
+      "Decide pending T0 amendment proposals. Approval promotes each proposal and its amends edge to T2, changes only the target's title, summary/description, and/or canonical names, and records the complete before/after in the append-only event ledger. Mathematical content, authorship, and identity never change. Rejection retracts the proposal and edge. A list decides a page of them under one note, whole or not at all, the way set_tier and reject do — an import repair arrives as hundreds of proposals of one shape, and review_queue prints what each changes and whether the entry's own text bears it out, so a page a reviewer has read is one call rather than a hundred. Requires a trusted key.",
     inputSchema: z.object({
       contributor_key: trustedKeyParam,
-      amendment_id: z.string().uuid().describe("The T0 contribution of kind='amendment' to decide."),
+      amendment_id: z
+        .union([z.string().uuid(), z.array(z.string().uuid()).min(1).max(100)])
+        .describe("The T0 contribution of kind='amendment' to decide, or a list of up to 100 of them for one verdict over a page."),
       decision: z.enum(["approve", "reject"]),
-      note: z.string().min(1).describe("Why this presentation is clearer or why the proposal is rejected."),
+      note: z.string().min(1).describe("Why this presentation is clearer or why the proposal is rejected. One note covers the whole page."),
     }),
   },
   async ({ contributor_key, amendment_id, decision, note }) => {
     const who = await trustedCheck(contributor_key);
     if (!who.ok) return fail({ error: who.refusal });
-    logRequest("apply_amendment", who.identityId, { amendment_id, decision });
+    const asked = [...new Set(Array.isArray(amendment_id) ? amendment_id : [amendment_id])];
+    logRequest("apply_amendment", who.identityId, { proposals: asked.length, decision });
     type Proposal = { title?: string; summary?: string; names?: string[]; target?: string };
-    const [row] = await sql<{
+    const rows = await sql<{
+      amendment_id: string;
       edge_id: string;
       target_id: string;
       proposed: Proposal;
@@ -3554,75 +3622,114 @@ defineTool(
       old_summary: string;
       old_names: string[];
     }[]>`
-      select e.contribution_id as edge_id, e.dst as target_id,
+      select distinct on (e.src)
+             e.src as amendment_id, e.contribution_id as edge_id, e.dst as target_id,
              ac.metadata->'amendment' as proposed,
              tgt.title as old_title, tgt.summary as old_summary, tgt.names as old_names
       from edge e
       join contribution ec on ec.id = e.contribution_id
       join contribution ac on ac.id = e.src
       join contribution tgt on tgt.id = e.dst
-      where e.src = ${amendment_id} and e.rel = 'amends'
+      where e.src = any (${asked}::uuid[]) and e.rel = 'amends'
         and ec.status = 'active' and ec.tier = 0
         and ac.status = 'active' and ac.kind = 'amendment'
         and tgt.status = 'active'
-      order by e.created_at asc limit 1`;
-    if (!row) return fail(await noLongerPending(amendment_id, "amendment proposal"));
-    const proposed = row.proposed ?? {};
-    if (proposed.target !== row.target_id) {
-      return fail({ error: "amendment metadata and amends edge disagree on the target" });
+      order by e.src, e.created_at asc`;
+    // Whole or not at all, like every other verdict door: a page half applied
+    // under one note leaves a reviewer working out which half, and the entries
+    // they meant to decide are still in the queue with no record of the
+    // reading. Everything that would refuse is collected first.
+    const found = new Map(rows.map((r) => [r.amendment_id, r]));
+    const refused: { amendment_id: string; error: string }[] = [];
+    const ready: { row: typeof rows[number]; next: { title: string; summary: string; names: string[] }; changed: ("title" | "summary" | "names")[] }[] = [];
+    for (const id of asked) {
+      const row = found.get(id);
+      if (!row) {
+        refused.push({ amendment_id: id, ...(await noLongerPending(id, "amendment proposal")) });
+        continue;
+      }
+      const proposed = row.proposed ?? {};
+      const bad =
+        proposed.target !== row.target_id
+          ? "amendment metadata and amends edge disagree on the target"
+          : proposed.title !== undefined && (typeof proposed.title !== "string" || !proposed.title.trim())
+            ? "proposed title must be nonempty text"
+            : proposed.summary !== undefined && (typeof proposed.summary !== "string" || !proposed.summary.trim())
+              ? "proposed summary must be nonempty text"
+              : proposed.names !== undefined && (!Array.isArray(proposed.names) || proposed.names.some((n) => typeof n !== "string"))
+                ? "proposed names must be text"
+                : null;
+      if (bad) {
+        refused.push({ amendment_id: id, error: bad });
+        continue;
+      }
+      const next = {
+        title: proposed.title?.trim() ?? row.old_title,
+        summary: proposed.summary?.trim() ?? row.old_summary,
+        names: proposed.names?.map((n) => n.trim()).filter(Boolean).slice(0, 12) ?? row.old_names,
+      };
+      const changed = ([
+        ...(next.title !== row.old_title ? ["title"] : []),
+        ...(next.summary !== row.old_summary ? ["summary"] : []),
+        ...(JSON.stringify(next.names) !== JSON.stringify(row.old_names) ? ["names"] : []),
+      ] as ("title" | "summary" | "names")[]);
+      if (decision === "approve" && !changed.length) {
+        refused.push({ amendment_id: id, error: "the target already has every proposed value; reject this stale amendment instead." });
+        continue;
+      }
+      ready.push({ row, next, changed });
     }
-    if (proposed.title !== undefined && (typeof proposed.title !== "string" || !proposed.title.trim())) {
-      return fail({ error: "proposed title must be nonempty text" });
-    }
-    if (proposed.summary !== undefined && (typeof proposed.summary !== "string" || !proposed.summary.trim())) {
-      return fail({ error: "proposed summary must be nonempty text" });
-    }
-    if (proposed.names !== undefined && (!Array.isArray(proposed.names) || proposed.names.some((n) => typeof n !== "string"))) {
-      return fail({ error: "proposed names must be text" });
-    }
-    const next = {
-      title: proposed.title?.trim() ?? row.old_title,
-      summary: proposed.summary?.trim() ?? row.old_summary,
-      names: proposed.names?.map((n) => n.trim()).filter(Boolean).slice(0, 12) ?? row.old_names,
-    };
-    const changed = ([
-      ...(next.title !== row.old_title ? ["title"] : []),
-      ...(next.summary !== row.old_summary ? ["summary"] : []),
-      ...(JSON.stringify(next.names) !== JSON.stringify(row.old_names) ? ["names"] : []),
-    ] as ("title" | "summary" | "names")[]);
-    if (decision === "approve" && !changed.length) {
-      return fail({ error: "the target already has every proposed value; reject this stale amendment instead." });
+    if (refused.length) {
+      return fail({
+        error: asked.length === 1
+          ? refused[0]!.error
+          : `${refused.length} of ${asked.length} could not be decided, so none of them were. Drop those and send the page again; nothing here has changed.`,
+        ...(asked.length === 1 ? { ...refused[0] } : { refused }),
+      });
     }
     await sql.begin(async (tx) => {
-      if (decision === "approve") {
-        // An amended entry is not the entry a reviewer ruled on, so it is
-        // queue work again.
-        await tx`update contribution
-                 set title = ${next.title}, summary = ${next.summary}, names = ${next.names}::text[],
-                     reviewed_at = null, updated_at = now()
-                 where id = ${row.target_id}`;
-        await tx`update contribution set tier = 2, updated_at = now()
-                 where id in (${amendment_id}, ${row.edge_id})`;
-        await tx`insert into event (kind, contribution_id, identity_id, payload)
-                 values ('amendment-applied', ${row.target_id}, ${who.identityId},
-                         ${tx.json({ amendment_id, before: { title: row.old_title, summary: row.old_summary, names: row.old_names }, after: next, changed, note } as never)})`;
-      } else {
-        await tx`update contribution set status = 'retracted', updated_at = now()
-                 where id in (${amendment_id}, ${row.edge_id})`;
-        await tx`insert into event (kind, contribution_id, identity_id, payload)
-                 values ('amendment-rejected', ${amendment_id}, ${who.identityId},
-                         ${tx.json({ target_id: row.target_id, note } as never)})`;
+      for (const { row, next, changed } of ready) {
+        const amendment_id = row.amendment_id;
+        if (decision === "approve") {
+          // An amended entry is not the entry a reviewer ruled on, so it is
+          // queue work again.
+          await tx`update contribution
+                   set title = ${next.title}, summary = ${next.summary}, names = ${next.names}::text[],
+                       reviewed_at = null, updated_at = now()
+                   where id = ${row.target_id}`;
+          await tx`update contribution set tier = 2, updated_at = now()
+                   where id in (${amendment_id}, ${row.edge_id})`;
+          await tx`insert into event (kind, contribution_id, identity_id, payload)
+                   values ('amendment-applied', ${row.target_id}, ${who.identityId},
+                           ${tx.json({ amendment_id, before: { title: row.old_title, summary: row.old_summary, names: row.old_names }, after: next, changed, note } as never)})`;
+        } else {
+          await tx`update contribution set status = 'retracted', updated_at = now()
+                   where id in (${amendment_id}, ${row.edge_id})`;
+          await tx`insert into event (kind, contribution_id, identity_id, payload)
+                   values ('amendment-rejected', ${amendment_id}, ${who.identityId},
+                           ${tx.json({ target_id: row.target_id, note } as never)})`;
+        }
+        await releaseClaims(tx, [amendment_id, row.target_id]);
       }
-      await releaseClaims(tx, [amendment_id, row.target_id]);
     });
-    await refreshAround([amendment_id, row.edge_id, row.target_id]);
+    await refreshAround(ready.flatMap(({ row }) => [row.amendment_id, row.edge_id, row.target_id]));
+    const first = ready[0]!;
     return structured(ApplyAmendmentOut, {
       ok: true,
       decision,
-      amendment_id,
-      target_id: row.target_id,
-      changed: decision === "approve" ? changed : [],
+      amendment_id: first.row.amendment_id,
+      target_id: first.row.target_id,
+      changed: decision === "approve" ? first.changed : [],
       note,
+      ...(ready.length > 1
+        ? {
+            decided: ready.map(({ row, changed }) => ({
+              amendment_id: row.amendment_id,
+              target_id: row.target_id,
+              changed: decision === "approve" ? changed : [],
+            })),
+          }
+        : {}),
     });
   },
 );

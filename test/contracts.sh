@@ -596,8 +596,17 @@ done
 LEASED=$(echo "$MINE" | cut -d' ' -f1)
 # The holder sees their own claims listed, and asking again renews rather than
 # loses them.
-lease_queue "\"$OPKEY\"" ',"limit":2' | python3 -c "import sys,json; d=json.load(sys.stdin)
-assert '$LEASED' in [c['id'] for c in d['your_claims']], d['your_claims']
+# A reviewer never loses sight of a lease, and never reads it twice in one
+# answer: a row they hold is either on the page in front of them, carrying its
+# own expiry, or listed under `your_claims`. Printing both was the same
+# worklist twice over in a response that has to fit in what a client holds.
+lease_queue "\"$OPKEY\"" ',"limit":2' | LEASED="$LEASED" python3 -c "import os, sys, json
+d = json.load(sys.stdin)
+leased = os.environ['LEASED']
+page = {e['id']: e for e in d['unreviewed']}
+claims = {c['id'] for c in d['your_claims']}
+assert leased in page or leased in claims, (sorted(page), sorted(claims))
+assert not (claims & set(page)), 'a leased row was listed twice in one answer'
 assert all(e['claimed_until'] for e in d['unreviewed']), d['unreviewed']" || fail "a reviewer lost sight of what they were holding"
 # Another reviewer is told who holds it rather than handed it as well.
 call review_claim "{\"contributor_key\":\"$TKEY\",\"refs\":[\"$LEASED\"]}" \
@@ -788,8 +797,15 @@ for a in $ONE; do
     [[ $a == "$b" ]] && fail "two sessions of one key were handed the same entry ($a)"
   done
 done
-fleet_queue "$S1" | python3 -c "import sys,json; d=json.load(sys.stdin)
-assert sorted(c['id'] for c in d['your_claims']) == sorted('$ONE'.split()), d['your_claims']" \
+# Its own leases and no sibling's: what this session holds is exactly the page
+# it was handed plus anything it took earlier, and a sibling session's rows are
+# in neither.
+fleet_queue "$S1" | ONE="$ONE" TWO="$TWO" python3 -c "import os, sys, json
+d = json.load(sys.stdin)
+mine, theirs = set(os.environ['ONE'].split()), set(os.environ['TWO'].split())
+held = {c['id'] for c in d['your_claims']} | {e['id'] for e in d['unreviewed'] if e.get('claimed_until')}
+assert mine <= held, (sorted(mine), sorted(held))
+assert not (held & theirs), sorted(held & theirs)" \
   || fail "a session's worklist showed the whole fleet's claims instead of its own"
 
 # ——— Review can say no ————————————————————————————————————————————————————
@@ -908,7 +924,17 @@ for word in kernel lattice sheaf groupoid valuation cocycle filtration matroid s
 done
 call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"limit\":100}" | python3 -c "import sys,json; d=json.load(sys.stdin)
 assert d['backlog']['flagged'] >= 12, d['backlog']
-assert len(d['flagged']) == 10, len(d['flagged'])" || fail "a side section of the review queue scaled with the caller's limit"
+# Capped however large the page, and smaller than that when the rest of the
+# answer needed the room: a forty-row worklist is most of what a client will
+# hold, and the sections under it are the ones that give way, in \`sample\`.
+assert len(d['flagged']) <= 5, len(d['flagged'])
+assert len(d['flagged']) == 5 or 'flagged' in (d.get('sample') or ''), d.get('sample')" || fail "a side section of the review queue scaled with the caller's limit"
+# The worklist itself is never quietly shortened: it is paged by offset and
+# every row was leased in the statement that selected it, so a row dropped here
+# is work leased to a reviewer who never saw it and stepped over by the next page.
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"limit\":100}" | python3 -c "import sys,json; d=json.load(sys.stdin)
+assert len(d['unreviewed']) == min(40, d['backlog']['unreviewed']), (len(d['unreviewed']), d['backlog']['unreviewed'])
+assert 'unreviewed' not in (d.get('sample') or ''), d['sample']" || fail "the review queue shortened the page it had already leased"
 
 # Contract: a review is the judgement, not a claim awaiting one. It carries no
 # tier, so it never enters the worklist it is the output of, and nothing
@@ -1995,7 +2021,35 @@ EDIT_TARGET=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"problem\",\"
 AMENDMENT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Clarify the opaque task\",\"summary\":\"A reader-facing correction.\",\"content\":\"The new title states the question.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"A presentation amendment preserves content\",\"summary\":\"Only title, summary, and names change; the mathematical artifact remains content-addressed.\",\"names\":[\"presentation amendment invariant\"]}}" | field '.id')
 EDIT_HASH=$(call get "{\"ref\":\"$EDIT_TARGET\"}" | field '.artifact_hash')
 [[ $(call get "{\"ref\":\"$EDIT_TARGET\"}" | field '.title') == "opaque task title" ]] || fail "T0 amendment changed its target before review"
-call review_queue "{\"contributor_key\":\"$OPKEY\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert any(a["amendment_id"]=="'"$AMENDMENT"'" and a["proposed"]["title"].startswith("A presentation") for a in d["amendment_proposals"]) and d["backlog"]["amendment_proposals"] >= 1' || fail "pending amendment missing from review queue"
+call review_queue "{\"contributor_key\":\"$OPKEY\"}" | AMENDMENT="$AMENDMENT" python3 -c '
+import os, sys, json
+d = json.load(sys.stdin)
+row = next((a for a in d["amendment_proposals"] if a["amendment_id"] == os.environ["AMENDMENT"]), None)
+assert row, "pending amendment missing from the review queue"
+assert d["backlog"]["amendment_proposals"] >= 1
+# The row says what changes, and whether the entry own text bears it out. This
+# proposal writes a new title rather than quoting the body, so the check must
+# say so rather than stay silent.
+assert row["changes"]["title"]["now"].startswith("A presentation"), row["changes"]
+assert row["verbatim_in_artifact"] is False, row.get("verbatim_in_artifact")
+' || fail "the queue did not show what an amendment changes"
+
+# The other half of that check: a repair that really does quote the entry --
+# the shape a bulk import repair arrives in -- is marked as quoting it. 731 of
+# these landed in one afternoon, and a reviewer who must open every target to
+# confirm a substring is a reviewer who reads none of them.
+CLIPPED=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"The map is injective on the base layers, and\",\"summary\":\"s\",\"content\":\"The map is injective on the base layers, and its fibres are singletons.\"}" | field '.id')
+VERBATIM=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Complete the mechanically truncated title\",\"summary\":\"Title repair.\",\"content\":\"Read verbatim from the artifact.\",\"amends\":\"$CLIPPED\",\"replacement\":{\"title\":\"The map is injective on the base layers, and its fibres are singletons.\"}}" | field '.id')
+call review_queue "{\"contributor_key\":\"$OPKEY\"}" | VERBATIM="$VERBATIM" python3 -c '
+import os, sys, json
+d = json.load(sys.stdin)
+row = next((a for a in d["amendment_proposals"] if a["amendment_id"] == os.environ["VERBATIM"]), None)
+assert row, "the title repair never reached the queue"
+assert row["verbatim_in_artifact"] is True, row.get("verbatim_in_artifact")
+ch = row["changes"]["title"]
+assert ch["same_until"] > 24 and ch["was"].startswith("(nothing"), ch
+assert ch["now"].startswith("its fibres"), ch
+' || fail "a verbatim title repair was not shown as one"
 call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":\"$AMENDMENT\",\"decision\":\"approve\",\"note\":\"Clearer and faithful to the unchanged body.\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert set(d["changed"])=={"title","summary","names"}' || fail "amendment approval did not report changed fields"
 call get "{\"ref\":\"$EDIT_TARGET\"}" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["title"].startswith("A presentation amendment preserves") and d["artifact_hash"]=="'"$EDIT_HASH"'"' || fail "approved amendment did not update presentation or changed its artifact"
 [[ $(psql -h "$WORK" -d math -tAc "select (payload->'before'->>'title') || ' -> ' || (payload->'after'->>'title') from event where kind='amendment-applied' and contribution_id='$EDIT_TARGET'") == "opaque task title -> A presentation amendment preserves content" ]] || fail "amendment event did not preserve before and after"
@@ -2027,6 +2081,27 @@ call submit "{\"contributor_key\":\"$KEY\",$TEMPLATE,\"amends\":\"$TWIN_B\",\"re
 call submit "{\"contributor_key\":\"$KEY\",$TEMPLATE,\"amends\":\"$TWIN_B\",\"replacement\":{\"title\":\"The second title, restored in full\"}}" \
   | python3 -c 'import sys,json;assert json.load(sys.stdin).get("duplicate_of")' \
   || fail "the same amendment filed twice over the same entry was not linked to the original"
+
+# Contract: a page of proposals is one verdict. An import repair arrives as
+# hundreds of amendments of one shape, and a door that takes them one at a time
+# turns a page the reviewer has already read into a hundred round trips --
+# which is how a backlog stays a backlog. Whole or not at all, like every other
+# verdict door: one bad id and nothing moves.
+declare -a PAGE=()
+for i in 1 2 3; do
+  PT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"statement\",\"title\":\"batch target $i with a clipped\",\"summary\":\"s\",\"content\":\"batch target $i with a clipped title restored in full.\"}" | field '.id')
+  PAGE+=("$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Complete the mechanically truncated title\",\"summary\":\"Title repair $i.\",\"content\":\"Verbatim from the artifact.\",\"amends\":\"$PT\",\"replacement\":{\"title\":\"batch target $i with a clipped title restored in full.\"}}" | field '.id')")
+done
+PAGE_JSON=$(printf '"%s",' "${PAGE[@]}" | sed 's/,$//')
+call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":[$PAGE_JSON,\"00000000-0000-4000-8000-000000000001\"],\"decision\":\"approve\",\"note\":\"One bad id in the page.\"}" \
+  | grep -q '1 of 4 could not be decided, so none of them were' || fail "a page with one bad proposal was not refused whole"
+call get "{\"ref\":\"${PAGE[0]}\"}" | python3 -c 'import sys,json;assert json.load(sys.stdin)["tier"]==0' || fail "a refused page applied some of its proposals anyway"
+call apply_amendment "{\"contributor_key\":\"$OPKEY\",\"amendment_id\":[$PAGE_JSON],\"decision\":\"approve\",\"note\":\"Each restores the clipped title verbatim from its own body.\"}" \
+  | python3 -c 'import sys,json
+d = json.load(sys.stdin)
+assert len(d["decided"]) == 3, d
+assert all(x["changed"] == ["title"] for x in d["decided"]), d["decided"]' || fail "a page of amendments was not decided in one call"
+call get "{\"ref\":\"${PAGE[2]}\"}" | python3 -c 'import sys,json;assert json.load(sys.stdin)["tier"]==2' || fail "the last proposal in an approved page was left pending"
 
 AMEND_REJECT=$(call submit "{\"contributor_key\":\"$KEY\",\"kind\":\"amendment\",\"title\":\"Unhelpful amendment\",\"summary\":\"Reject me.\",\"content\":\"No improvement.\",\"amends\":\"$EDIT_TARGET\",\"replacement\":{\"title\":\"Thing\"}}" | field '.id')
 

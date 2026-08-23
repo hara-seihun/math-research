@@ -484,8 +484,9 @@ export const RelatedOut = z.union([
   z.strictObject({
     scanned: z.number().int().describe("Entries normalized and bucketed in this page of the sweep."),
     compared: z.number().int().describe("Pairs that actually got a compression distance, after bucketing."),
-    matched: z.number().int().describe("Pairs over the threshold in this page. `pairs` is the strongest `limit` of them, so matched above limit means there is more here than you are looking at."),
+    matched: z.number().int().describe("Pairs over the threshold in this page. `pairs` is the strongest `limit` of them, so matched above limit means there is more here than you are looking at. Matched close to compared means the slice is templated and the ranking is measuring boilerplate; read the note."),
     threshold: z.number(),
+    truncated: z.boolean().optional().describe("The comparison budget ran out, so the widest bands went unscored. Narrow the slice rather than trusting this page to be the whole of it."),
     pairs: z.array(
       z.strictObject({
         similarity: z.number().describe("1 would mean the bodies are one text once names and constants are positions."),

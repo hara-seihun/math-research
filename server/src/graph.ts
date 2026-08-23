@@ -524,7 +524,7 @@ export async function scanDuplicateEntries(args: DuplicateScanArgs) {
   }
 
   const index = new Map(rows.map((row, i) => [String(i), row]));
-  const { pairs, compared, matched } = await clusterBySimilarity({
+  const { pairs, compared, matched, truncated } = await clusterBySimilarity({
     mode: "prose",
     units: rows.map((row, i) => ({ id: String(i), text: row.content ?? "" })),
     threshold: args.threshold,
@@ -556,15 +556,26 @@ export async function scanDuplicateEntries(args: DuplicateScanArgs) {
     return { similarity: pair.similarity, a, b, ...(existing.length ? { existing_links: existing } : {}) };
   });
 
+  // A slice where more than half of every compared pair clears the floor is
+  // A slice where more than half of every pair compared clears the floor is
+  // templated rather than repetitious: the distance is measuring a boilerplate
+  // preamble every member carries, and the ranking inside it means nothing.
+  // Saying so is the difference between an agent narrowing the slice and an
+  // agent reading two hundred thousand identically-worded amendments.
+  const boilerplate = compared >= 20 && matched > compared * 0.5;
+
   return {
     scanned: rows.length,
     compared,
     matched,
     threshold: args.threshold,
     pairs: scored,
+    ...(truncated ? { truncated: true } : {}),
     ...(rows.length === SCAN_PAGE ? { next_offset: args.offset + SCAN_PAGE } : {}),
-    note: scored.length
-      ? "These pairs share structure after alpha normalization, which is an attention list and not a proof that they say the same thing. Read both before proposing anything. Where they are two tellings of one result, the repair is one entry superseding both; where they are rungs of one ladder, it is the general statement they are all instances of."
-      : "Nothing in this page scored above the threshold. Lower it to see weaker echoes, or page on with next_offset.",
+    note: boilerplate
+      ? `${matched} of ${compared} pairs cleared the floor, which means this slice is templated rather than repetitious: every entry carries wording every other one carries, and the distance is measuring that instead of the mathematics. Narrow to a topic or a front, restrict to the kinds that carry real content, or raise the threshold well above ${args.threshold}.`
+      : scored.length
+        ? "These pairs share structure after alpha normalization, which is an attention list and not a proof that they say the same thing. Read both before proposing anything. Where they are two tellings of one result, the repair is one entry superseding both; where they are rungs of one ladder, it is the general statement they are all instances of."
+        : "Nothing in this page scored above the threshold. Lower it to see weaker echoes, or page on with next_offset.",
   };
 }

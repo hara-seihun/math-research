@@ -101,11 +101,13 @@ export async function rankBySimilarity(
  *  `matched` counts every pair over the floor; `pairs` is the top `limit`. */
 export async function clusterBySimilarity(
   args: { mode: Mode; units: Unit[]; threshold: number; limit: number; normalized?: boolean },
-): Promise<{ pairs: Pair[]; compared: number; matched: number }> {
-  const empty = { pairs: [], compared: 0, matched: 0 };
+): Promise<{ pairs: Pair[]; compared: number; matched: number; truncated: boolean }> {
+  const empty = { pairs: [], compared: 0, matched: 0, truncated: false };
   if (args.units.length < 2) return empty;
   const done = await pool.run({ kind: "cluster", ...args });
-  return done.kind === "cluster" ? { pairs: done.pairs, compared: done.compared, matched: done.matched } : empty;
+  return done.kind === "cluster"
+    ? { pairs: done.pairs, compared: done.compared, matched: done.matched, truncated: done.truncated }
+    : empty;
 }
 
 export type { Pair, Scored, Unit };

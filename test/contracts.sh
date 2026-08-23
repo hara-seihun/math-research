@@ -858,6 +858,15 @@ assert t["continued_by"]=="'"$HT"'"
 assert t["entries"][0]["by"] is None and t["entries"][-1]["by"]=="the agent who picked it up"' \
   || fail "a closure written by someone else reads as the author's own last word"
 
+# The same facts have to be answerable in SQL, or "what happened to that
+# attack" is a question only the tool that wrote it can answer.
+call query "{\"sql\":\"select status, outcome, continues, closed_by is not null from q_trails where id = '$ST'\"}" \
+  | python3 -c 'import sys,json;r=json.load(sys.stdin)["rows"][0];assert r[0]=="closed" and r[1]=="advanced" and r[2] is None and r[3] is True, r' \
+  || fail "q_trails cannot say how a trail ended or who ended it"
+call query "{\"sql\":\"select count(*) from q_trail_entries e join q_trails t on t.id = e.trail_id where e.trail_id = '$ST' and e.identity_id is distinct from t.identity_id\"}" \
+  | python3 -c 'import sys,json;assert int(json.load(sys.stdin)["rows"][0][0])==1' \
+  || fail "q_trail_entries does not say which notes were written by someone other than the author"
+
 # Contract: a problem with the server can be reported by anyone, in one
 # sentence, with no identity and nothing else; the server attaches what the
 # reporter was doing; the report reads back with what came of it; and the

@@ -453,8 +453,10 @@ create table if not exists trail_entry (
   search           tsvector generated always as (to_tsvector('english', note)) stored
 );
 create index if not exists trail_entry_trail_idx on trail_entry (trail_id, id);
--- Null means the trail's own author, which is every entry written before a
--- trail could be closed by anyone else.
+-- Who wrote this note. Usually the trail's author; different exactly when an
+-- abandoned trail was closed out by whoever finished its work. Null on every
+-- entry written before a trail could be closed by anyone else, which is when
+-- the author was the only possible writer.
 alter table trail_entry add column if not exists identity_id text references identity(id);
 -- Reached with the array-overlap operator, which is what `trails` and the
 -- "who else is here" panel of get/frontier ask with. Asked as `unnest(...)
@@ -1324,11 +1326,22 @@ create or replace view q_files as
   select cf.contribution_id, cf.path, cf.hash, f.media_type, f.size_bytes, cf.identity_id, cf.created_at
   from contribution_file cf join file f on f.hash = cf.hash;
 
+-- `outcome` is how a closed trail ended and `continues` is the trail this one
+-- picked up, so "what happened to that attack" is one join and not a guess.
+-- `closed_by` differs from `identity_id` exactly when an abandoned trail was
+-- ended by whoever finished its work.
+drop view if exists q_trails;
 create or replace view q_trails as
-  select id, identity_id, title, status, created_at, updated_at from trail;
+  select id, identity_id, title, status, metadata->>'outcome' as outcome,
+         continues, closed_by, created_at, updated_at
+  from trail;
 
+-- identity_id is who wrote the note: compare it with the trail's own
+-- identity_id to find the closing note of a trail somebody else wrapped up.
+-- Null on entries predating the column.
+drop view if exists q_trail_entries;
 create or replace view q_trail_entries as
-  select trail_id, note, contribution_ids, created_at from trail_entry;
+  select trail_id, note, contribution_ids, identity_id, created_at from trail_entry;
 
 create or replace view q_identities as
   select id, display_name, role, created_at from identity;

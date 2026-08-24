@@ -904,6 +904,41 @@ create table if not exists topic_rule (
   ord     integer not null default 100
 );
 
+-- Migration bookkeeping stays with the source rows while the replacement
+-- database is assembled. Each string names one destination cell whose source
+-- material has been dealt with, whether it was copied, merged, or deliberately
+-- left behind. An empty array therefore means no migration decision has been
+-- made for that row. The loop covers every base table without coupling the new
+-- database to any source identifier, and also catches tables added above it in
+-- later schema revisions.
+do $$
+declare
+  table_name text;
+begin
+  for table_name in
+    select tablename from pg_tables where schemaname = 'public'
+  loop
+    execute format(
+      'alter table public.%I add column if not exists migrated_cells text[] not null default %L::text[]',
+      table_name, '{}'
+    );
+  end loop;
+end $$;
+
+-- `event` remains append-only in its mathematical content. Migration marks are
+-- the sole allowed update, and they may only be appended: an existing decision
+-- cannot disappear or be rewritten while a later migration is running.
+create or replace function forbid_mutation() returns trigger language plpgsql as $$
+begin
+  if tg_op = 'UPDATE'
+     and (to_jsonb(new) - 'migrated_cells') = (to_jsonb(old) - 'migrated_cells')
+     and cardinality(new.migrated_cells) >= cardinality(old.migrated_cells)
+     and new.migrated_cells[1:cardinality(old.migrated_cells)] = old.migrated_cells then
+    return new;
+  end if;
+  raise exception 'the event ledger is append-only';
+end $$;
+
 -- Name folding, shared by every lookup door: unicode dashes to ascii, accents
 -- stripped, lowercased. "de Bruijn–Newman" and "de bruijn-newman" are the same
 -- name, and asking for an entry by the name written in its own summary works.

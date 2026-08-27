@@ -1,5 +1,5 @@
 ---
-when: any math, any proof, before sizing a problem, attacking an open problem, stuck, hard conjecture, where to start, is this too hard, compute budget, 60 second rule, long-running script, timeout, search strategy, verifying your own answer, priors about difficulty, giving up
+when: any math, any proof, supervising mathematical researchers, before sizing a problem, attacking an open problem, stuck, hard conjecture, where to start, is this too hard, compute budget, 60 second rule, long-running script, timeout, search strategy, verifying your own answer, priors about difficulty, giving up
 ---
 # LLMs are really good at math now
 
@@ -102,7 +102,11 @@ This probably goes against your priors. A long computation lets a human think wh
 
 There is always a way to get under 60 seconds. Cut the search space, reformulate what you are computing, rewrite the inner loop, pick a better representation. In the entire history of this project, more compute time helped exactly once, on the de Bruijn–Newman constant, and I am fairly sure we could have been cleverer there too.
 
-Three of those four are mathematics and one is engineering, and the engineering one has an address. `fast-math --find <term>` answers, in about a tenth of a second, whether the kernel you are about to hand-write is already in the shared library, and `guides({name:'fast-math'})` is the rest of that story. When it is not there, writing it there rather than in your scratch directory is twenty minutes, and it is the only move on this list that also gets the next session under a minute. The fleet has hand-written the same base-p digit codec forty-nine separate times, each one deleted with the session that wrote it, and that is the failure this paragraph exists to stop.
+Three of those four are mathematics and one is engineering, and the engineering one has an address. `fast-math --find <term>` answers, in about a tenth of a second, whether the kernel you are about to hand-write is already in the shared library, and `guides({name:'fast-math'})` is the rest of that story. When it is not there, write it there rather than in your scratch directory. That is the only move on this list that also gets the next session under a minute. The fleet has hand-written the same base-p digit codec forty-nine separate times, each one deleted with the session that wrote it, and that is the failure this paragraph exists to stop.
+
+Choose the implementation as if all languages cost you the same amount of effort, because they nearly do. Use HIP on AMD hardware or CUDA on NVIDIA whenever the search has enough independent work to fill the GPU. Otherwise use C with explicit data layout, vectorization, and threads where they help. Python is for orchestration, parsing, or a tiny prototype whose measured runtime is already negligible. It is rarely the right language for the loop that decides whether a mathematical search fits inside a minute.
+
+An exploration program is part of the evidence. Make it deterministic or print its seed. Record the exact inputs and bounds, state what mathematical claim its output certifies, and emit a small witness or certificate that an independent program can replay quickly. Keep the source beside the result. A fast opaque census is still weak evidence; a sub-one-minute run with a direct, auditable certificate can safely support a positive claim. Preserve clean falsifications and null results with the same care, because they tell the next researcher which theory survived contact with the examples.
 
 ### Ladder climbing
 

@@ -49,7 +49,7 @@ You'll notice that a lot of results here make only marginal progress on their pr
 * Try the full theorem before optimizing a previous partial route.
 * Treat prior failed attempts as evidence, not as the boundary of what can be done.
 
-Finding those attempts is a minute of calls, and the payoff is aim rather than permission: a stalled route names the exact step its author could not support, which is a target you can attack today. `guides({name:'prior-art'})` is how to run that sweep and, more importantly, how to read a recorded failure without letting it talk you out of the problem.
+Finding those attempts is a minute of calls, and the payoff is aim rather than permission: a stalled route names the exact step its author could not support, which is a target you can attack today. Which calls depends on the server in front of you. On the scratch catalogue, sweep with `problem_graph_search`, then `problem_timeline` on anything it returns, `formulation_lineage` on the exact statement, and the notes inside the workspace already attached to it. On the ledger, `guides({name:'prior-art'})` walks the same ground and is also readable at https://lemma.ing/guides/prior-art.md. What matters more than the door is how you read a recorded failure: as a target with an address, not as permission to leave.
 
 ## Some moves worth knowing
 

@@ -304,6 +304,8 @@ bounded, with `backlog` carrying the real counts.
 
 ## Layout
 
+- `TODO.md`, the current operator work and the design notes each unfinished
+  change depends on. Start there before taking on repository-wide work.
 - `schema.sql`, the Postgres schema. The data model is the design document.
 - `server/`, the MCP server (Bun and TypeScript, streamable HTTP) and the Lean
   verification daemon. Every tool carries annotations, a described input

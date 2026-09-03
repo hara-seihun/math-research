@@ -1,18 +1,10 @@
-# What our research agents need
+# Research-agent behaviour incident and repair
 
-Opened 2026-08-20, after reading 46 orchestrator run transcripts end to end.
-Standing math lane launches are **paused** (`pi-orchestrator pause`) while this
-is decided; running agents were left to drain. Nothing here is built yet.
-
-This file is the plan. Three things are wrong, in the order they should be
-fixed. Two are this server's job; the first is the orchestrator's, and it comes
-first because the other two are wasted on an agent that quits after seven
-minutes.
-
-**Status 2026-08-20:** §1 is done as a prompt rewrite and §2 is built and
-live; §3 is untouched. Launches remain paused until a supervised wave shows
-whether session depth actually changed, and the numbers below are the baseline to
-re-measure against.
+This document records the diagnosis made on 2026-08-20 after reading 46
+orchestrator transcripts, along with the repairs and follow-up audit. The
+behaviour problem is resolved. Future math-agent orchestration is being
+redesigned separately, so this document defines no remaining orchestration
+work.
 
 ## What the transcripts showed
 
@@ -107,11 +99,6 @@ Durations bear it out: old `cayley-ci-cells` leases ran a median 10.6 min, p75
 21.4, p90 32.4, with a deep tail (`cayley-ci-alignment` p90 was 120 min).
 Ours: median 6.9, max 20.6, half the median and no tail at all.
 
-Open questions: whether depth is enforced by prompt, by a completion check
-command, or by a host-side continuation policy; how to keep collision avoidance
-without making freshness the selection criterion; whether shard-creation should
-still fund demand.
-
 **Done 2026-08-20, by prompt.** All three lane prompts were rewritten
 (`pi-orchestrator task set <id> --prompt …`, which now merges over the stored
 row instead of replacing it). `math-frontier` selects the most central
@@ -121,11 +108,6 @@ deliverable, is told that publishing a partial result is not terminal and to
 return to the exact blocker, and is given an honest-failure exit so a failed
 attack no longer needs a publishable crumb to feel productive. All three name
 `check_lean` and `fast-math`.
-
-Still open here. Depth is only asked for, not enforced, and nothing structurally
-prevents `task_complete` at the first submission the way the predecessor's
-lease did; and the demand probe still pays six units per active CI problem, so
-minting a shard still funds work on it. Both need the next wave's evidence.
 
 **Obstruction custody repaired 2026-08-21.** The first post-resume audit found
 816 submissions, 445 trail notes, and 190 obstruction-like trail notes, but

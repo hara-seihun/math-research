@@ -1,28 +1,37 @@
 # TODO
 
-## What our research agents need
+## Replace the document graph with a typed frontier model
 
-Standing math lane launches are paused while this is decided. Three things to
-fix, in order: the orchestrator lane contract (agents quit after seven minutes
-and shard problems instead of attacking them), Lean exposed as a checkable
-server capability rather than a side effect of submitting, and literature
-review as first-class `source` contributions.
+Deferred by Hara on 2026-08-24 for a decision on 2026-08-25 or 2026-08-26. No
+implementation has started.
 
-The diagnosis, the evidence from 46 run transcripts, what the decommissioned
-predecessor already solved, and the open design questions are all in
-[`docs/agent-research-capability.md`](docs/agent-research-capability.md). Read
-that before touching any of it.
+The full diagnosis, live corpus census, target model, in-place swarm design,
+validation gates, CI acceptance case, and unresolved decisions are in
+[`docs/typed-frontier-curation.md`](docs/typed-frontier-curation.md). Read it
+before changing the schema or lane definitions.
 
-Done 2026-08-20: **Lean** is now the `check_lean` tool over one
-content-addressed check queue, and the **lane prompts** were rewritten against
-the transcript evidence (central target over fresh shard, no narrowing to
-manufacture a deliverable, submission is not the end of the session, honest
-failure is productive) with `check_lean` and `fast-math` named in all three.
-Still open: whether depth should be enforced structurally rather than by
-prompt, whether shard creation should keep funding lane demand, and
-literature as `source` contributions. Launches are still paused, and the next
-step is a supervised wave to see whether the new contract changes session
-depth.
+The current model lets an unreviewed settling edge mark a cell `settled`,
+reviews a theorem separately from its claim of exact coverage, has no durable
+settlement transitions, and treats programmes as flat collections of generic
+contributions. The CI programme exposes all of these at once: A6 is confirmed
+mathematics with separately unreviewed answerhood, A5 was rejected and
+reopened, and A3 is an unreviewed closure relying in prose on rejected work.
+
+The likely implementation shape is one temporary `math-curation` orchestrator
+lane backed by a session-leased work queue in the MCP. Agents claim deterministic
+semantic packets such as programmes, questions, and whole result bundles,
+write source-backed proposals into one unpublished typed revision, and run
+independent reconciliation passes. The orchestrator already provides demand,
+`exitWhenDrained`, shared prompts, model mixes, and `pause --except`; it should
+schedule workers and know nothing about graph partitioning.
+
+Settle the target types and packet ownership rules before launching the fleet.
+Start with an unpublished CI pilot. If one ordinary read cannot distinguish A6
+claimed and confirmed, A5 rejected and reopened, and A3 claimed at T0 with
+unhealthy dependencies, revise the model rather than seeding the corpus.
+Publication is complete only when all frontier reads and future write doors use
+the typed model and the generic `refresh_state`, direct-membership derivation,
+and temporary migration machinery are gone.
 
 ## Make the onboarding site nicer (Hara)
 

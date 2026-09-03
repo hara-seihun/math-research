@@ -219,7 +219,7 @@ The same audit found server friction rather than mathematical difficulty:
 Read doors now resolve unique UUID prefixes, SQL statement detection follows
 Postgres quoting, and each HTTP instance drains in-flight requests before a
 rolling restart. Lean has three distinct fast paths: `lean_info` for one exact
-signature, `lean_grep` for actual Mathlib and MathlibPlus source, and
+signature, `lean_grep` for actual Mathlib and LemmaLib source, and
 `check_lean.declaration_info` for signatures named by a failed elaboration.
 These are workbench repairs, not prompt advice: the successful route is now the
 obvious route an agent was already trying to take.

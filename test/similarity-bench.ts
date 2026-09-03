@@ -528,7 +528,7 @@ async function speedTask() {
 
 // --- Task: what it finds in the wild ------
 // No metric here on purpose: this prints the top duplicate candidates the
-// shipped configuration finds in MathlibPlus and in the ledger, for a human
+// shipped configuration finds in LemmaLib and in the ledger, for a human
 // or an agent to judge. A scanner produces an attention list; whether the
 // list is worth attention is not a number.
 
@@ -545,9 +545,9 @@ async function dupesTask() {
   const elapsed = (Bun.nanoseconds() - started) / 1e9;
   const groups = [...byNorm.values()].filter((g) => g.length > 1);
   const crossLibrary = groups.filter((g) => new Set(g.map((d) => d.library)).size > 1);
-  const withinPlus = groups.filter((g) => g.every((d) => d.library === "MathlibPlus") && new Set(g.map((d) => d.name)).size > 1);
+  const withinLemmaLib = groups.filter((g) => g.every((d) => d.library === "LemmaLib") && new Set(g.map((d) => d.name)).size > 1);
   console.log(`\n## alpha-equivalence classes over ${num(decls.length)} proved declarations (${elapsed.toFixed(1)}s to normalize all of them)`);
-  console.log(`${num(groups.length)} classes hold more than one declaration; ${num(crossLibrary.length)} span libraries; ${num(withinPlus.length)} are MathlibPlus talking to itself.`);
+  console.log(`${num(groups.length)} classes hold more than one declaration; ${num(crossLibrary.length)} span libraries; ${num(withinLemmaLib.length)} are LemmaLib talking to itself.`);
   const show = (label: string, gs: Decl[][]) => {
     console.log(`\n### ${label}`);
     for (const g of gs.sort((a, b) => b[0]!.statement.length - a[0]!.statement.length).slice(0, 6)) {
@@ -556,7 +556,7 @@ async function dupesTask() {
     }
   };
   show("cross-library duplicates", crossLibrary);
-  show("MathlibPlus internal duplicates", withinPlus);
+  show("LemmaLib internal duplicates", withinLemmaLib);
 
   const contribs = await readJsonl<Contribution>("contribs.jsonl");
   const lean = contribs.flatMap((c) => leanBlocks(c.content).map((b) => ({ c, b })));
@@ -704,11 +704,11 @@ async function prefilterTask() {
   const contribs = (await readJsonl<Contribution>("contribs.jsonl")).filter((c) => c.status === "active");
   const texts = contribs.map((c) => `${c.title}\n${c.summary}\n${c.content}`.slice(0, 4000));
   // Capped: four full indexes over 300k statements measures this laptop's
-  // memory, not the prefilters. MathlibPlus is the corpus the Lean tool is
+  // memory, not the prefilters. LemmaLib is the corpus the Lean tool is
   // actually pointed at.
   const decls = (await readJsonl<Decl>("decls.jsonl"))
     .filter((d) => d.is_proof && !isGenerated(d.name) && d.statement.length > 60)
-    .filter((d) => d.library === "MathlibPlus")
+    .filter((d) => d.library === "LemmaLib")
     .slice(0, 60000);
   const stmts = decls.map((d) => d.statement);
 

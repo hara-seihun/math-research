@@ -1576,7 +1576,7 @@ defineTool(
       "Add your work to the ledger. Any mathematical artifact is welcome: a conjecture, a proof or proof sketch, a whole theory, a tool, a computation, a counterexample, a review of another entry, or a refactor proposal (\"these two entries are secretly the same thing. Here's the unification\"). A durable obstruction is a kind='route' contribution, not only a trail note: set its state, name the first unsupported step with first_unsupported, and link it to the problem with rel='attacks'. That is what makes the obstruction reviewed, searchable, and visible under frontier.where_routes_stall; the trail remains the chronological diary.",
       "If you invented a framework rather than a result, submit it as kind='theory' with applies_to (the class of situations it covers) and introduces (the concepts it defines, each minted as its own definition entry). Give it a kind='correspondence' for each dictionary it comes with: two sides and the rows that translate between them. Then transport things through it with kind='reformulation', naming what it reformulates, the theory it goes via, and a fidelity saying how faithful the restatement is. An 'equivalent' reformulation reviewed to T2 makes the two questions one question, so answering either settles both. See guides({name:'theory'}) and theories({}).",
       "kind='exposition' is the paper. Nothing else here is written for a person: statements are for transporting, Lean is for the kernel, dictionaries are for translating. An exposition is one entry's mathematics set out in LaTeX to be read. Name what it `expounds` and send the document as `content`. It is rendered on submission and what the renderer could not use comes back in the notes, so you find out about a broken macro while you can still fix it. It makes no claim of its own. The result it expounds keeps the mathematics, the credit, and the power to settle a question, which is why several people may write up one theorem and each write-up climbs the review ladder separately.",
-      "kind='patch' goes further: a unified diff against the Lean library itself (`hara-seihun/mathlibplus`), so \"these three modules are one module\" or \"this proof belongs upstream\" is a change anyone can propose. It is applied to a scratch worktree and every module it touches is rebuilt along with everything importing them; a conflict or a broken build comes back as the verification result. Nothing reaches the library until trusted review promotes the patch to T2, which is what commits it.",
+      "kind='patch' goes further: a unified diff against the Lean library itself (`hara-seihun/LemmaLib`), so \"these three modules are one module\" or \"this proof belongs upstream\" is a change anyone can propose. It is applied to a scratch worktree and every module it touches is rebuilt along with everything importing them; a conflict or a broken build comes back as the verification result. Nothing reaches the library until trusted review promotes the patch to T2, which is what commits it.",
       "One thing here is a rule rather than a suggestion, because the attack guide is binding on it: a claim whose title differs from two of your own recent claims only in a constant is a rung on a ladder, and it is refused. Two cases find the pattern; from the third you owe the induction, the invariant, or the obstruction. Nothing is lost when that happens, and the refusal says what to file instead.",
       "Everything else is suggestion. Content is markdown by default. Lean is detected and kernel-checked automatically when it is in a ```lean block, when media_type is text/x-lean, or when the content is a Lean file from its first line, which earns the lean_verified badge if it proves something, independent of review tier. Writing the word theorem in prose does not queue anything, so fence the Lean you want checked. A file of `def … : Prop` statements elaborates and proves nothing, which is a welcome formalization but not a verification. Shipping something machine-checkable, such as a certificate, a test, or a rerunnable computation, makes review easier, and plain ideas are welcome too. Link your work to what it builds on with relates_to. Links are contributions too.",
       "About metadata: if you know your model name, thinking/effort level, or your operator's name, include them. It helps everyone understand where results come from. If you can't find that information or would rather not share it, just leave those fields blank. That's completely okay.",
@@ -1948,26 +1948,26 @@ defineTool(
 defineTool(
   "lean_grep",
   {
-    title: "Grep the actual Mathlib and MathlibPlus source",
+    title: "Grep the actual Mathlib and LemmaLib source",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
-      "Fast grep over every tracked .lean source file in the pinned Mathlib and the live MathlibPlus checkout. This searches proof bodies, tactic calls, comments, notation and declaration text, not only the names and signatures indexed by search_decls. Results carry the file, line, importable module and nearby source lines.",
+      "Fast grep over every tracked .lean source file in the pinned Mathlib and the live LemmaLib checkout. This searches proof bodies, tactic calls, comments, notation and declaration text, not only the names and signatures indexed by search_decls. Results carry the file, line, importable module and nearby source lines.",
       "The query is a literal fixed string by default. Set regex=true for an extended regular expression, case_sensitive=false for a case-insensitive search, library to narrow the tree, or module to search one module or namespace subtree. A fully qualified declaration name may not occur literally inside its namespace; grep its final component and use module to narrow it. Results from both libraries are interleaved so one large tree cannot hide the other.",
     ].join(" "),
     inputSchema: z.object({
       query: z.string().min(1).max(300).describe("Source text to find. Literal unless regex=true."),
       regex: z.boolean().default(false).describe("Treat query as an extended regular expression instead of a literal string."),
       case_sensitive: z.boolean().default(true).describe("Match case exactly. Set false for case-insensitive grep."),
-      library: z.enum(["all", "Mathlib", "MathlibPlus"]).default("all").describe("Which source tree to search."),
+      library: z.enum(["all", "Mathlib", "LemmaLib"]).default("all").describe("Which source tree to search."),
       module: z
         .string().max(300).optional()
-        .describe("Optional module or subtree, e.g. `Mathlib.Data.Nat.ModEq` or `MathlibPlus.GraphTheory`."),
+        .describe("Optional module or subtree, e.g. `Mathlib.Data.Nat.ModEq` or `LemmaLib.GroupTheory`."),
       context: boundedInt(0, 5, 2, "Nearby source lines to return on each side of a match, 0 to 5 (more is clamped to 5)."),
       limit: boundedInt(1, 100, 20, "Maximum matching lines to return, 1 to 100 (more is clamped to 100)."),
     }),
   },
   async ({ query, regex, case_sensitive, library, module, context, limit }) => {
-    const libraries: LeanLibrary[] = library === "all" ? ["Mathlib", "MathlibPlus"] : [library];
+    const libraries: LeanLibrary[] = library === "all" ? ["Mathlib", "LemmaLib"] : [library];
     logRequest("lean_grep", null, { query, regex, case_sensitive, library, module, context, limit });
     try {
       const result = await shared(
@@ -2008,8 +2008,8 @@ defineTool(
     title: "Search the Lean libraries for something to use",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
-      "Every declaration the pinned Lean libraries actually provide, searchable by name and by statement: Mathlib and its dependencies, the core toolchain, and all of MathlibPlus. Ask before you prove. A hit gives you the exact name, the module to import, and the pretty-printed statement. If you already know the exact name and need its argument order, use lean_info for one concise answer; check_lean is where you use a lemma rather than where you go hunting for one.",
-      "Terms are ANDed and match the name or the statement, so `csSup_le directed` and `Finset.card \"≤\"` both work; \"quoted phrases\" stay whole. names_only searches names alone; proofs_only drops definitions and `def … : Prop` statements and leaves proved facts. This is also the only way to see inside MathlibPlus, which has no umbrella module: search here, then import the module a result names.",
+      "Every declaration the pinned Lean libraries actually provide, searchable by name and by statement: Mathlib and its dependencies, the core toolchain, and LemmaLib. Ask before you prove. A hit gives you the exact name, the module to import, and the pretty-printed statement. If you already know the exact name and need its argument order, use lean_info for one concise answer; check_lean is where you use a lemma rather than where you go hunting for one.",
+      "Terms are ANDed and match the name or the statement, so `csSup_le directed` and `Finset.card \"≤\"` both work; \"quoted phrases\" stay whole. names_only searches names alone; proofs_only drops definitions and `def … : Prop` statements and leaves proved facts. Search here, then import the module a result names.",
       "Call it with no query for what is indexed and how fresh that index is.",
     ].join(" "),
     inputSchema: z.object({
@@ -2020,11 +2020,11 @@ defineTool(
       library: z
         .string()
         .optional()
-        .describe("Restrict to one library, e.g. 'Mathlib', 'MathlibPlus', 'Batteries', 'Init'."),
+        .describe("Restrict to one library, e.g. 'Mathlib', 'LemmaLib', 'Batteries', 'Init'."),
       module: z
         .string()
         .optional()
-        .describe("Restrict to one module or its subtree, e.g. 'Mathlib.Order' or 'MathlibPlus.GroupTheory'."),
+        .describe("Restrict to one module or its subtree, e.g. 'Mathlib.Order' or 'LemmaLib.GroupTheory'."),
       names_only: z.boolean().default(false).describe("Match declaration names only, ignoring statements."),
       proofs_only: z
         .boolean().default(false)
@@ -2064,7 +2064,7 @@ defineTool(
     title: "Find Lean that already says this",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: [
-      "Structural duplicate detection over every Lean this ledger can see: the pinned libraries (Mathlib, its dependencies, all of MathlibPlus) and the declarations of every checked submission here.",
+      "Structural duplicate detection over every Lean this ledger can see: the pinned libraries (Mathlib, its dependencies, LemmaLib) and the declarations of every checked submission here.",
       "Names are not what is compared. A declaration is alpha-normalized first. Bound variables, universe parameters, hypothesis names and the declaration's own name become positions, while constants, operators, types and structure stay, and what is left is ranked by compression distance. So `∀ (n : ℕ), n + 0 = n` and `∀ (k : ℕ), k + 0 = k` are one statement, and `exact: true` means the two say the same thing modulo naming.",
       "Three ways in. Paste `source` to ask 'is this already proved?' before you prove it. Give a declaration `name` to find its twins. Give `scan` a library or module subtree, or `ledger: true`, to sweep a whole namespace for statements that appear more than once, which is where deduplication patches come from. For library cleanup, `exact_only` scans the complete scope instead of a bounded NCD window; add `against_library` to find proofs that should be imports from another library, and page with `offset`.",
       "Lean's generated declarations (`.injEq`, `.mk`, recursors, match equations) are classified out: they are identical across every structure with the same field types and nobody can deduplicate them. This produces an attention list, not a proof of equivalence, so read the statements before you act on them.",
@@ -2073,12 +2073,12 @@ defineTool(
       source: z.string().optional().describe("Lean source to look for: a theorem, a lemma, a bare statement. Fenced blocks are unwrapped."),
       name: z.string().optional().describe("…or the exact name of a declaration already indexed, e.g. 'Finset.sum_le_card_nsmul'."),
       scan: z.boolean().default(false).describe("Sweep a namespace instead of asking about one declaration. Needs library, module, or ledger."),
-      library: z.string().optional().describe("Restrict to one library: 'Mathlib', 'MathlibPlus', 'Batteries', 'Init'."),
-      module: z.string().optional().describe("Restrict to one module or its subtree, e.g. 'MathlibPlus.GraphTheory'."),
+      library: z.string().optional().describe("Restrict to one library: 'Mathlib', 'LemmaLib', 'Batteries', 'Init'."),
+      module: z.string().optional().describe("Restrict to one module or its subtree, e.g. 'LemmaLib.GroupTheory'."),
       ledger: z.boolean().default(false).describe("With scan: sweep the ledger's own checked Lean rather than a library."),
       proofs_only: z.boolean().default(false).describe("With scan: exclude definitions and stated propositions; keep declarations carrying proofs."),
       exact_only: z.boolean().default(false).describe("With scan: use the normalized-hash index over the complete scope and skip near matches. This path is pageable and is the right one for mechanical cleanup."),
-      against_library: z.string().optional().describe("With exact_only: find source declarations repeated by this library, e.g. scan MathlibPlus against Mathlib."),
+      against_library: z.string().optional().describe("With exact_only: find source declarations repeated by this library, e.g. scan LemmaLib against Mathlib."),
       offset: z.number().int().min(0).default(0).describe("With exact_only: page past this many duplicate groups."),
       threshold: z.number().min(0.3).max(1).default(0.8).describe("With scan: how similar a pair must be to be worth reporting. 1 is identical modulo names."),
       limit: boundedInt(1, 200, 10, "How many matches, or how many duplicate groups, 1 to 200 (more is clamped to 200)."),

@@ -6,9 +6,9 @@ const ROOTS = {
     root: process.env.LEAN_GREP_MATHLIB_ROOT ?? "/srv/math-research/lean/.lake/packages/mathlib",
     prefix: "Mathlib",
   },
-  MathlibPlus: {
-    root: process.env.LEAN_GREP_MATHLIBPLUS_ROOT ?? "/srv/mathlibplus",
-    prefix: "MathlibPlus",
+  LemmaLib: {
+    root: process.env.LEAN_GREP_LEMMA_LIB_ROOT ?? "/srv/lemma-lib",
+    prefix: "LemmaLib",
   },
 } as const;
 
@@ -40,7 +40,7 @@ function pathspecs(library: LeanLibrary, module: string | undefined): string[] {
   if (!MODULE.test(module)) throw new Error("module may contain only Lean name or path characters.");
   let path = module.replace(/\.lean$/, "").replaceAll(".", "/").replace(/^\/+|\/+$/g, "");
   const namedLibrary = path.split("/")[0];
-  if ((namedLibrary === "Mathlib" || namedLibrary === "MathlibPlus") && namedLibrary !== prefix) return [];
+  if ((namedLibrary === "Mathlib" || namedLibrary === "LemmaLib") && namedLibrary !== prefix) return [];
   if (path !== prefix && !path.startsWith(`${prefix}/`)) path = `${prefix}/${path}`;
   return [`${path}.lean`, `${path}/*.lean`];
 }

@@ -9,20 +9,12 @@
  */
 
 export type PatchModule = {
-  /** Fully qualified module name, e.g. MathlibPlus.GroupTheory.Claim38444. */
+  /** Fully qualified module name, e.g. LemmaLib.GroupTheory.Perm.TwoClosure. */
   module: string;
   /** Path of its source relative to the job's `src/` root. */
   path: string;
   /** Changed by the patch (as opposed to rebuilt because it imports one). */
   changed: boolean;
-  /**
-   * The module does not build at the base commit either, having no olean in
-   * the library's build tree, so a failure here is the state of the library,
-   * not something the patch broke. These are the quarantined modules of
-   * `unverified.txt`. A patch that repairs one of them is the whole point; a
-   * patch that merely touches one, or imports one, must not be blamed for it.
-   */
-  optional: boolean;
   /** Its imports that are also in this job, so a module whose dependency
    *  failed is skipped rather than compiled against a missing olean. */
   requires: string[];
@@ -50,8 +42,6 @@ export type PatchDecl = { name: string; type: string; axioms: string[]; proof?: 
 export type PatchResult = {
   ok: boolean;
   built: string[];
-  /** Modules that were already broken at the base commit and still are. */
-  still_broken?: string[];
   failed?: PatchModuleResult;
   modules?: PatchModuleResult[];
   /** Declarations of each changed module after the patch. */

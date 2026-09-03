@@ -8,21 +8,21 @@
 # publishes it. It also pulls the other way, so a commit made on GitHub reaches
 # the library the ledger builds against.
 #
-#   tools/publish-mathlibplus.sh          sync both directions
-#   tools/publish-mathlibplus.sh --status what each side has, change nothing
+#   tools/publish-lemma-lib.sh          sync both directions
+#   tools/publish-lemma-lib.sh --status what each side has, change nothing
 #
 # Idempotent and safe to run on a timer: with nothing to do it is two fetches.
 set -euo pipefail
 
-CLONE=${MATHLIBPLUS_CLONE:-$HOME/projects/mathlibplus}
-GUEST=${MATHLIBPLUS_GUEST:-mathvm:/srv/mathlibplus}
+CLONE=${LEMMA_LIB_CLONE:-$HOME/projects/LemmaLib}
+GUEST=${LEMMA_LIB_GUEST:-mathvm:/srv/lemma-lib}
 GUEST_HOST=${GUEST%%:*}
 GUEST_PATH=${GUEST#*:}
-BRANCH=${MATHLIBPLUS_BRANCH:-main}
+BRANCH=${LEMMA_LIB_BRANCH:-main}
 
 if [[ ! -d $CLONE/.git ]]; then
-  echo "cloning hara-seihun/mathlibplus into $CLONE"
-  git clone -q https://github.com/hara-seihun/mathlibplus.git "$CLONE"
+  echo "cloning hara-seihun/LemmaLib into $CLONE"
+  git clone -q https://github.com/hara-seihun/LemmaLib.git "$CLONE"
 fi
 cd "$CLONE"
 git remote get-url guest > /dev/null 2>&1 || git remote add guest "$GUEST"
@@ -35,6 +35,21 @@ git fetch -q origin "$BRANCH"
 git fetch -q guest "$BRANCH"
 origin=$(git rev-parse "origin/$BRANCH")
 guest=$(git rev-parse "guest/$BRANCH")
+
+fast_forward_local() {
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "$CLONE has local changes; refusing to move it" >&2
+    return 1
+  fi
+  git merge --ff-only -q "$1"
+}
+
+module_of() {
+  case $1 in
+    LemmaLib.lean) echo LemmaLib ;;
+    LemmaLib/*.lean) echo "${1%.lean}" | tr / . ;;
+  esac
+}
 
 status() {
   echo "origin/$BRANCH $(git log -1 --format='%h %s' "$origin")"
@@ -52,7 +67,8 @@ if [[ ${1:-} == --status ]]; then
 fi
 
 if [[ $origin == "$guest" ]]; then
-  echo "mathlibplus is in sync at ${origin:0:8}"
+  fast_forward_local "$origin"
+  echo "LemmaLib is in sync at ${origin:0:8}"
   exit 0
 fi
 
@@ -61,15 +77,30 @@ if git merge-base --is-ancestor "$origin" "$guest"; then
   git log --oneline "$origin..$guest"
   git push -q origin "$guest:refs/heads/$BRANCH"
   git fetch -q origin "$BRANCH"
-  echo "pushed to hara-seihun/mathlibplus"
+  fast_forward_local "$guest"
+  echo "pushed to hara-seihun/LemmaLib"
   exit 0
 fi
 
 if git merge-base --is-ancestor "$guest" "$origin"; then
-  echo "origin is ahead; fast-forwarding the guest's checkout"
-  ssh "$GUEST_HOST" "sudo -u math git -C '$GUEST_PATH' pull --ff-only -q"
+  echo "origin is ahead; updating the guest checkout"
+  changed=$(git diff --name-only "$guest..$origin")
+  if grep -Eq '^(LemmaLib(/.*)?\.lean|lakefile\.toml|lake-manifest\.json|lean-toolchain)$' <<< "$changed"; then
+    ssh "$GUEST_HOST" "sudo /srv/lemma-dev/tools/update-lemma-lib"
+    mapfile -t deleted < <(
+      git diff --name-only --diff-filter=D "$guest..$origin" -- LemmaLib.lean LemmaLib \
+        | while read -r path; do module_of "$path"; done
+    )
+    index_modules=(LemmaLib "${deleted[@]}")
+    printf -v index_args ' %q' "${index_modules[@]}"
+    ssh "$GUEST_HOST" \
+      "sudo -u math env HOME=/var/lib/math-research ELAN_HOME=/var/lib/math-research/.elan PATH=/var/lib/math-research/.elan/bin:/run/current-system/sw/bin /srv/math-research/tools/index-decls.sh$index_args && sudo -u postgres psql -v ON_ERROR_STOP=1 -d math -c \"delete from lean_check where source like '%import LemmaLib%'\""
+  else
+    ssh "$GUEST_HOST" "sudo -u math git -C '$GUEST_PATH' pull --ff-only -q"
+  fi
+  ssh "$GUEST_HOST" "sudo -u math git -C '$GUEST_PATH' config core.sharedRepository world"
+  fast_forward_local "$origin"
   echo "guest now at $(ssh "$GUEST_HOST" "sudo -u math git -C '$GUEST_PATH' rev-parse --short HEAD")"
-  echo "note: modules changed by those commits are stale in the ledger's build tree and index."
   exit 0
 fi
 

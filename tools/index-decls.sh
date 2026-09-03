@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Rebuild the declaration index behind `search_decls`, on the guest, as `math`.
 #
-#   tools/index-decls.sh                   everything importable: the pinned
-#                                          toolchain, Mathlib and its packages,
-#                                          and every built MathlibPlus module
-#   tools/index-decls.sh MathlibPlus.A …   just these modules, which is what the
-#                                          patch publisher runs after installing
-#                                          new oleans
+#   tools/index-decls.sh                 everything importable: the pinned
+#                                        toolchain, Mathlib, and LemmaLib
+#   tools/index-decls.sh LemmaLib.A …    just these modules, which the patch
+#                                        publisher runs after installing oleans
 #
 # lean/DumpDecls.lean does the extraction: it imports already-built oleans and
 # writes one JSON object per declaration. Nothing is elaborated, so the cost is
@@ -18,7 +16,7 @@ cd "$(dirname "$0")/.."
 
 WORK=${DECL_INDEX_DIR:-/var/lib/math-research/decl-index}
 LEAN_DIR=${LEAN_DIR:-/srv/math-research/lean}
-PLUS_BUILD=${MATHLIBPLUS_BUILD:-/srv/mathlibplus/.lake/build/lib/lean}
+LEMMA_LIB_BUILD=${LEMMA_LIB_BUILD:-/srv/lemma-lib/.lake/build/lib/lean}
 BATCH=${DECL_INDEX_BATCH:-200}
 # One at a time by default: a batch's memory is its transitive import closure,
 # which for anything touching Mathlib is most of Mathlib, and two of those at
@@ -27,17 +25,11 @@ JOBS=${DECL_INDEX_JOBS:-1}
 # Metaprogramming and build-tool internals are importable but are not what
 # anyone is searching for when they are looking for a lemma.
 SKIP=${DECL_INDEX_SKIP:-'^(Lean|Lake|Cli|ImportGraph|LeanSearchClient|ProofWidgets|REPL|Repl)\.'}
-# MathlibPlus keeps modules the kernel has not accepted in the tree, quarantined
-# out of its build set and listed here. Their oleans stay on LEAN_PATH so a
-# repair can build against them, but the index must not offer their
-# declarations as things this ledger has verified.
-UNVERIFIED=${MATHLIBPLUS_UNVERIFIED:-/srv/mathlibplus/unverified.txt}
-
 mkdir -p "$WORK"
 cp lean/DumpDecls.lean "$WORK/DumpDecls.lean"
 
 eval "$(sed -n 's/^LEAN_PATH=/export LEAN_PATH=/p' "$LEAN_DIR/.env-cache")"
-export LEAN_PATH="$LEAN_PATH:$PLUS_BUILD"
+export LEAN_PATH="$LEAN_PATH:$LEMMA_LIB_BUILD"
 export ELAN_HOME=${ELAN_HOME:-/var/lib/math-research/.elan}
 export ELAN_TOOLCHAIN=${ELAN_TOOLCHAIN:-$(cat "$LEAN_DIR/lean-toolchain")}
 export PATH=/run/current-system/sw/bin:$PATH
@@ -46,9 +38,8 @@ export PATH=/run/current-system/sw/bin:$PATH
 # patch that landed while it was still pretty-printing the corpus.
 RUN_STARTED=${DECL_INDEX_STARTED:-$(psql -d math -Atqc 'select clock_timestamp()')}
 
-# A batch that cannot be imported is bisected in fresh processes: MathlibPlus
-# declares the same name in more than one module, and two of those together are
-# a hard import error that says nothing about which pair is at fault.
+# A batch that cannot be imported is bisected in fresh processes so one bad
+# module does not hide every other declaration in the batch.
 dump() { # <modules-file> <out.jsonl>, leaves the .jsonl only on success
   local mods=$1 out=$2 count
   if lean --run "$WORK/DumpDecls.lean" "$mods" "$out.part" 2>> "$mods.log"; then
@@ -117,37 +108,38 @@ SQL
   bun run tools/normalize-lean.ts
 }
 
-# The quarantine, as a sorted module list the passes below can subtract.
-quarantined() {
-  [[ -f $UNVERIFIED ]] || return 0
-  grep -v '^[[:space:]]*#' "$UNVERIFIED" | awk 'NF {print $1}' | sort -u
-}
-QUARANTINE=$WORK/quarantined.txt
-mkdir -p "$WORK"
-quarantined > "$QUARANTINE"
+if [[ $# -gt 0 ]]; then
+  rm -f "$WORK"/incremental-mods.txt* "$WORK"/incremental-missing.txt "$WORK"/incremental.jsonl*
+  printf '%s\n' "$@" | sort -u > "$WORK/incremental-mods.txt"
+  : > "$WORK/incremental-present.txt"
+  : > "$WORK/incremental-missing.txt"
+  while read -r module; do
+    rel=${module//.//}.olean
+    found=false
+    for dir in ${LEAN_PATH//:/ }; do
+      if [[ -f $dir/$rel ]]; then found=true; break; fi
+    done
+    if $found; then
+      echo "$module" >> "$WORK/incremental-present.txt"
+    else
+      echo "$module" >> "$WORK/incremental-missing.txt"
+    fi
+  done < "$WORK/incremental-mods.txt"
 
-# Quarantined modules may have been indexed before they were quarantined, or
-# may have just lost their place in the library, so the rows go either way.
-if [[ -s $QUARANTINE ]]; then
-  psql -q -d math -v ON_ERROR_STOP=1 <<SQL
-create temp table quarantined (module text);
-\\copy quarantined from '$QUARANTINE'
-delete from lean_decl d using quarantined q where d.module = q.module;
+  if [[ -s $WORK/incremental-missing.txt ]]; then
+    psql -q -d math -v ON_ERROR_STOP=1 <<SQL
+create temp table missing_module (module text);
+\\copy missing_module from '$WORK/incremental-missing.txt'
+delete from lean_decl d using missing_module m where d.module = m.module;
 insert into lean_decl_module (module, indexed_at)
-select module, now() from quarantined
+select module, now() from missing_module
 on conflict (module) do update set indexed_at = excluded.indexed_at;
 SQL
-fi
-
-if [[ $# -gt 0 ]]; then
-  rm -f "$WORK"/incremental-mods.txt* "$WORK"/incremental.jsonl*
-  printf '%s\n' "$@" | sort -u | comm -23 - "$QUARANTINE" > "$WORK/incremental-mods.txt"
-  if [[ ! -s $WORK/incremental-mods.txt ]]; then
-    echo "nothing to index: every module named is quarantined"
-    exit 0
   fi
-  dump "$WORK/incremental-mods.txt" "$WORK/incremental.jsonl"
-  load "$WORK"/incremental.jsonl*
+  if [[ -s $WORK/incremental-present.txt ]]; then
+    dump "$WORK/incremental-present.txt" "$WORK/incremental.jsonl"
+    load "$WORK"/incremental.jsonl*
+  fi
   exit 0
 fi
 
@@ -158,9 +150,8 @@ rm -rf "$WORK/batches"
 mkdir -p "$WORK/batches"
 for dir in ${LEAN_PATH//:/ }; do
   [[ -d $dir ]] && (cd "$dir" && find . -name '*.olean' -printf '%P\n')
-done | sed 's/\.olean$//; s|/|.|g' | grep -Ev "$SKIP" | sort -u \
-  | comm -23 - "$QUARANTINE" > "$WORK/modules.txt"
-echo "$(wc -l < "$WORK/modules.txt") importable modules, $(wc -l < "$QUARANTINE") quarantined"
+done | sed 's/\.olean$//; s|/|.|g' | grep -Ev "$SKIP" | sort -u > "$WORK/modules.txt"
+echo "$(wc -l < "$WORK/modules.txt") importable modules"
 
 split -l "$BATCH" -d -a 4 "$WORK/modules.txt" "$WORK/batches/batch."
 (cd "$WORK/batches" && ls | grep '^batch\.[0-9]*$') \

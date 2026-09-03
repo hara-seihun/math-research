@@ -17,8 +17,8 @@
  * it commits, so a patch reviewed against a base that has since moved is
  * blocked with its reason rather than applied to a tree it was never tested
  * against. Nothing here can push: the guest holds no GitHub credential, so
- * publication lands as a local commit and the host's tools/publish-mathlibplus.sh
- * is what carries it to the public repository.
+ * publication lands as a local commit and the host's tools/publish-lemma-lib.sh
+ * carries it to the public repository.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, cpSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -34,9 +34,9 @@ import {
 } from "../src/patch.ts";
 import type { PatchDecl, PatchJob, PatchModule, PatchResult } from "./patch-job.ts";
 
-const REPO_DIR = process.env.PATCH_REPO_DIR ?? "/srv/mathlibplus";
-/** Modules of this library are `<LIB>/<path>.lean` under the repository root. */
-const LIB = process.env.PATCH_LIB ?? "MathlibPlus";
+const REPO_DIR = process.env.PATCH_REPO_DIR ?? "/srv/lemma-lib";
+/** Modules are `<LIB>/<path>.lean`, with `<LIB>.lean` as the umbrella. */
+const LIB = process.env.PATCH_LIB ?? "LemmaLib";
 const BUILD_LIB = process.env.PATCH_BUILD_LIB ?? join(REPO_DIR, ".lake/build/lib/lean");
 const STATE_DIR = process.env.PATCH_STATE_DIR ?? "/var/lib/math-research/patch-work";
 const SPOOL = process.env.SPOOL_DIR ?? "/var/lib/lean-spool";
@@ -76,10 +76,12 @@ export async function headCommit(): Promise<string | null> {
   return rev.code === 0 ? rev.stdout.trim() : null;
 }
 
-const moduleOf = (path: string): string | null =>
-  path.startsWith(`${LIB}/`) && path.endsWith(".lean")
+const moduleOf = (path: string): string | null => {
+  if (path === `${LIB}.lean`) return LIB;
+  return path.startsWith(`${LIB}/`) && path.endsWith(".lean")
     ? path.slice(0, -".lean".length).replaceAll("/", ".")
     : null;
+};
 
 const pathOf = (module: string) => `${module.replaceAll(".", "/")}.lean`;
 
@@ -207,17 +209,11 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
   const changed = new Set<string>();
   const isNew = new Set<string>();
   for (const f of files) {
-    // The library has no umbrella and cannot have one: declaration names are
-    // duplicated across the tree, so a module importing all of it can never
-    // elaborate. Every module is its own root instead.
-    if (f.path === `${LIB}.lean` && !f.status.startsWith("D")) {
+    if (f.path === `${LIB}.lean` && f.status.startsWith("D")) {
       return {
         ok: false,
         outcome: "failed",
-        detail: {
-          base_commit: base,
-          reason: `${LIB}.lean is an umbrella module, which this library cannot have: the same declaration name appears in more than one module, so no single environment can hold them all. Every module is a root of its own.`,
-        },
+        detail: { base_commit: base, reason: `${LIB}.lean is the library umbrella and cannot be deleted` },
       };
     }
     const target = moduleOf(f.path);
@@ -237,12 +233,15 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
   // that leaves a dangling import fails here rather than in someone's session.
   const importsOf = new Map<string, string[]>();
   const importers = new Map<string, string[]>();
-  const listing = await git(["grep", "--cached", "-e", `^import ${LIB}`, "--", `${LIB}/`], { cwd: dir });
+  const listing = await git(
+    ["grep", "--cached", "-E", "-e", `^(public |private )?import ${LIB}`, "--", `${LIB}/`, `${LIB}.lean`],
+    { cwd: dir },
+  );
   for (const line of listing.stdout.split("\n")) {
     if (!line) continue;
     const sep = line.indexOf(":");
     const self = moduleOf(line.slice(0, sep));
-    const imported = line.slice(sep + 1).replace(/^import\s+/, "").trim();
+    const imported = line.slice(sep + 1).replace(/^(public |private )?import\s+/, "").trim();
     if (!self || !imported) continue;
     importsOf.set(self, [...(importsOf.get(self) ?? []), imported]);
     importers.set(imported, [...(importers.get(imported) ?? []), self]);
@@ -297,13 +296,17 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
   };
   for (const module of rebuild) visit(module);
 
-  // The library's own build is green, but the tree also carries a quarantine:
-  // modules the kernel has not accepted, listed in unverified.txt. A patch may
-  // touch one, and repairing it is exactly the patch worth writing, so those are
-  // built optionally: still failing leaves it quarantined rather than
-  // condemning the patch, and succeeding puts it back in the library when the
-  // patch is published.
-  const alreadyBroken = new Set(order.filter((module) => !builtAtBase(module) && !isNew.has(module)));
+  const unavailable = order.filter((module) => !builtAtBase(module) && !isNew.has(module));
+  if (unavailable.length > 0) {
+    return {
+      ok: false,
+      outcome: "inconclusive",
+      detail: {
+        base_commit: base,
+        reason: `the installed LemmaLib build is missing ${unavailable[0]}; refresh the library before checking patches`,
+      },
+    };
+  }
 
   const src = join(dir, "src-job");
   rmSync(src, { recursive: true, force: true });
@@ -324,7 +327,6 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
       module,
       path: rel,
       changed: changed.has(module),
-      optional: alreadyBroken.has(module),
       requires: (importsOf.get(module) ?? []).filter((dep) => rebuild.has(dep)),
     });
   }
@@ -338,7 +340,6 @@ async function prepare(id: string, base: string, diff: string): Promise<Prepared
       changed_modules: [...changed],
       deleted_modules: [...deleted],
       rebuilt_modules: order.filter((m) => !changed.has(m)),
-      already_broken: [...alreadyBroken],
     },
   };
 }
@@ -424,7 +425,6 @@ export async function collectPatches(inflight: Map<string, number>) {
       const detail: PatchDetail = {
         ...(existing?.detail ?? {}),
         built: parsed.built,
-        still_broken: parsed.still_broken?.length ? parsed.still_broken : undefined,
         elapsed_ms: parsed.elapsed_ms,
         decl_summary: declSummary(parsed.decls),
         foreign_axioms: foreignAxioms(parsed.decls),
@@ -443,9 +443,7 @@ export async function collectPatches(inflight: Map<string, number>) {
       } else if (parsed.ok && parsed.built.length === 0) {
         await resolvePatchDetail(id, "inconclusive", {
           ...detail,
-          reason: `nothing in this patch could be built: ${
-            (parsed.still_broken ?? []).join(", ") || "no module was compiled"
-          }, which does not build at this commit either, so the patch verified nothing`,
+          reason: "the patch changed no library module, so the kernel verified nothing",
         });
       } else if (parsed.ok) {
         rmSync(oleanDir(id), { recursive: true, force: true });
@@ -503,16 +501,11 @@ export async function judgePatches() {
       deleted_modules: detail.deleted_modules,
       rebuilt_modules: detail.rebuilt_modules?.length,
       built: detail.built?.length,
-      still_broken: detail.still_broken,
       decl_summary: detail.decl_summary,
       errors: detail.errors,
       note:
         row.outcome === "passed"
-          ? `applies to the library, and every module it touches plus everything importing them builds against the pinned Mathlib${
-              detail.still_broken?.length
-                ? `. ${detail.still_broken.join(", ")} does not build here, but did not build before the patch either, so it is not held against it`
-                : ""
-            }. Publication happens if review promotes it to T2.`
+          ? "applies to LemmaLib, and every module it touches plus everything importing them builds against the pinned Mathlib. Publication happens if review promotes it to T2."
           : undefined,
     });
   }
@@ -537,7 +530,8 @@ export async function revalidatePatches() {
       and coalesce(v.detail->>'base_commit', '') <> ${head}
       and coalesce(c.metadata->>'base_commit', '') = ''
       and not exists (select 1 from patch_publication p
-                      where p.contribution_id = c.id and p.state = 'published')
+                      where p.contribution_id = c.id
+                        and (p.state = 'published' or p.repo <> ${PATCH_REPO}))
     limit 5`;
   for (const row of rows) {
     const diff = extractDiff(row.content);
@@ -614,25 +608,6 @@ async function reindexDecls(modules: string[]) {
 }
 
 /**
- * Put the generated build set back in step with the tree, and stage it.
- *
- * `scripts/build_set.py` owns lakefile.toml, unverified.txt, and the marker
- * comment at the top of every unverified module. A repository without that
- * script is one that does not curate a build set, which is not a publication
- * failure.
- */
-async function refreshBuildSet(verified: string[]): Promise<{ ok: true } | { ok: false; error: string }> {
-  const script = join(REPO_DIR, "scripts", "build_set.py");
-  if (!existsSync(script)) return { ok: true };
-  const generated = Bun.spawnSync(["python3", script, "--verified", ...verified], { cwd: REPO_DIR });
-  if (generated.exitCode !== 0) {
-    return { ok: false, error: `${generated.stdout.toString()}${generated.stderr.toString()}` };
-  }
-  const staged = await git(["add", "-A"]);
-  return staged.code === 0 ? { ok: true } : { ok: false, error: staged.stderr };
-}
-
-/**
  * Publish everything review has promoted. Each patch is re-verified against
  * the current head first: `patch_check` is keyed by (repo, base, diff), so a
  * patch whose base is still head is a cache hit and costs nothing, and one
@@ -657,6 +632,7 @@ export async function publishPatches() {
     left join identity i on i.id = c.identity_id
     left join patch_publication p on p.contribution_id = c.id
     where c.kind = 'patch' and c.status = 'active' and c.tier >= 2
+      and (p.repo is null or p.repo = ${PATCH_REPO})
       and (p.state is null or p.state = 'queued'
            or (p.state = 'blocked' and (p.updated_at < now() - interval '10 minutes'
                                         or p.detail->>'head_commit' is distinct from ${head})))
@@ -680,7 +656,7 @@ export async function publishPatches() {
     const paths = moved.stdout.split("\n").filter(Boolean);
     const affectsLean = paths.some((path) =>
       path.endsWith(".lean") ||
-      ["lakefile.toml", "lake-manifest.json", "lean-toolchain", "scripts/build_set.py"].includes(path),
+      ["lakefile.toml", "lake-manifest.json", "lean-toolchain"].includes(path),
     );
     if (moved.code === 0 && !affectsLean) checkId = prior.id;
   }
@@ -736,21 +712,6 @@ export async function publishPatches() {
   if (applied.code !== 0) {
     await git(["reset", "--hard", head]);
     await block(`the patch no longer applies to ${shortId(head)}`, { conflict: `${applied.stdout}${applied.stderr}`.slice(-2000) });
-    return;
-  }
-
-  // The library's build set is generated, not written: lakefile.toml names
-  // every module the kernel has accepted, and a patch that adds a module or
-  // repairs a quarantined one changes that list. Regenerating it inside the
-  // same commit is what keeps `lake build` green, and what keeps a repaired
-  // module from staying quarantined after the build that accepted it.
-  const built = (check.detail?.changed_modules ?? []).filter(
-    (module) => !(check.detail?.still_broken ?? []).includes(module),
-  );
-  const refreshed = await refreshBuildSet(built);
-  if (!refreshed.ok) {
-    await git(["reset", "--hard", head]);
-    await block("the library's build set could not be regenerated", { conflict: refreshed.error.slice(-2000) });
     return;
   }
 

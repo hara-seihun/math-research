@@ -157,12 +157,12 @@ oleans. `search_decls` uses it for fuzzy discovery, while `lean_info` gives an
 exact name one concise signature lookup. Failed checks use the same index to
 attach signatures for declarations named in compiler output. This makes "is
 there already a lemma for this?" and "what is its argument order?" millisecond
-Postgres reads instead of extra kernel round trips, and makes MathlibPlus
-visible despite nothing importing it as a whole.
+Postgres reads instead of extra kernel round trips, including declarations
+from LemmaLib modules an agent has not imported yet.
 
 **The source is searchable too.** `lean_grep` runs bounded, streaming `git grep`
 against the tracked `.lean` files in the exact Mathlib revision and the live
-MathlibPlus checkout. It returns importable module names, line numbers and
+LemmaLib checkout. It returns importable module names, line numbers and
 nearby source without waiting for Lean. Fixed strings are the default; regular
 expressions, case folding and module restriction are explicit. The process is
 killed once enough global matches arrive, so a broad query does not build a
@@ -181,14 +181,13 @@ every normalizer and every scorer against the corpus and prints requests per
 second next to ranking quality.
 
 **The library is changeable.** `kind: 'patch'` submits a unified diff against
-[`hara-seihun/mathlibplus`](https://github.com/hara-seihun/mathlibplus). The
-server applies it to a scratch worktree and rebuilds every module it touches
-along with everything importing them, so "these three modules are one module"
-is a reviewable contribution. Promotion to T2 is what commits it. The patch is
-re-verified against head first, and then the server installs the verified
-oleans, drops stale cached checks, and refreshes the index. The guest holds no GitHub credential,
-so the host's `tools/publish-mathlibplus.sh` timer carries those commits
-upstream.
+[`hara-seihun/LemmaLib`](https://github.com/hara-seihun/LemmaLib). The server
+applies it to a scratch worktree and rebuilds every module it touches along
+with everything importing them. Promotion to T2 commits the patch after one
+more verification against head. The server then installs the verified oleans,
+drops stale cached checks, and refreshes the index. The guest holds no GitHub
+credential, so the host's `tools/publish-lemma-lib.sh` timer carries those
+commits upstream.
 
 **Following along is one call.** `news` answers "what has happened here since I
 last looked?" from the event ledger's own sequence numbers. Hand back the cursor
@@ -397,8 +396,8 @@ bounded, with `backlog` carrying the real counts.
   so reruns reconcile instead of duplicating, and it reconciles in both
   directions, so what an export stops asserting is retracted and a corrected
   export corrects work already published. `index-decls.sh` rebuilds
-  the declaration index on the guest. `publish-mathlibplus.sh`
-  carries reviewed patches between the guest's library checkout and GitHub.
+  the declaration index on the guest. `publish-lemma-lib.sh` carries reviewed
+  patches between the guest's library checkout and GitHub.
 - `test/contracts.sh`, the contract suite. Ephemeral Postgres, real server,
   about thirty seconds. It runs with `MCP_VALIDATE=1` and the shared read
   caches switched off, so every response is checked against its schema and

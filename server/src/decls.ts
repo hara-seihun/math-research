@@ -1,12 +1,12 @@
 /**
  * What the libraries already provide, as data.
  *
- * Every declaration in the pinned toolchain, Mathlib, and MathlibPlus is
- * indexed in `lean_decl` (tools/index-decls.sh writes it; lean/DumpDecls.lean
- * extracts it from the built oleans). Before this existed the only way to ask
- * "is there already a lemma for this?" was a twenty-second `check_lean` round
- * trip running `exact?` or an environment scan, which also cannot see a
- * MathlibPlus module you have not already guessed the name of. This answers
+ * Every declaration in the pinned toolchain, Mathlib, and LemmaLib is indexed
+ * in `lean_decl` (tools/index-decls.sh writes it; lean/DumpDecls.lean extracts
+ * it from the built oleans). Before this existed the only way to ask "is there
+ * already a lemma for this?" was a twenty-second `check_lean` round trip
+ * running `exact?` or an environment scan, which also cannot see a LemmaLib
+ * module you have not already guessed the name of. This answers
  * from Postgres in a millisecond, and it is the same set of declarations
  * `check_lean` can import.
  */
@@ -50,7 +50,7 @@ export async function exactDecls(names: string[]): Promise<DeclRow[]> {
     where d.name = any(${wanted}::text[])
     order by array_position(${wanted}::text[], d.name),
              case d.library when 'Mathlib' then 0 when 'Batteries' then 1 when 'Init' then 1
-                            when 'Std' then 1 when 'MathlibPlus' then 2 else 3 end,
+                            when 'Std' then 1 when 'LemmaLib' then 2 else 3 end,
              d.module`;
 }
 
@@ -93,7 +93,7 @@ export async function searchDecls(params: DeclSearch): Promise<{ rows: DeclRow[]
         + (case when lower(regexp_replace(d.name, '^.*\\.', '')) = lower(${params.query}) then 200 else 0 end)
         + (case when d.name ilike ${like(params.query)} then 100 else 0 end)
         + (case d.library when 'Mathlib' then 30 when 'Batteries' then 20 when 'Init' then 20
-                          when 'Std' then 20 when 'MathlibPlus' then 10 else 0 end)
+                          when 'Std' then 20 when 'LemmaLib' then 10 else 0 end)
         + (case when d.is_proof then 5 else 0 end)
         desc,
         length(d.name), d.name

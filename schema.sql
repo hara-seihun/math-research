@@ -588,9 +588,8 @@ create index if not exists lean_check_pending_idx on lean_check (created_at) whe
 -- trip. Written by tools/index-decls.sh (lean/DumpDecls.lean imports the built
 -- oleans and reports each declaration's module, pretty-printed type, and
 -- whether that type is a proposition); read by the `search_decls` tool and the
--- q_decls view. A library with duplicated declaration names across modules,
--- which MathlibPlus has, and which is why it has no umbrella import, is why the
--- key is (module, name) rather than the name alone.
+-- q_decls view. The key is (module, name), since independently importable
+-- modules and libraries may use the same declaration name.
 create table if not exists lean_decl (
   module     text not null,
   name       text not null,

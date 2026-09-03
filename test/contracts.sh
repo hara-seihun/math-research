@@ -79,28 +79,28 @@ psql -q -v ON_ERROR_STOP=1 -h "$WORK" -d math -f schema.sql
 psql -q -v ON_ERROR_STOP=1 -h "$WORK" -d math -f schema.sql
 
 # A patch is a change to the Lean library, so the pipeline needs a library to
-# change. This stands in for /srv/mathlibplus: three modules, one importing
-# another, which is enough to exercise applying, rebuild ordering, dangling
-# imports, and the commit a promotion produces.
-export PATCH_REPO_DIR="$WORK/mathlibplus" PATCH_STATE_DIR="$WORK/patch-work"
-export PATCH_BUILD_LIB="$WORK/mathlibplus/.lake/build/lib/lean"
-mkdir -p "$PATCH_REPO_DIR/MathlibPlus" "$PATCH_BUILD_LIB"
-printf 'theorem alpha : 1 + 1 = 2 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Alpha.lean"
-printf 'import MathlibPlus.Alpha\ntheorem beta : 2 + 2 = 4 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Beta.lean"
-printf 'theorem gamma : 3 = 3 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Gamma.lean"
-printf 'theorem delta : 4 = 4 := rfl\n' > "$PATCH_REPO_DIR/MathlibPlus/Delta.lean"
-printf 'theorem broken : 4 = 5 := rfl\n\n' > "$PATCH_REPO_DIR/MathlibPlus/Broken.lean"
-printf '.lake/\n' > "$PATCH_REPO_DIR/.gitignore"   # as in the real repository: build output is not source
-# The build tree says what currently builds. Part of the real library does not:
-# the modules quarantined in unverified.txt are in the tree with no olean, and a
-# module with no olean is exactly that. Broken has none.
-mkdir -p "$PATCH_BUILD_LIB/MathlibPlus"
-touch "$PATCH_BUILD_LIB/MathlibPlus/Alpha.olean" "$PATCH_BUILD_LIB/MathlibPlus/Beta.olean" "$PATCH_BUILD_LIB/MathlibPlus/Gamma.olean" "$PATCH_BUILD_LIB/MathlibPlus/Delta.olean"
+# change. This stands in for /srv/lemma-lib: an umbrella and four modules, one
+# importing another. That is enough to exercise applying, rebuild ordering,
+# dangling imports, and the commit a promotion produces.
+export PATCH_REPO_DIR="$WORK/lemma-lib" PATCH_STATE_DIR="$WORK/patch-work"
+export PATCH_BUILD_LIB="$WORK/lemma-lib/.lake/build/lib/lean"
+mkdir -p "$PATCH_REPO_DIR/LemmaLib" "$PATCH_BUILD_LIB"
+printf 'theorem alpha : 1 + 1 = 2 := rfl\n' > "$PATCH_REPO_DIR/LemmaLib/Alpha.lean"
+printf 'public import LemmaLib.Alpha\ntheorem beta : 2 + 2 = 4 := rfl\n' > "$PATCH_REPO_DIR/LemmaLib/Beta.lean"
+printf 'theorem gamma : 3 = 3 := rfl\n' > "$PATCH_REPO_DIR/LemmaLib/Gamma.lean"
+printf 'theorem delta : 4 = 4 := rfl\n' > "$PATCH_REPO_DIR/LemmaLib/Delta.lean"
+printf 'theorem available_in_source_only : True := trivial\n\n' > "$PATCH_REPO_DIR/LemmaLib/MissingBuild.lean"
+printf 'public import LemmaLib.Alpha\npublic import LemmaLib.Beta\npublic import LemmaLib.Gamma\npublic import LemmaLib.Delta\n' > "$PATCH_REPO_DIR/LemmaLib.lean"
+printf '.lake/\n' > "$PATCH_REPO_DIR/.gitignore"
+# MissingBuild has no olean. It simulates a stale installed build, which the
+# verifier must report rather than attempting a misleading partial check.
+mkdir -p "$PATCH_BUILD_LIB/LemmaLib"
+touch "$PATCH_BUILD_LIB/LemmaLib.olean" "$PATCH_BUILD_LIB/LemmaLib/Alpha.olean" "$PATCH_BUILD_LIB/LemmaLib/Beta.olean" "$PATCH_BUILD_LIB/LemmaLib/Gamma.olean" "$PATCH_BUILD_LIB/LemmaLib/Delta.olean"
 git -C "$PATCH_REPO_DIR" init -q -b main
 git -C "$PATCH_REPO_DIR" add -A
 git -C "$PATCH_REPO_DIR" -c user.name=contracts -c user.email=c@example.invalid commit -qm "library"
 
-export LEAN_GREP_MATHLIB_ROOT="$WORK/grep-mathlib" LEAN_GREP_MATHLIBPLUS_ROOT="$PATCH_REPO_DIR"
+export LEAN_GREP_MATHLIB_ROOT="$WORK/grep-mathlib" LEAN_GREP_LEMMA_LIB_ROOT="$PATCH_REPO_DIR"
 mkdir -p "$LEAN_GREP_MATHLIB_ROOT/Mathlib/Data/Nat"
 printf 'namespace Nat\n\nprotected theorem ModEq.mul_left'\'' (c : ℕ) : True := by trivial\n\nend Nat\n' \
   > "$LEAN_GREP_MATHLIB_ROOT/Mathlib/Data/Nat/ModEq.lean"
@@ -2551,6 +2551,9 @@ GREP=$(call lean_grep '{"query":"mul_left'\''","library":"Mathlib","module":"Mat
   || fail "lean_grep did not return the matching source line: $GREP"
 [[ $(echo "$GREP" | field '.matches[0].before[0].line') == 2 ]] \
   || fail "lean_grep did not return source context: $GREP"
+LEMMA_GREP=$(call lean_grep '{"query":"theorem alpha","library":"LemmaLib","module":"LemmaLib.Alpha","context":0}')
+[[ $(echo "$LEMMA_GREP" | field '.matches[0].module') == "LemmaLib.Alpha" ]] \
+  || fail "lean_grep did not search LemmaLib: $LEMMA_GREP"
 
 # Contract: the declaration index is what "is there already a lemma for this?"
 # reads. Terms are ANDed across name and statement, the filters restrict, and
@@ -2560,7 +2563,7 @@ psql -q -h "$WORK" -d math -c "insert into lean_decl (module, name, library, kin
   ('Mathlib.Order.Bounds.Basic', 'csSup_le', 'Mathlib', 'theorem', 's.Nonempty → (∀ b ∈ s, b ≤ a) → sSup s ≤ a', true),
   ('Mathlib.Order.Bounds.Basic', 'csSup_le_iff', 'Mathlib', 'theorem', 'BddAbove s → s.Nonempty → (sSup s ≤ a ↔ ∀ b ∈ s, b ≤ a)', true),
   ('Mathlib.Data.Nat.ModEq', 'Nat.ModEq.mul_left''', 'Mathlib', 'theorem', '∀ {n a b : ℕ} (c : ℕ), a ≡ b [MOD n] → c * a ≡ c * b [MOD c * n]', true),
-  ('MathlibPlus.GroupTheory.Claim1', 'plus_widget', 'MathlibPlus', 'def', 'Nat → Nat', false)"
+  ('LemmaLib.GroupTheory.Claim1', 'plus_widget', 'LemmaLib', 'def', 'Nat → Nat', false)"
 decls() { call search_decls "$1" | field '.results'; }
 decls '{"query":"csSup_le"}' | python3 -c 'import sys,json; r=json.load(sys.stdin); assert r[0]["name"]=="csSup_le" and r[0]["module"]=="Mathlib.Order.Bounds.Basic", r' \
   || fail "search_decls did not rank the exact name first"
@@ -2570,11 +2573,11 @@ decls '{"query":"csSup?le"}' | python3 -c 'import sys,json; assert json.load(sys
   || fail "search_decls treated a literal term as a pattern"
 decls '{"query":"plus","library":"Mathlib"}' | python3 -c 'import sys,json; assert json.load(sys.stdin)==[]' \
   || fail "search_decls ignored the library filter"
-decls '{"query":"widget","module":"MathlibPlus.GroupTheory"}' | python3 -c 'import sys,json; assert len(json.load(sys.stdin))==1' \
+decls '{"query":"widget","module":"LemmaLib.GroupTheory"}' | python3 -c 'import sys,json; assert len(json.load(sys.stdin))==1' \
   || fail "search_decls did not match a module subtree"
 decls '{"query":"widget","proofs_only":true}' | python3 -c 'import sys,json; assert json.load(sys.stdin)==[]' \
   || fail "proofs_only returned a definition"
-call search_decls '{}' | python3 -c 'import sys,json; d=json.load(sys.stdin); assert {i["library"] for i in d["index"]} == {"Mathlib","MathlibPlus"}, d' \
+call search_decls '{}' | python3 -c 'import sys,json; d=json.load(sys.stdin); assert {i["library"] for i in d["index"]} == {"Mathlib","LemmaLib"}, d' \
   || fail "search_decls did not report what is indexed"
 INFO=$(call lean_info '{"name":"#check @Nat.ModEq.mul_left'\''"}')
 [[ $(echo "$INFO" | field '.declarations[0].statement') == *"(c : ℕ)"* ]] \
@@ -2602,63 +2605,63 @@ INFO_ERROR=$(cat "$WORK/info-error.out")
 # something else and must not be swept in with them. The generated one is
 # Lean's own boilerplate and is classified out of every answer.
 psql -q -h "$WORK" -d math -c "insert into lean_decl (module, name, library, kind, statement, is_proof) values
-  ('MathlibPlus.Dup.A', 'MathlibPlus.Dup.A.sum_bound', 'MathlibPlus', 'theorem',
+  ('LemmaLib.Dup.A', 'LemmaLib.Dup.A.sum_bound', 'LemmaLib', 'theorem',
    '∀ {α : Type u_1} (s : Finset α) (f : α → ℝ) (n : ℝ), (∀ x ∈ s, f x ≤ n) → ∑ i ∈ s, f i ≤ s.card • n', true),
-  ('MathlibPlus.Dup.B', 'MathlibPlus.Dup.B.bounded_sum', 'MathlibPlus', 'theorem',
+  ('LemmaLib.Dup.B', 'LemmaLib.Dup.B.bounded_sum', 'LemmaLib', 'theorem',
    '∀ {β : Type u_7} (t : Finset β) (g : β → ℝ) (c : ℝ), (∀ y ∈ t, g y ≤ c) → ∑ j ∈ t, g j ≤ t.card • c', true),
-  ('MathlibPlus.Dup.C', 'MathlibPlus.Dup.C.other', 'MathlibPlus', 'theorem',
+  ('LemmaLib.Dup.C', 'LemmaLib.Dup.C.other', 'LemmaLib', 'theorem',
    '∀ (p q : Prop), p ∧ q → q ∧ p', true),
-  ('MathlibPlus.Dup.Defs', 'MathlibPlus.Dup.Defs.first', 'MathlibPlus', 'def', 'Nat → Nat', false),
-  ('MathlibPlus.Dup.Defs', 'MathlibPlus.Dup.Defs.second', 'MathlibPlus', 'def', 'Nat → Nat', false),
+  ('LemmaLib.Dup.Defs', 'LemmaLib.Dup.Defs.first', 'LemmaLib', 'def', 'Nat → Nat', false),
+  ('LemmaLib.Dup.Defs', 'LemmaLib.Dup.Defs.second', 'LemmaLib', 'def', 'Nat → Nat', false),
   ('Mathlib.Finset.Sum', 'Mathlib.Finset.bounded_sum', 'Mathlib', 'theorem',
    '∀ {γ : Type u_3} (u : Finset γ) (h : γ → ℝ) (b : ℝ), (∀ z ∈ u, h z ≤ b) → ∑ k ∈ u, h k ≤ u.card • b', true),
-  ('MathlibPlus.Dup.Numerals', 'MathlibPlus.Dup.Numerals.seven_prime', 'MathlibPlus', 'theorem',
+  ('LemmaLib.Dup.Numerals', 'LemmaLib.Dup.Numerals.seven_prime', 'LemmaLib', 'theorem',
    'Fact (Nat.Prime 7)', true),
   ('Mathlib.Data.Nat.Prime', 'Mathlib.fact_prime_three', 'Mathlib', 'theorem',
    'Fact (Nat.Prime 3)', true),
-  ('MathlibPlus.Dup.A', 'MathlibPlus.Dup.A.Config.mk.injEq', 'MathlibPlus', 'theorem',
+  ('LemmaLib.Dup.A', 'LemmaLib.Dup.A.Config.mk.injEq', 'LemmaLib', 'theorem',
    '∀ {α : Type u_1} (s : Finset α) (f : α → ℝ) (n : ℝ), (∀ x ∈ s, f x ≤ n) → ∑ i ∈ s, f i ≤ s.card • n', true)"
 bun run tools/normalize-lean.ts > "$WORK/normalize.log" 2>&1 || fail "normalize-lean failed: $(tail -3 "$WORK/normalize.log")"
 
-call lean_similar '{"name":"MathlibPlus.Dup.A.sum_bound"}' \
-  | python3 -c 'import sys,json; d=json.load(sys.stdin); names={m["name"] for m in d["exact"]}; assert names=={"MathlibPlus.Dup.B.bounded_sum","Mathlib.Finset.bounded_sum"}, d' \
+call lean_similar '{"name":"LemmaLib.Dup.A.sum_bound"}' \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); names={m["name"] for m in d["exact"]}; assert names=={"LemmaLib.Dup.B.bounded_sum","Mathlib.Finset.bounded_sum"}, d' \
   || fail "lean_similar did not recognize renamed copies as the same statement"
 
 # The same question asked with source nobody has ever indexed, in a third set
 # of names: normalization happens on the way in, not only at index time.
 call lean_similar '{"source":"theorem entirely_different_name {γ : Type u_3} (u : Finset γ) (h : γ → ℝ) (b : ℝ) : (∀ z ∈ u, h z ≤ b) → ∑ k ∈ u, h k ≤ u.card • b"}' \
-  | python3 -c 'import sys,json; d=json.load(sys.stdin); assert {m["name"] for m in d["exact"]} == {"MathlibPlus.Dup.A.sum_bound","MathlibPlus.Dup.B.bounded_sum","Mathlib.Finset.bounded_sum"}, d' \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); assert {m["name"] for m in d["exact"]} == {"LemmaLib.Dup.A.sum_bound","LemmaLib.Dup.B.bounded_sum","Mathlib.Finset.bounded_sum"}, d' \
   || fail "lean_similar did not match pasted source against the indexed twins"
 
-call lean_similar '{"scan":true,"library":"MathlibPlus"}' \
+call lean_similar '{"scan":true,"library":"LemmaLib"}' \
   | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
 groups = [g for g in d["identical"] if len(g["members"]) > 1]
 names = [{m["name"] for m in g["members"]} for g in groups]
-assert {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum"} in names, d
-assert all("MathlibPlus.Dup.A.Config.mk.injEq" not in group for group in names), d
+assert {"LemmaLib.Dup.A.sum_bound", "LemmaLib.Dup.B.bounded_sum"} in names, d
+assert all("LemmaLib.Dup.A.Config.mk.injEq" not in group for group in names), d
 ' || fail "a scan did not group the duplicate pair, or swept in generated or unrelated declarations"
 
 # Exact-only cleanup scans are not the bounded NCD attention window: they walk
 # the complete normalized-hash index, can exclude same-typed definitions, and
-# can ask which MathlibPlus proofs should simply import Mathlib.
-call lean_similar '{"scan":true,"library":"MathlibPlus","proofs_only":true,"exact_only":true,"limit":1}' \
+# can ask which LemmaLib proofs should simply import Mathlib.
+call lean_similar '{"scan":true,"library":"LemmaLib","proofs_only":true,"exact_only":true,"limit":1}' \
   | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
 assert d["scanned"] == 4 and d["next_offset"] == 1, d
-assert {m["name"] for m in d["identical"][0]["members"]} == {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum"}, d
+assert {m["name"] for m in d["identical"][0]["members"]} == {"LemmaLib.Dup.A.sum_bound", "LemmaLib.Dup.B.bounded_sum"}, d
 assert all(m["is_proof"] for m in d["identical"][0]["members"]), d
 ' || fail "exact-only scan did not cover the full proof scope or page duplicate groups"
-call lean_similar '{"scan":true,"library":"MathlibPlus","against_library":"Mathlib","proofs_only":true,"exact_only":true}' \
+call lean_similar '{"scan":true,"library":"LemmaLib","against_library":"Mathlib","proofs_only":true,"exact_only":true}' \
   | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
 assert len(d["identical"]) == 1, d
 members = d["identical"][0]["members"]
-assert {m["library"] for m in members} == {"MathlibPlus", "Mathlib"}, d
-assert {m["name"] for m in members} == {"MathlibPlus.Dup.A.sum_bound", "MathlibPlus.Dup.B.bounded_sum", "Mathlib.Finset.bounded_sum"}, d
+assert {m["library"] for m in members} == {"LemmaLib", "Mathlib"}, d
+assert {m["name"] for m in members} == {"LemmaLib.Dup.A.sum_bound", "LemmaLib.Dup.B.bounded_sum", "Mathlib.Finset.bounded_sum"}, d
 assert all("prime" not in m["name"] for m in members), d
 ' || fail "cross-library scan missed a duplicate or treated different numerals as alpha-equivalent"
 
@@ -2670,9 +2673,9 @@ patch_submit() { # <title> <diff-content> -> contribution id
 }
 patch_verification() { psql -h "$WORK" -d math -tAc "select id from verification where contribution_id = '$1' and method = 'patch-build'"; }
 STALE=$(cat <<'EOF'
-diff --git a/MathlibPlus/Alpha.lean b/MathlibPlus/Alpha.lean
---- a/MathlibPlus/Alpha.lean
-+++ b/MathlibPlus/Alpha.lean
+diff --git a/LemmaLib/Alpha.lean b/LemmaLib/Alpha.lean
+--- a/LemmaLib/Alpha.lean
++++ b/LemmaLib/Alpha.lean
 @@ -1 +1,2 @@
 -theorem alpha : 9 = 9 := rfl
 +theorem alpha : 9 = 9 := rfl
@@ -2688,34 +2691,35 @@ psql -h "$WORK" -d math -tAc "select detail->>'reason' from verification where i
 
 # Contract: deleting a module something still imports is a broken library, and
 # it is caught before anything is compiled.
-ORPHAN=$(printf 'diff --git a/MathlibPlus/Alpha.lean b/MathlibPlus/Alpha.lean\ndeleted file mode 100644\n--- a/MathlibPlus/Alpha.lean\n+++ /dev/null\n@@ -1 +0,0 @@\n-theorem alpha : 1 + 1 = 2 := rfl\n')
+ORPHAN=$(printf 'diff --git a/LemmaLib/Alpha.lean b/LemmaLib/Alpha.lean\ndeleted file mode 100644\n--- a/LemmaLib/Alpha.lean\n+++ /dev/null\n@@ -1 +0,0 @@\n-theorem alpha : 1 + 1 = 2 := rfl\n')
 ORPHAN_V=$(patch_verification "$(patch_submit "delete a module others import" "$ORPHAN")")
 [[ $(await_verification "$ORPHAN_V") == failed ]] || fail "deleting an imported module was not refused"
 psql -h "$WORK" -d math -tAc "select detail->>'reason' from verification where id = $ORPHAN_V" | grep -q "still imports" \
   || fail "the dangling import was not explained"
 
-# A leaf deletion has no new Lean term to compile. The import graph and the
-# base olean are its proof obligation; requiring a positive build would make
-# deletion-only cleanup impossible.
-LEAF=$(printf 'diff --git a/MathlibPlus/Delta.lean b/MathlibPlus/Delta.lean\ndeleted file mode 100644\n--- a/MathlibPlus/Delta.lean\n+++ /dev/null\n@@ -1 +0,0 @@\n-theorem delta : 4 = 4 := rfl\n')
-LEAF_V=$(patch_verification "$(patch_submit "delete an unimported leaf" "$LEAF")")
-[[ $(await_verification "$LEAF_V") == passed ]] || fail "a verified leaf deletion was rejected for compiling nothing"
-
 # Contract: a patch that applies is compiled in dependency order, and a module
 # that merely imports what changed is rebuilt too.
 MERGE=$(cat <<'EOF'
-diff --git a/MathlibPlus/Alpha.lean b/MathlibPlus/Alpha.lean
---- a/MathlibPlus/Alpha.lean
-+++ b/MathlibPlus/Alpha.lean
+diff --git a/LemmaLib/Alpha.lean b/LemmaLib/Alpha.lean
+--- a/LemmaLib/Alpha.lean
++++ b/LemmaLib/Alpha.lean
 @@ -1 +1,2 @@
  theorem alpha : 1 + 1 = 2 := rfl
 +theorem gamma : 3 = 3 := rfl
-diff --git a/MathlibPlus/Gamma.lean b/MathlibPlus/Gamma.lean
+diff --git a/LemmaLib/Gamma.lean b/LemmaLib/Gamma.lean
 deleted file mode 100644
---- a/MathlibPlus/Gamma.lean
+--- a/LemmaLib/Gamma.lean
 +++ /dev/null
 @@ -1 +0,0 @@
 -theorem gamma : 3 = 3 := rfl
+diff --git a/LemmaLib.lean b/LemmaLib.lean
+--- a/LemmaLib.lean
++++ b/LemmaLib.lean
+@@ -1,4 +1,3 @@
+ public import LemmaLib.Alpha
+ public import LemmaLib.Beta
+-public import LemmaLib.Gamma
+ public import LemmaLib.Delta
 EOF
 )
 MERGE_ID=$(patch_submit "fold Gamma into Alpha" "$MERGE")
@@ -2725,23 +2729,26 @@ await_file "$SPOOL_DIR/in/patch-$CHECK_ID/job.json" || CHECK_ID=""
 [[ -n $CHECK_ID ]] || fail "an applying patch was never spooled to the runner"
 python3 -c 'import json,sys; j=json.load(open(sys.argv[1]));
 mods=[m["module"] for m in j["modules"]];
-assert mods == ["MathlibPlus.Alpha", "MathlibPlus.Beta"], mods
-assert j["deleted"] == ["MathlibPlus.Gamma"], j["deleted"]
-assert [m["changed"] for m in j["modules"]] == [True, False]
-assert [m["optional"] for m in j["modules"]] == [False, False], j["modules"]
-assert j["modules"][1]["requires"] == ["MathlibPlus.Alpha"], j["modules"]' "$SPOOL_DIR/in/patch-$CHECK_ID/job.json" \
+assert mods == ["LemmaLib.Alpha", "LemmaLib.Beta", "LemmaLib"], mods
+assert j["deleted"] == ["LemmaLib.Gamma"], j["deleted"]
+assert [m["changed"] for m in j["modules"]] == [True, False, True]
+assert all("optional" not in m for m in j["modules"]), j["modules"]
+assert j["modules"][1]["requires"] == ["LemmaLib.Alpha"], j["modules"]
+assert j["modules"][2]["requires"] == ["LemmaLib.Alpha", "LemmaLib.Beta"], j["modules"]' "$SPOOL_DIR/in/patch-$CHECK_ID/job.json" \
   || fail "the patch job was not the changed modules plus their importers, in build order"
-grep -q 'theorem gamma' "$SPOOL_DIR/in/patch-$CHECK_ID/src/MathlibPlus/Alpha.lean" || fail "the runner was handed unpatched sources"
+grep -q 'theorem gamma' "$SPOOL_DIR/in/patch-$CHECK_ID/src/LemmaLib/Alpha.lean" || fail "the runner was handed unpatched sources"
 
 # The runner is sandboxed and stands in here, exactly as for kernel checks. It
 # returns the oleans it built, because publication installs those rather than
 # compiling the library a second time.
 rm -rf "$SPOOL_DIR/in/patch-$CHECK_ID"
-mkdir -p "$SPOOL_DIR/out/patch-$CHECK_ID.staging/lib/MathlibPlus"
-echo olean > "$SPOOL_DIR/out/patch-$CHECK_ID.staging/lib/MathlibPlus/Alpha.olean"
+mkdir -p "$SPOOL_DIR/out/patch-$CHECK_ID.staging/lib/LemmaLib"
+echo olean > "$SPOOL_DIR/out/patch-$CHECK_ID.staging/lib/LemmaLib/Alpha.olean"
+echo olean > "$SPOOL_DIR/out/patch-$CHECK_ID.staging/lib/LemmaLib/Beta.olean"
+echo olean > "$SPOOL_DIR/out/patch-$CHECK_ID.staging/lib/LemmaLib.olean"
 cat > "$SPOOL_DIR/out/patch-$CHECK_ID.staging/result.json" <<EOF
-{"ok":true,"built":["MathlibPlus.Alpha","MathlibPlus.Beta"],"elapsed_ms":1200,
- "decls":{"MathlibPlus.Alpha":[{"name":"alpha","type":"1 + 1 = 2","axioms":[],"proof":true},
+{"ok":true,"built":["LemmaLib.Alpha","LemmaLib.Beta","LemmaLib"],"elapsed_ms":1200,
+ "decls":{"LemmaLib.Alpha":[{"name":"alpha","type":"1 + 1 = 2","axioms":[],"proof":true},
                                {"name":"gamma","type":"3 = 3","axioms":[],"proof":true}]}}
 EOF
 mv "$SPOOL_DIR/out/patch-$CHECK_ID.staging" "$SPOOL_DIR/out/patch-$CHECK_ID"
@@ -2775,7 +2782,7 @@ git -C "$PATCH_REPO_DIR" diff --quiet HEAD || fail "a merely verified patch chan
 # patch, not who happens to be holding it. Unnarrowed, `patches` is a sample
 # of what else is waiting and says so in `backlog`.
 call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"kind\":\"patch\",\"limit\":20,\"include_claimed\":true}" | python3 -c 'import sys,json; d=json.load(sys.stdin);
-p=[x for x in d["patches"] if x["id"]=="'"$MERGE_ID"'"]; assert p and p[0]["build"]=="passed" and p[0]["deleted_modules"]==["MathlibPlus.Gamma"], d["patches"]' \
+p=[x for x in d["patches"] if x["id"]=="'"$MERGE_ID"'"]; assert p and p[0]["build"]=="passed" and p[0]["deleted_modules"]==["LemmaLib.Gamma"], d["patches"]' \
   || fail "the review queue did not show the patch with its build result"
 
 # A prose-only commit between verification and publication cannot invalidate a
@@ -2787,21 +2794,24 @@ git -C "$PATCH_REPO_DIR" -c user.name=contracts -c user.email=c@example.invalid 
 
 # A stale kernel check of the module the patch changes: publication must drop
 # it, because its answer was about a library that no longer exists.
-psql -q -h "$WORK" -d math -c "insert into lean_check (source_hash, source, outcome) values ('deadbeef', 'import MathlibPlus.Alpha' || chr(10) || 'example : True := trivial', 'failed')"
+psql -q -h "$WORK" -d math -c "insert into lean_check (source_hash, source, outcome) values ('deadbeef', 'import LemmaLib.Alpha' || chr(10) || 'example : True := trivial', 'failed')"
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$MERGE_ID\",\"tier\":2,\"note\":\"reviewed patch\"}" | field '.ok' > /dev/null
 await_query "select state from patch_publication where contribution_id = '$MERGE_ID' and state = 'published'" > /dev/null
 STATE=$(psql -h "$WORK" -d math -tAc "select state from patch_publication where contribution_id = '$MERGE_ID'")
 [[ $STATE == published ]] || fail "promoting a patch to T2 did not publish it (state: ${STATE:-none}, $(tail -3 "$WORK/verifier.log"))"
-grep -q 'theorem gamma' "$PATCH_REPO_DIR/MathlibPlus/Alpha.lean" || fail "the published patch is not in the library"
-[[ ! -f "$PATCH_REPO_DIR/MathlibPlus/Gamma.lean" ]] || fail "the published patch did not delete the module it folded in"
-[[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_decl_module where module = 'MathlibPlus.Gamma'") == 1 ]] \
+grep -q 'theorem gamma' "$PATCH_REPO_DIR/LemmaLib/Alpha.lean" || fail "the published patch is not in the library"
+[[ ! -f "$PATCH_REPO_DIR/LemmaLib/Gamma.lean" ]] || fail "the published patch did not delete the module it folded in"
+! grep -q 'LemmaLib.Gamma' "$PATCH_REPO_DIR/LemmaLib.lean" || fail "the published patch left a dangling umbrella import"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_decl_module where module = 'LemmaLib.Gamma'") == 1 ]] \
   || fail "publication did not leave an index tombstone for the deleted module"
 git -C "$PATCH_REPO_DIR" log -1 --format=%s | grep -q "fold Gamma into Alpha" || fail "publication did not commit with the patch's title"
 git -C "$PATCH_REPO_DIR" status --porcelain | grep -q . && fail "publication left the library checkout dirty"
-[[ -f "$PATCH_BUILD_LIB/MathlibPlus/Alpha.olean" ]] || fail "the verified olean was not installed into the build tree"
+[[ -f "$PATCH_BUILD_LIB/LemmaLib/Alpha.olean" && -f "$PATCH_BUILD_LIB/LemmaLib.olean" ]] \
+  || fail "the verified oleans were not installed into the build tree"
+[[ ! -f "$PATCH_BUILD_LIB/LemmaLib/Gamma.olean" ]] || fail "publication kept the deleted module's olean"
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_check where source_hash = 'deadbeef'") == 0 ]] \
   || fail "publication kept a cached check of a module it changed"
-[[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_decl where module = 'MathlibPlus.GroupTheory.Claim1'") == 1 ]] \
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_decl where module = 'LemmaLib.GroupTheory.Claim1'") == 1 ]] \
   || fail "publication disturbed the index of modules it did not touch"
 
 # Publication moved the library's HEAD, so the verifier re-checks every patch
@@ -2817,7 +2827,7 @@ drain_patch_jobs() {
       id=${job##*/patch-}
       rm -rf "$job"
       mkdir -p "$SPOOL_DIR/out/patch-$id.staging"
-      echo '{"ok":true,"built":[],"still_broken":[],"elapsed_ms":1}' > "$SPOOL_DIR/out/patch-$id.staging/result.json"
+      echo '{"ok":true,"built":[],"elapsed_ms":1}' > "$SPOOL_DIR/out/patch-$id.staging/result.json"
       mv "$SPOOL_DIR/out/patch-$id.staging" "$SPOOL_DIR/out/patch-$id"
     done
     sleep 0.05
@@ -2825,28 +2835,19 @@ drain_patch_jobs() {
 }
 drain_patch_jobs
 
-# Contract: a module that does not build at the base commit is the library's
-# state, not the patch's doing. Touching one must not condemn the patch, and a
-# patch that could build nothing at all verified nothing.
-# Ending on a blank context line is the case that broke the first real patch:
-# a hunk's blank context line is a single space, and trimming trailing
-# whitespace off the diff leaves the hunk shorter than its header claims.
-BROKEN=$(printf 'diff --git a/MathlibPlus/Broken.lean b/MathlibPlus/Broken.lean\n--- a/MathlibPlus/Broken.lean\n+++ b/MathlibPlus/Broken.lean\n@@ -1,2 +1,3 @@\n theorem broken : 4 = 5 := rfl\n+-- a note that changes nothing\n \n')
-BROKEN_ID=$(patch_submit "touch a module that does not build" "$BROKEN")
-BROKEN_V=$(patch_verification "$BROKEN_ID")
-BROKEN_CHECK=$(await_query "select detail->>'check_id' from verification where id = $BROKEN_V")
-await_file "$SPOOL_DIR/in/patch-$BROKEN_CHECK/job.json" || BROKEN_CHECK=""
-[[ -n $BROKEN_CHECK ]] || fail "a patch to an unbuilt module was never spooled"
-python3 -c 'import json,sys; j=json.load(open(sys.argv[1])); assert j["modules"][0]["optional"] is True, j["modules"]' \
-  "$SPOOL_DIR/in/patch-$BROKEN_CHECK/job.json" || fail "a module with no olean was not marked already-broken"
-rm -rf "$SPOOL_DIR/in/patch-$BROKEN_CHECK"
-mkdir -p "$SPOOL_DIR/out/patch-$BROKEN_CHECK.staging"
-echo '{"ok":true,"built":[],"still_broken":["MathlibPlus.Broken"],"elapsed_ms":10}' \
-  > "$SPOOL_DIR/out/patch-$BROKEN_CHECK.staging/result.json"
-mv "$SPOOL_DIR/out/patch-$BROKEN_CHECK.staging" "$SPOOL_DIR/out/patch-$BROKEN_CHECK"
-[[ $(await_verification "$BROKEN_V") == inconclusive ]] || fail "a patch that built nothing was not inconclusive"
-psql -h "$WORK" -d math -tAc "select detail->>'reason' from verification where id = $BROKEN_V" | grep -q "does not build at this commit" \
-  || fail "a patch that built nothing did not explain why"
+# Contract: a source module missing from the installed green build means the
+# verifier itself is stale. It reports that before spooling a partial check.
+# The hunk ends on a blank context line, the shape that once exposed diff
+# extraction trimming a significant trailing space.
+MISSING=$(printf 'diff --git a/LemmaLib/MissingBuild.lean b/LemmaLib/MissingBuild.lean\n--- a/LemmaLib/MissingBuild.lean\n+++ b/LemmaLib/MissingBuild.lean\n@@ -1,2 +1,3 @@\n theorem available_in_source_only : True := trivial\n+-- the build tree deliberately lacks this module\n \n')
+MISSING_ID=$(patch_submit "detect a stale installed build" "$MISSING")
+MISSING_V=$(patch_verification "$MISSING_ID")
+[[ $(await_verification "$MISSING_V") == inconclusive ]] || fail "a stale installed build was not reported"
+MISSING_REASON=$(psql -h "$WORK" -d math -tAc "select detail->>'reason' from verification where id = $MISSING_V")
+[[ $MISSING_REASON == *"installed LemmaLib build is missing LemmaLib.MissingBuild"* ]] \
+  || fail "a stale installed build did not name the missing module: $MISSING_REASON"
+[[ ! -e "$SPOOL_DIR/in/patch-$(psql -h "$WORK" -d math -tAc "select detail->>'check_id' from verification where id = $MISSING_V")" ]] \
+  || fail "a stale installed build was sent to the runner"
 
 # A ladder is counted per author, so this one gets its own identity and runs
 # last, where six extra entries cannot move a count another contract asserts.

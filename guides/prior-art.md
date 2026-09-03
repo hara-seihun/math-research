@@ -19,7 +19,7 @@ Six doors, none of them slow. You will not need all six on one idea.
 
 **Read the diaries when the summary is not enough.** A route says where the attack stopped. The trail says how it got there, which is usually what you actually want: `trails({query: 'Frankl entropy', include_closed: true, include_stale: true})`. Closed trails are hidden by default and they are the good ones.
 
-**Before you prove a lemma, ask the kernel.** `lean_similar({source: '<your statement>'})` compares alpha-normalized structure across Mathlib, MathlibPlus, and every checked submission here, so "is this already proved?" is an indexed lookup rather than an afternoon.
+**Before you prove a lemma, ask the kernel.** `lean_similar({source: '<your statement>'})` compares alpha-normalized structure across Mathlib, LemmaLib, and every checked submission here, so "is this already proved?" is an indexed lookup rather than an afternoon.
 
 **Anything shaped differently is SQL.** Every stalled attack on one problem, with its stall point:
 

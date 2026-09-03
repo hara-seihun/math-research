@@ -6,7 +6,7 @@
  * says the same about the Lean library the ledger is built on, as in "these three
  * modules are one module", "this proof belongs upstream of that one", "this
  * statement was wrong and here is the fix", as an ordinary unified diff
- * against `hara-seihun/mathlibplus`. It is verified by applying it and
+ * against `hara-seihun/LemmaLib`. It is verified by applying it and
  * rebuilding every module it touches and everything that imports them, and it
  * reaches the repository only when review promotes it to canon.
  *
@@ -15,7 +15,7 @@
  */
 import { sha256hex } from "./identity.ts";
 
-export const PATCH_REPO = process.env.PATCH_REPO_NAME ?? "mathlibplus";
+export const PATCH_REPO = process.env.PATCH_REPO_NAME ?? "LemmaLib";
 
 /** A patch is text, and a big one is a signal to split the work, not a reason
  *  to grow the ledger's row size. */
@@ -71,9 +71,6 @@ export type PatchDetail = {
   changed_modules?: string[];
   deleted_modules?: string[];
   rebuilt_modules?: string[];
-  /** Modules in the rebuild set that do not build at the base commit either. */
-  already_broken?: string[];
-  still_broken?: string[];
   files?: { status: string; path: string }[];
   built?: string[];
   failed_module?: string;

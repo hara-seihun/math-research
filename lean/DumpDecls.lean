@@ -14,11 +14,8 @@ and pretty-print, not to be re-indexed by every batch that pulls them in.
 tools/index-decls.sh is what splits a library into batches and runs them in
 parallel.
 
-MathlibPlus contains modules that declare the same name as another module,
-and importing two of those together is a hard error. This exits with status 2
-when the batch cannot be imported at all, which is what tools/index-decls.sh
-bisects on: a fresh process per half, because an environment that failed to
-import is not something to keep around and retry inside.
+A failed batch exits with status 2 so tools/index-decls.sh can isolate an
+unimportable module in a fresh process.
 -/
 import Lean
 

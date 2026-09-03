@@ -743,11 +743,11 @@ export const LeanGrepOut = z.strictObject({
   query: z.string(),
   regex: z.boolean(),
   case_sensitive: z.boolean(),
-  libraries: z.array(z.enum(["Mathlib", "MathlibPlus"])),
+  libraries: z.array(z.enum(["Mathlib", "LemmaLib"])),
   module: z.string().optional(),
   matches: z.array(
     z.strictObject({
-      library: z.enum(["Mathlib", "MathlibPlus"]),
+      library: z.enum(["Mathlib", "LemmaLib"]),
       module: z.string(),
       path: z.string(),
       line: z.number().int(),

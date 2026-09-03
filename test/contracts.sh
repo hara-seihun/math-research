@@ -2688,6 +2688,13 @@ STALE_V=$(patch_verification "$STALE_ID")
 [[ $(await_verification "$STALE_V") == failed ]] || fail "a patch that does not apply was not failed"
 psql -h "$WORK" -d math -tAc "select detail->>'reason' from verification where id = $STALE_V" | grep -qi "does not apply" \
   || fail "a conflicting patch did not say so"
+# Publication records from another library are history, not LemmaLib review
+# work. They must not reappear in the active queue after this server changes
+# which repository it owns.
+psql -q -h "$WORK" -d math -c "insert into patch_publication (contribution_id, repo, state) values ('$STALE_ID', 'OtherLibrary', 'blocked')"
+call review_queue "{\"contributor_key\":\"$OPKEY\",\"claim\":false,\"kind\":\"patch\",\"limit\":20,\"include_claimed\":true}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); assert "'"$STALE_ID"'" not in {r["id"] for r in d["unreviewed"]}, d' \
+  || fail "a patch owned by another library appeared in the LemmaLib queue"
 
 # Contract: deleting a module something still imports is a broken library, and
 # it is caught before anything is compiled.

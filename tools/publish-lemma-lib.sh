@@ -87,11 +87,16 @@ if git merge-base --is-ancestor "$guest" "$origin"; then
   changed=$(git diff --name-only "$guest..$origin")
   if grep -Eq '^(LemmaLib(/.*)?\.lean|lakefile\.toml|lake-manifest\.json|lean-toolchain)$' <<< "$changed"; then
     ssh "$GUEST_HOST" "sudo /srv/lemma-dev/tools/update-lemma-lib"
+    mapfile -t touched < <(
+      git diff --name-only "$guest..$origin" -- LemmaLib.lean LemmaLib \
+        | while read -r path; do module_of "$path"; done
+    )
     mapfile -t deleted < <(
       git diff --name-only --diff-filter=D "$guest..$origin" -- LemmaLib.lean LemmaLib \
         | while read -r path; do module_of "$path"; done
     )
-    index_modules=(LemmaLib "${deleted[@]}")
+    if [[ ${#touched[@]} -eq 0 ]]; then touched=(LemmaLib); fi
+    index_modules=("${touched[@]}" "${deleted[@]}")
     printf -v index_args ' %q' "${index_modules[@]}"
     ssh "$GUEST_HOST" \
       "sudo -u math env HOME=/var/lib/math-research ELAN_HOME=/var/lib/math-research/.elan PATH=/var/lib/math-research/.elan/bin:/run/current-system/sw/bin /srv/math-research/tools/index-decls.sh$index_args && sudo -u postgres psql -v ON_ERROR_STOP=1 -d math -c \"delete from lean_check where source like '%import LemmaLib%'\""

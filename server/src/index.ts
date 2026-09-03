@@ -50,6 +50,7 @@ import {
 import { renderArtifact } from "./render.ts";
 import { attachFiles, badPath, FILE_HASH, filesOf, MAX_CHUNK_BYTES, receiveChunk, storedFile } from "./files.ts";
 import { declarationNamesIn, exactDecls, indexSummary, searchDecls } from "./decls.ts";
+import { PATCH_REPO } from "./patch.ts";
 import { grepLean, type LeanLibrary } from "./lean-grep.ts";
 import { scanDuplicates, similarDeclarations } from "./lean-similar.ts";
 import { headSeq, newsPacket, seqBefore } from "./news.ts";
@@ -2820,7 +2821,10 @@ defineTool(
     const queued = sql`
       c.status = 'active' and c.tier <= ${max_tier}
         and (${include_decided} or c.reviewed_at is null)
-        and (${kind ?? null}::text is null or c.kind = ${kind ?? null})`;
+        and (${kind ?? null}::text is null or c.kind = ${kind ?? null})
+        and (c.kind <> 'patch' or not exists (
+          select 1 from patch_publication other_library
+          where other_library.contribution_id = c.id and other_library.repo <> ${PATCH_REPO}))`;
     // Another reviewer's live lease takes the row off your page; your own does
     // not, so a session that asks twice gets its own work back.
     //
@@ -3157,7 +3161,10 @@ defineTool(
     // Patches are the one thing here whose promotion leaves the ledger: T2 is
     // what commits a change to the Lean library, so the build result and the
     // publication state travel with the row a reviewer is deciding on.
-    const patchWhere = sql`c.kind = 'patch' and c.status = 'active'`;
+    const patchWhere = sql`
+      c.kind = 'patch' and c.status = 'active' and not exists (
+        select 1 from patch_publication other_library
+        where other_library.contribution_id = c.id and other_library.repo <> ${PATCH_REPO})`;
     // `publication_detail` repeated the module list the row already carries,
     // twice over on a wide patch. What it adds is the installed count and the
     // head commit; the rest is the same fact wearing a second hat.

@@ -46,6 +46,7 @@ const JOB_TIMEOUT_MS = Number(process.env.PATCH_TIMEOUT_MS ?? 1_800_000);
 /** Beyond this the rebuild is a library-wide event, not a patch. */
 const MAX_REBUILD = Number(process.env.PATCH_MAX_REBUILD ?? 500);
 const INDEX_SCRIPT = process.env.DECL_INDEX_SCRIPT ?? "/srv/math-research/tools/index-decls.sh";
+const INDEXED_COMMIT = process.env.PATCH_INDEXED_COMMIT ?? join(STATE_DIR, "indexed-commit");
 
 const worktreeDir = (id: string) => join(STATE_DIR, "worktrees", id);
 const oleanDir = (id: string) => join(STATE_DIR, "oleans", id);
@@ -762,6 +763,8 @@ export async function publishPatches() {
                on conflict (module) do update set indexed_at = excluded.indexed_at`;
     });
   }
+  mkdirSync(dirname(INDEXED_COMMIT), { recursive: true });
+  writeFileSync(INDEXED_COMMIT, `${commit}\n`, { mode: 0o644 });
 
   await sql`insert into patch_publication (contribution_id, repo, state, check_id, commit_sha, detail)
             values (${row.id}, ${PATCH_REPO}, 'published', ${checkId}, ${commit},

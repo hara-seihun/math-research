@@ -2818,6 +2818,8 @@ grep -q 'theorem gamma' "$PATCH_REPO_DIR/LemmaLib/Alpha.lean" || fail "the publi
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_decl_module where module = 'LemmaLib.Gamma'") == 1 ]] \
   || fail "publication did not leave an index tombstone for the deleted module"
 git -C "$PATCH_REPO_DIR" log -1 --format=%s | grep -q "fold Gamma into Alpha" || fail "publication did not commit with the patch's title"
+[[ $(cat "$PATCH_STATE_DIR/indexed-commit") == "$(git -C "$PATCH_REPO_DIR" rev-parse HEAD)" ]] \
+  || fail "publication did not record the commit whose checks and index it refreshed"
 git -C "$PATCH_REPO_DIR" status --porcelain | grep -q . && fail "publication left the library checkout dirty"
 [[ -f "$PATCH_BUILD_LIB/LemmaLib/Alpha.olean" && -f "$PATCH_BUILD_LIB/LemmaLib.olean" ]] \
   || fail "the verified oleans were not installed into the build tree"

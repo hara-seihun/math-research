@@ -588,18 +588,31 @@ function installOleans(checkId: string, deleted: string[]) {
 
 /** Checks whose answer the new library invalidates: anything that imports a
  *  module that just changed, and every "unknown module" failure, since a
- *  module the patch adds is exactly what those were missing. */
+ *  module the patch adds is exactly what those were missing. Requeue linked
+ *  contribution verifications before dropping the content cache; otherwise a
+ *  stale `passed` verdict survives forever with no check row capable of
+ *  replacing it. */
 async function invalidateChecks(modules: string[]) {
   if (modules.length === 0) return 0;
   const pattern = `import (${modules.map((m) => m.replaceAll(".", "\\.")).join("|")})\\M`;
-  const [{ count }] = await sql<{ count: number }[]>`
-    with gone as (
-      delete from lean_check
-      where source ~ ${pattern}
-         or (outcome = 'failed' and detail::text like ${"%does not exist%"})
-      returning 1)
-    select count(*)::int as count from gone`;
-  return count ?? 0;
+  const hashes = await sql<{ source_hash: string }[]>`
+    select source_hash from lean_check
+    where source ~ ${pattern}
+       or (outcome = 'failed' and detail::text like ${"%does not exist%"})`;
+  if (hashes.length === 0) return 0;
+  const invalidated = hashes.map(({ source_hash }) => source_hash);
+  await sql.begin(async (tx) => {
+    await tx`with requeued as (
+               update verification
+               set outcome = 'pending', detail = (detail - 'check_hash') || '{"revalidating":true}'::jsonb,
+                   updated_at = now()
+               where method = 'lean-kernel' and detail->>'check_hash' = any(${invalidated}::text[])
+               returning contribution_id)
+             update contribution c set reviewed_at = null
+             where c.reviewed_at is not null and c.id in (select contribution_id from requeued)`;
+    await tx`delete from lean_check where source_hash = any(${invalidated}::text[])`;
+  });
+  return invalidated.length;
 }
 
 async function reindexDecls(modules: string[]) {
@@ -693,6 +706,16 @@ export async function publishPatches() {
     return;
   }
 
+  // The runner reads installed oleans directly. Do not replace them under a
+  // check that has already been handed out; the next tick publishes as soon as
+  // those checks return, then requeues every affected answer below.
+  const [checkingLibrary] = await sql<{ busy: boolean }[]>`
+    select exists (
+      select 1 from lean_check
+      where outcome = 'pending' and claimed_at is not null
+        and source ~ ${"import[[:space:]]+LemmaLib\\M"}) as busy`;
+  if (checkingLibrary?.busy) return;
+
   const author = row.display_name?.trim() || `contributor ${shortId(row.identity_id ?? "anonymous")}`;
   const email = `${row.identity_id ? shortId(row.identity_id) : "anonymous"}@contributors.lemma.ing`;
   const message = [
@@ -729,7 +752,7 @@ export async function publishPatches() {
   const changed = check.detail?.changed_modules ?? [];
   const deleted = check.detail?.deleted_modules ?? [];
   const installed = installOleans(checkId, deleted);
-  const dropped = await invalidateChecks([...changed, ...(check.detail?.rebuilt_modules ?? [])]);
+  const dropped = await invalidateChecks(["LemmaLib", ...changed, ...(check.detail?.rebuilt_modules ?? [])]);
   await reindexDecls(changed);
   if (deleted.length > 0) {
     await sql.begin(async (tx) => {

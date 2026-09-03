@@ -2800,8 +2800,14 @@ git -C "$PATCH_REPO_DIR" add README.md
 git -C "$PATCH_REPO_DIR" -c user.name=contracts -c user.email=c@example.invalid commit -qm "prose moved"
 
 # A stale kernel check of the module the patch changes: publication must drop
-# it, because its answer was about a library that no longer exists.
-psql -q -h "$WORK" -d math -c "insert into lean_check (source_hash, source, outcome) values ('deadbeef', 'import LemmaLib.Alpha' || chr(10) || 'example : True := trivial', 'failed')"
+# the cache and requeue any verdict that used it. Leaving the verdict passed or
+# failed after deleting only its cache would make it impossible to replace.
+psql -q -h "$WORK" -d math <<SQL
+insert into lean_check (source_hash, source, outcome)
+values ('deadbeef', 'import LemmaLib.Alpha' || chr(10) || 'example : True := trivial', 'failed');
+insert into verification (contribution_id, method, outcome, detail)
+values ('$MERGE_ID', 'lean-kernel', 'failed', '{"check_hash":"deadbeef"}');
+SQL
 call set_tier "{\"contributor_key\":\"$OPKEY\",\"ref\":\"$MERGE_ID\",\"tier\":2,\"note\":\"reviewed patch\"}" | field '.ok' > /dev/null
 await_query "select state from patch_publication where contribution_id = '$MERGE_ID' and state = 'published'" > /dev/null
 STATE=$(psql -h "$WORK" -d math -tAc "select state from patch_publication where contribution_id = '$MERGE_ID'")
@@ -2818,6 +2824,8 @@ git -C "$PATCH_REPO_DIR" status --porcelain | grep -q . && fail "publication lef
 [[ ! -f "$PATCH_BUILD_LIB/LemmaLib/Gamma.olean" ]] || fail "publication kept the deleted module's olean"
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_check where source_hash = 'deadbeef'") == 0 ]] \
   || fail "publication kept a cached check of a module it changed"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from verification where contribution_id = '$MERGE_ID' and method = 'lean-kernel' and outcome = 'failed' and detail->>'check_hash' = 'deadbeef'") == 0 ]] \
+  || fail "publication left a stale kernel verdict attached to its deleted cache"
 [[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_decl where module = 'LemmaLib.GroupTheory.Claim1'") == 1 ]] \
   || fail "publication disturbed the index of modules it did not touch"
 
@@ -2880,6 +2888,31 @@ ESCAPED=$(rung theorem "Every valency-ten Cayley graph on Q8 times C43 is CI" \
   ',"metadata":{"rung_unlocks":"the p=43 residue is the last obstruction to the general odd-order induction"}')
 echo "$ESCAPED" | field '.id' > /dev/null || fail "a justified next case was refused: $ESCAPED"
 echo "$ESCAPED" | field '.notes[]' | grep -qi "deliberate next case" || fail "a justified next case was recorded without its justification"
+
+# Contract: an out-of-process library update requeues attached verdicts and
+# removes work claimed under the replaced build before the services return.
+kill "$VERIFIER_PID"
+wait "$VERIFIER_PID" 2> /dev/null || true
+VERIFIER_PID=
+mkdir -p "$WORK/library-change-spool/in" "$WORK/library-change-spool/out"
+touch "$WORK/library-change-spool/in/feedface.lean" "$WORK/library-change-spool/out/feedface.json"
+psql -q -h "$WORK" -d math <<SQL
+insert into lean_check (source_hash, source, outcome)
+values ('feedface', 'import LemmaLib.Alpha' || chr(10) || 'theorem cached : True := trivial', 'passed');
+insert into verification (contribution_id, method, outcome, detail)
+values ('$MERGE_ID', 'lean-kernel', 'passed', '{"check_hash":"feedface","test_marker":"feedface"}');
+update contribution set reviewed_at = now() where id = '$MERGE_ID';
+SQL
+PGHOST="$WORK" PGDATABASE=math LEAN_SPOOL_DIR="$WORK/library-change-spool" \
+  ./tools/invalidate-library-checks.sh LemmaLib > "$WORK/invalidate.log"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from lean_check where source_hash = 'feedface'") == 0 ]] \
+  || fail "the library-change helper kept an obsolete check"
+[[ $(psql -h "$WORK" -d math -tAc "select count(*) from verification where contribution_id = '$MERGE_ID' and method = 'lean-kernel' and outcome = 'pending' and detail->>'check_hash' is null and detail->>'revalidating' = 'true' and detail->>'test_marker' = 'feedface'") == 1 ]] \
+  || fail "the library-change helper did not requeue the attached verdict"
+[[ $(psql -h "$WORK" -d math -tAc "select reviewed_at is null from contribution where id = '$MERGE_ID'") == t ]] \
+  || fail "the library-change helper left a review based on obsolete evidence"
+[[ ! -e "$WORK/library-change-spool/in/feedface.lean" && ! -e "$WORK/library-change-spool/out/feedface.json" ]] \
+  || fail "the library-change helper kept work from the replaced build"
 
 echo "all contracts hold"
 

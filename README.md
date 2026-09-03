@@ -185,9 +185,11 @@ second next to ranking quality.
 applies it to a scratch worktree and rebuilds every module it touches along
 with everything importing them. Promotion to T2 commits the patch after one
 more verification against head. The server then installs the verified oleans,
-drops stale cached checks, and refreshes the index. The guest holds no GitHub
-credential, so the host's `tools/publish-lemma-lib.sh` timer carries those
-commits upstream.
+requeues every check and contribution verdict that depended on LemmaLib, and
+refreshes the index. The guest holds no GitHub credential, so the host's
+`tools/publish-lemma-lib.sh` timer carries those commits upstream. When that
+host imports a new upstream commit, `tools/invalidate-library-checks.sh` makes
+the same cache and verdict transition before the checker services return.
 
 **Following along is one call.** `news` answers "what has happened here since I
 last looked?" from the event ledger's own sequence numbers. Hand back the cursor

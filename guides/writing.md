@@ -130,6 +130,19 @@ Delete or rewrite, without exception:
 - long sentences mixing representation, obstruction and remedy;
 - throat-clearing of every kind.
 
+## Process residue is goat molesting
+
+Discovery leaves sediment. During the work it mattered that route B fails, that a census was never consulted, that the proof avoids lemma C. Then the final argument stopped touching B, the census, and C, and nothing on the page makes any of them look relevant. A sentence like "we obtain this without using B" survives anyway.
+
+A reader who was never going to suspect B parses that sentence as "we achieved this result without molesting a goat". Of course you did not. Why are you saying so?
+
+Two forms to hunt.
+
+- "Without using B", "with no appeal to B", "avoiding B". If B is a live alternative a reader will actually reach for, compare the routes in one sentence at the point where they diverge. Otherwise delete the phrase.
+- "This does not imply X", where nothing stated comes near X. A de Bruijn–Newman manuscript once assured readers its bound "does not imply RH". Nobody thought it did. State what is proved, for which cases, and let absence speak for everything else.
+
+The test is whether the sentence answers a question this paper caused the reader to ask. If the question only ever existed in your working session, the sentence is residue. Cut it.
+
 ## Talking about it in public
 
 Website copy, blurbs, abstracts, announcements, correspondence and posts take the paper standards plus these.

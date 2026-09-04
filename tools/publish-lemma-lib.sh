@@ -32,6 +32,10 @@ git remote set-url guest "$GUEST"
 # The guest's checkout belongs to `math` and the verifier writes it with a
 # private umask, so read it as `math` rather than depending on its file modes.
 git config remote.guest.uploadpack "sudo -u math git-upload-pack"
+# The guest pulls from GitHub through this script; a direct push would land in a
+# checkout the verifier owns and skip the build and index. Make `git push guest`
+# fail with the reason rather than an unpacker error.
+git remote set-url --push guest "guest-is-fetch-only--push-origin-and-run-tools/publish-lemma-lib.sh"
 
 git fetch -q origin "$BRANCH"
 git fetch -q guest "$BRANCH"
